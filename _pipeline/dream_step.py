@@ -1828,6 +1828,77 @@ def write_row_spec(number, workflow, fields, note, verbose=False, show_existing_
                           f"direction, or fill in the field(s) yourself instead.")
 
 
+def generate_feedback_revision(number, workflow, fields, note, verbose=False):
+    """Feedback-review preview step for the video-review "Provide
+    feedback" flow -- generates a proposed revision WITHOUT writing to
+    disk, so the human can see (and approve, or ask for another attempt
+    on) what the AI intends before anything renders. Reuses
+    write_row_spec's exact machinery (build_row_spec_payload with
+    show_existing_for_note=True, _generate_spec_content) but stops short
+    of the write -- accept_feedback_revision below is the actual write,
+    called only once the human has approved this in the review UI.
+
+    Also asks for a human-readable "change_summary" -- 1-3 sentences
+    explaining what changed and why, addressed directly to the human
+    and referencing their feedback note (e.g. "Since you mentioned the
+    melon joke didn't land, I rewrote the second beat's dialogue and
+    removed the melon prop entirely.") rather than a generic restatement
+    of the diff. Popped out of the returned content before it's treated
+    as spec fields -- it's not a real spec field and must never persist
+    into spec_NNN.json.
+
+    Returns (content, change_summary, model_label). content is None if
+    there was nothing left for the AI to propose (every base field
+    already human-locked/unchanged) or generation failed validation
+    after every retry -- change_summary is None in either case too.
+    model_label is "<backend>:<model>" read straight from config.json
+    (e.g. "gemini:gemini-3.1-flash", "ollama:gemma4:12b") so it's
+    always accurate to whatever's actually configured, never a
+    hardcoded guess."""
+    naive_locked_fields = {k: v for k, v in fields.items() if k in ROW_SPEC_FIELDS and (v or "").strip()}
+    spec_path = DATA_DIR / f"spec_{number:03d}.json"
+    existing_on_disk = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.exists() else {}
+    locked_fields = {k: v for k, v in naive_locked_fields.items()
+                      if v.strip() != (existing_on_disk.get(k) or "").strip()}
+    code_owned, error = determine_code_owned_spec_fields(number, workflow)
+    if error:
+        raise SystemExit(error)
+
+    config = load_config()
+    backend = config.get("creative_backend", "ollama")
+    model = config.get("gemini_text_model") if backend == "gemini" else config.get("creative_model")
+    model_label = f"{backend}:{model}" if model else backend
+
+    payload = build_row_spec_payload(number, locked_fields, note, workflow, show_existing_for_note=True)
+    if payload is None:
+        return None, None, model_label
+    payload["schema_hint"]["change_summary"] = (
+        "1-3 sentences, plain human-readable prose (NOT spec/story content) "
+        "explaining what you changed and why, written directly to the human "
+        "who gave the feedback -- e.g. \"Since you mentioned the melon joke "
+        "didn't land, I rewrote the second beat's dialogue and removed the "
+        "melon prop entirely.\" Address the feedback note's actual complaint "
+        "specifically, don't just restate that you made changes."
+    )
+    prompt = _render_creative_prompt(payload)
+    if verbose:
+        print(f"[dream_step] #{number}: feedback-preview prompt:\n{prompt}\n")
+    content = _generate_spec_content(number, prompt, code_owned, extra_locked_fields=locked_fields, verbose=verbose)
+    if content is None:
+        return None, None, model_label
+    change_summary = content.pop("change_summary", None)
+    return content, change_summary, model_label
+
+
+def accept_feedback_revision(number, content):
+    """Writes an already-generated-and-human-approved feedback revision
+    (see generate_feedback_revision) verbatim -- no AI call here, this is
+    purely the write step for content the human already saw and accepted
+    in the review UI. Goes through the exact same validated write path
+    (do_write_spec) as every other spec write."""
+    do_write_spec(number, json.dumps(content))
+
+
 def write_row_keyframes(number, workflow, fields, verbose=False):
     """One manage-table row's keyframe-prompt write. `fields` carries
     whatever prompt text the human typed for slots that don't already have

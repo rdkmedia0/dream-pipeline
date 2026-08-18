@@ -345,13 +345,24 @@
       <p>Toggling <strong>Review mode</strong> on shows a feedback box under the video — off by
          default so it doesn't take up space during ordinary viewing, and it stays on as you step
          through videos with Prev/Next so a review pass doesn't need re-enabling it each time.</p>
-      <p>Type what didn't work about the video — the AI revises the <em>existing</em> story/prompt
-         to address it (a real edit, not a fresh unrelated rewrite) and reworks the render. This
-         starts immediately if nothing else is currently rendering; otherwise it queues automatically
-         and a status banner in the player tracks progress, so you can keep reviewing other videos
-         while it works in the background. Feedback items are processed one at a time, in the order
-         submitted, and a queued feedback rework never starts while any other render is in
-         progress — no need to wait for it yourself before reviewing the next video.</p>
+      <p>Type what didn't work about the video and submit — the AI revises the <em>existing</em>
+         story/prompt to address it (a real edit, not a fresh unrelated rewrite) and proposes a
+         revision <em>before anything renders</em>. The proposal shows a plain-language summary of
+         what it changed and why (e.g. "Since you mentioned the melon joke didn't land, I rewrote
+         the second beat's dialogue and removed the melon prop entirely"), plus which model
+         answered (e.g. <code>gemini:gemini-3.1-flash</code>). From there:</p>
+      <ul>
+        <li><strong>Accept</strong> — writes the revision and queues the render.</li>
+        <li><strong>Try again</strong> — asks for a fresh attempt with the same feedback.</li>
+        <li><strong>Refine</strong> — add more direction in the box below and regenerate with it
+          folded in, if the first attempt was close but not quite right.</li>
+      </ul>
+      <p>Once accepted, the render starts immediately if nothing else is currently rendering;
+         otherwise it queues automatically and a status overlay on the video tracks progress, so
+         you can keep reviewing other videos while it works in the background. Accepted reworks are
+         rendered one at a time, in the order accepted, and never start while any other render is in
+         progress — no need to wait for it yourself before reviewing the next video. The Manage
+         tab's usual render-progress panel picks this up too, the same as any other render.</p>
     </section>
 
     <section id="chat">

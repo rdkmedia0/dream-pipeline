@@ -66,7 +66,16 @@ JOBS_LOCK = threading.Lock()
 # have no serialization anywhere in this app and real VRAM/ComfyUI-queue
 # contention risk is the whole reason this queue exists in the first
 # place, not just ordering feedback items nicely.
-FEEDBACK_QUEUE = []  # [{"project": str, "number": int, "note": str}, ...]
+#
+# The AI-revision step (generate_feedback_revision) happens BEFORE
+# anything lands in this queue now (see h_preview_feedback/
+# h_accept_feedback) -- a human reviews and approves the proposed
+# content first, and h_accept_feedback writes it to disk synchronously
+# (cheap, no VRAM) right then. So by the time an item is queued here,
+# there's nothing left to decide -- this queue exists purely to
+# serialize the RENDER against other ComfyUI/AI activity, same as
+# before, just without a "note" to act on anymore.
+FEEDBACK_QUEUE = []  # [{"project": str, "number": int}, ...]
 FEEDBACK_QUEUE_LOCK = threading.Lock()
 FEEDBACK_WORKER_RUNNING = False
 FEEDBACK_STATUS = {"current": None, "queue_length": 0, "last_result": None}
@@ -284,13 +293,13 @@ def _any_other_job_active():
 
 def _run_feedback_queue():
     """Background worker, started once when the first feedback item is
-    submitted and exits once the queue drains (a fresh submission
-    restarts it). Processes exactly one item at a time, in submission
-    order: rewrites the spec via write_row_spec(show_existing_for_note=
-    True) -- a real revision informed by the current content, not a
-    blind rewrite (see that function's own docstring) -- then renders
+    queued and exits once the queue drains (a fresh accept restarts it).
+    Processes exactly one item at a time, in submission order. The
+    AI-revision step already happened (and was already written to disk)
+    in h_accept_feedback, before the item ever reached this queue -- see
+    FEEDBACK_QUEUE's own module comment -- so all this does is render,
     through the exact same _start_job/with_vram_guard/do_rework path a
-    manual Manage-table rework uses, and blocks on that job's own
+    manual Manage-table rework uses, and block on that job's own
     completion before moving to the next queued item."""
     global FEEDBACK_WORKER_RUNNING
     while True:
@@ -304,57 +313,78 @@ def _run_feedback_queue():
         while _any_other_job_active():
             time.sleep(2)
         with FEEDBACK_STATUS_LOCK:
-            FEEDBACK_STATUS["current"] = {"number": item["number"], "note": item["note"]}
+            FEEDBACK_STATUS["current"] = {"number": item["number"]}
+        ds.resolve_project_globals(item["project"])
         error = None
-        try:
-            ds.resolve_project_globals(item["project"])
-            spec_path = ds.DATA_DIR / f"spec_{item['number']:03d}.json"
-            if not spec_path.exists():
-                raise SystemExit(f"#{item['number']}: no spec on disk -- nothing to give feedback on.")
-            existing = json.loads(spec_path.read_text(encoding="utf-8"))
-            workflow = existing.get("workflow", "fp8_t2v")
-            fields = {k: existing.get(k, "") for k in ds.ROW_SPEC_FIELDS}
-            ds.write_row_spec(item["number"], workflow, fields, item["note"],
-                               show_existing_for_note=True)
-        except SystemExit as e:
-            error = str(e)
-        if error is None:
-            job_id = _start_job(item["project"], "feedback-rework", [item["number"]],
-                                 ds.with_vram_guard, ds.do_rework, [item["number"]],
-                                 randomize_seeds=False, type_arg=None, verbose=False, cancel_check=None)
-            while True:
-                with JOBS_LOCK:
-                    status = JOBS.get(job_id, {}).get("status")
-                    job_error = JOBS.get(job_id, {}).get("error")
-                if status not in ("queued", "running"):
-                    if status == "failed":
-                        error = job_error or "render failed -- see job log"
-                    break
-                time.sleep(2)
+        job_id = _start_job(item["project"], "feedback-rework", [item["number"]],
+                             ds.with_vram_guard, ds.do_rework, [item["number"]],
+                             randomize_seeds=False, type_arg=None, verbose=False, cancel_check=None)
+        while True:
+            with JOBS_LOCK:
+                status = JOBS.get(job_id, {}).get("status")
+                job_error = JOBS.get(job_id, {}).get("error")
+            if status not in ("queued", "running"):
+                if status == "failed":
+                    error = job_error or "render failed -- see job log"
+                break
+            time.sleep(2)
         with FEEDBACK_STATUS_LOCK:
             FEEDBACK_STATUS["last_result"] = {"number": item["number"], "ok": error is None, "detail": error}
             FEEDBACK_STATUS["current"] = None
 
 
-def h_submit_feedback(qs, body):
-    """The video-review player's "Provide feedback" action -- queues one
-    rewrite-then-rework, starting immediately if the feedback worker
-    isn't already busy (see _run_feedback_queue), or joining the line
-    behind whatever's ahead of it otherwise."""
+def h_preview_feedback(qs, body):
+    """The video-review player's "Provide feedback" action, step one --
+    generates a proposed revision for the human to review (see
+    dream_step.generate_feedback_revision) WITHOUT writing or queuing
+    anything yet. h_accept_feedback below is what actually commits to
+    it. A synchronous call (not queued against _any_other_job_active()
+    like the render itself) -- it's a plain AI text call, no VRAM/
+    ComfyUI contention risk, so there's no reason to make the human wait
+    behind an unrelated render just to see a proposal."""
     project = _project_from_body(body)
     number = int(body["number"])
     note = (body.get("note") or "").strip()
     if not note:
         raise ValueError("feedback text is required")
+    ds.resolve_project_globals(project)
+    spec_path = ds.DATA_DIR / f"spec_{number:03d}.json"
+    if not spec_path.exists():
+        raise ValueError(f"#{number}: no spec on disk -- nothing to give feedback on.")
+    existing = json.loads(spec_path.read_text(encoding="utf-8"))
+    workflow = existing.get("workflow", "fp8_t2v")
+    fields = {k: existing.get(k, "") for k in ds.ROW_SPEC_FIELDS}
+    content, change_summary, model = ds.generate_feedback_revision(number, workflow, fields, note)
+    if content is None:
+        raise ValueError("the AI couldn't produce a usable revision -- see the server "
+                          "log, or try rephrasing the feedback.")
+    return {"ok": True, "content": content, "change_summary": change_summary, "model": model}
+
+
+def h_accept_feedback(qs, body):
+    """The video-review player's "Provide feedback" action, step two --
+    writes a revision the human has already seen and approved in the
+    review UI (see h_preview_feedback), then queues its render, starting
+    immediately if the feedback worker isn't already busy (see
+    _run_feedback_queue), or joining the line behind whatever's ahead of
+    it otherwise. The write itself is synchronous (cheap, no VRAM) --
+    only the render joins the serialized queue."""
+    project = _project_from_body(body)
+    number = int(body["number"])
+    content = body.get("content")
+    if not isinstance(content, dict):
+        raise ValueError("content (the approved revision) is required")
+    ds.resolve_project_globals(project)
+    ds.accept_feedback_revision(number, content)
     global FEEDBACK_WORKER_RUNNING
     with FEEDBACK_QUEUE_LOCK:
-        FEEDBACK_QUEUE.append({"project": project, "number": number, "note": note})
+        FEEDBACK_QUEUE.append({"project": project, "number": number})
         position = len(FEEDBACK_QUEUE)
         start_worker = not FEEDBACK_WORKER_RUNNING
         if start_worker:
             FEEDBACK_WORKER_RUNNING = True
     # Update the status snapshot immediately, not just when the worker
-    # next pops an item -- otherwise a freshly-submitted item sits in
+    # next pops an item -- otherwise a freshly-accepted item sits in
     # FEEDBACK_QUEUE for however long the current one takes while the
     # status endpoint still reports the queue as empty.
     with FEEDBACK_STATUS_LOCK:
@@ -2043,7 +2073,8 @@ ROUTES = {
     ("GET", "/api/concepts/trend-availability"): h_concepts_trend_availability,
     ("POST", "/api/generate"): lambda qs, body: h_generate_or_rework(qs, body, False),
     ("POST", "/api/rework"): lambda qs, body: h_generate_or_rework(qs, body, True),
-    ("POST", "/api/manage/submit-feedback"): h_submit_feedback,
+    ("POST", "/api/manage/preview-feedback"): h_preview_feedback,
+    ("POST", "/api/manage/accept-feedback"): h_accept_feedback,
     ("GET", "/api/manage/feedback-queue-status"): h_feedback_queue_status,
     ("GET", "/api/active-jobs"): h_active_jobs,
     ("POST", "/api/upload"): h_upload,
@@ -2571,11 +2602,17 @@ INDEX_HTML = r"""<!doctype html>
      outside :fullscreen for the same reason as .player-fs-controls: it
      only makes sense as an overlay ON the fullscreen video, not as a
      plain white row wedged into the small player card. */
+  /* color:#fff so the review step's plain <div>/<span> text
+     (feedbackReviewSummaryHtml) reads white-on-dark by inheritance --
+     it has no styling of its own beyond what this container sets.
+     align-items:flex-start (not center) since that text can wrap to
+     2-3 lines while the Retry/Accept buttons stay single-line. */
   .player-fs-feedback {
     display: none; position: absolute; left: 0; right: 0; bottom: 0;
-    padding: 0.6rem; gap: 0.5rem; z-index: 5;
+    padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff; align-items: flex-start;
     background: linear-gradient(transparent, rgba(0,0,0,0.75));
   }
+  .player-fs-feedback .muted { color: rgba(255,255,255,0.7); }
   .player-fs-wrap:fullscreen .player-fs-feedback { display: flex; }
   .player-fs-feedback textarea {
     background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
@@ -3052,7 +3089,7 @@ function setTheme(name) {
 
 const app = document.getElementById('app');
 const sidebar = document.getElementById('sidebar');
-let state = { project: null, status: null, videos: [], reviewMode: true };
+let state = { project: null, status: null, videos: [], reviewMode: true, fsFeedbackReview: null };
 
 async function api(method, path, body) {
   const opts = { method };
@@ -5179,12 +5216,33 @@ function buildFsOverlayHtml() {
   // rendered unconditionally) so it can be switched off for plain
   // viewing; persists across Prev/Next either way, so a review pass
   // doesn't re-enable/re-disable it per video.
-  const feedbackInline = (sel && state.playerHtml && state.reviewMode) ? `
-    <div class="player-fs-feedback" id="fs-feedback-inline">
+  // Branches on state.fsFeedbackReview: null shows the plain note
+  // textarea (the starting point); set shows the SAME propose/accept/
+  // retry/refine loop feedbackReviewModal gives the small player, just
+  // inline instead of in a modal -- see runInlineFeedbackPreview/
+  // acceptInlineFeedback. feedbackReviewSummaryHtml renders the actual
+  // summary/model/generating/error text, shared with the modal version
+  // so the two can't drift out of sync with each other.
+  const feedbackReviewBody = state.fsFeedbackReview ? `
+      <div style="flex:1;display:flex;flex-direction:column;gap:0.4rem">
+        <div>${feedbackReviewSummaryHtml(state.fsFeedbackReview)}</div>
+        ${!state.fsFeedbackReview.generating ? `
+          <div class="row" style="gap:0.3rem">
+            <button data-action="fs-review-retry" type="button">Try again</button>
+            <button data-action="fs-review-accept" type="button" class="btn-primary" ${state.fsFeedbackReview.error ? 'disabled' : ''}>Accept</button>
+          </div>
+          <div class="row" style="gap:0.3rem;align-items:flex-start">
+            <textarea id="fs-review-refine-input" rows="2" style="flex:1;font-size:0.85em"
+                      placeholder="Not quite -- add more direction and try again..."></textarea>
+            <button data-action="fs-review-refine" type="button">Refine</button>
+          </div>` : ''}
+      </div>`
+    : `
       <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical"
-                placeholder="What didn't work about this video? The AI will revise the current story/prompt and re-render it."></textarea>
-      <button data-action="fs-feedback-submit" title="Submit and queue a rework of this video -- starts right away if nothing else is rendering, otherwise queues.">Submit</button>
-    </div>` : '';
+                placeholder="What didn't work about this video? The AI will propose a revision for you to review before anything renders."></textarea>
+      <button data-action="fs-feedback-submit" title="Ask the AI to propose a revision -- nothing renders until you review and Accept it.">Submit</button>`;
+  const feedbackInline = (sel && state.playerHtml && state.reviewMode) ? `
+    <div class="player-fs-feedback" id="fs-feedback-inline">${feedbackReviewBody}</div>` : '';
   // Empty/hidden placeholder, filled in and shown/hidden by
   // pollFeedbackQueueOnce() -- a corner overlay ON the video (see
   // .player-status-overlay's own CSS comment), kept inside
@@ -5472,6 +5530,13 @@ sidebar.addEventListener('click', (ev) => {
     // changing, so don't touch #player and force a reload/rebuffer of it.
     else if (action === 'fs-review-toggle') { state.reviewMode = !state.reviewMode; updateFsOverlay(); }
     else if (action === 'fs-feedback-submit') submitInlineFeedback();
+    else if (action === 'fs-review-retry') runInlineFeedbackPreview(state.fsFeedbackReview.note);
+    else if (action === 'fs-review-refine') {
+      const extra = (document.getElementById('fs-review-refine-input')?.value || '').trim();
+      if (!extra) return;
+      runInlineFeedbackPreview(`${state.fsFeedbackReview.note}\n\nAdditional direction: ${extra}`);
+    }
+    else if (action === 'fs-review-accept') acceptInlineFeedback();
     else if (action === 'fullscreen') {
       const wrap = document.getElementById('player-fs-wrap');
       if (wrap && wrap.requestFullscreen) wrap.requestFullscreen().catch(() => {});
@@ -5501,6 +5566,11 @@ sidebar.addEventListener('input', (ev) => {
 });
 
 function playVideo(folder, location, filename) {
+  // A stale review (or an in-progress "generating...") from whatever
+  // video was showing before must not carry over onto this new one --
+  // same reasoning the old plain textarea had for clearing itself on
+  // navigation, just now covering the whole propose/accept state.
+  state.fsFeedbackReview = null;
   const src = `/media/${encodeURIComponent(state.project)}/${location}/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}`;
   // controlsList="nofullscreen" hides the <video> element's OWN native
   // fullscreen button (Chrome/Edge honor this; Firefox has no such
@@ -5538,15 +5608,40 @@ async function deleteVideo(folder, location) {
   } catch (e) { alert(e.message); }
 }
 
+// Renders JUST the review text (summary/model, or a generating spinner,
+// or an error) -- shared between the small player's modal
+// (feedbackReviewModal) and fullscreen's inline box (buildFsOverlayHtml)
+// since both show the exact same review STATE shape
+// ({generating}/{error}/{content, summary, model}), just wrapped in
+// different surrounding markup (a modal card vs an overlay bar).
+function feedbackReviewSummaryHtml(review) {
+  if (review.generating) {
+    return `<span class="muted"><span class="mf-spinner"></span>Asking the AI to revise this...</span>`;
+  }
+  if (review.error) {
+    return `<span style="color:var(--danger, #c0392b)">${esc(review.error)}</span>`;
+  }
+  return `<span>${esc(review.summary || 'The AI proposed a revision.')}</span> ` +
+    `<span class="muted" style="font-size:0.85em">via ${esc(review.model || 'unknown model')}</span>`;
+}
+
+// Shared tail of both the small-player and fullscreen "accept" paths --
+// updates the corner status overlay and makes sure the recurring poll
+// (which is what actually keeps that overlay, and the Manage tab's
+// render panel, current) is running.
+function announceFeedbackQueued(queuedPosition) {
+  setFeedbackStatusOverlay(queuedPosition <= 1
+    ? `Reworking this video from feedback...`
+    : `Queued for rework (${queuedPosition - 1} ahead)...`);
+  startFeedbackPolling();
+}
+
 // The small (non-fullscreen) player's "Provide feedback" action --
 // resolves the row's number the same way deleteVideo does (state.selected
-// only carries folder/location, not number), opens promptModal (fine
-// here since this is never reachable while actually fullscreen -- that
-// case has its own path below), then queues a rewrite-guided-by-feedback
-// + rework via /api/manage/submit-feedback (see h_submit_feedback,
-// web_ui.py). Starts immediately if nothing else is rendering, otherwise
-// queues -- either way the human keeps reviewing while it runs in the
-// background (pollFeedbackQueueOnce below).
+// only carries folder/location, not number), opens promptModal for the
+// initial note (fine here since this is never reachable while actually
+// fullscreen -- that case has its own path below), then hands off to
+// feedbackReviewModal for the propose/accept/retry/refine loop.
 async function submitVideoFeedback() {
   const sel = state.selected;
   if (!sel) return;
@@ -5556,18 +5651,90 @@ async function submitVideoFeedback() {
     return;
   }
   const note = await promptModal(
-    `What didn't work about #${v.number}? The AI will revise the current story/prompt based ` +
-    `on this and re-render it -- starts right away if nothing else is rendering, otherwise queues.`,
+    `What didn't work about #${v.number}? The AI will propose a revision for you to review ` +
+    `before anything renders.`,
     "e.g. the melon joke didn't land, pacing too slow, wrong voice...");
   if (!note) return;
-  await postVideoFeedback(v.number, note);
+  const queuedPosition = await feedbackReviewModal(v.number, note);
+  if (queuedPosition) announceFeedbackQueued(queuedPosition);
 }
 
-// Fullscreen's own counterpart -- reads Review mode's #fs-feedback-input
+// Modal version of the propose/accept/retry/refine loop, used by the
+// small player only -- a modal works fine there (only actual fullscreen
+// breaks a document.body-appended overlay, see buildFsOverlayHtml's own
+// comment on why fullscreen needs the separate inline version below).
+// Calls /api/manage/preview-feedback to generate (never writes/renders
+// anything on its own), re-renders the SAME card in place for every
+// retry/refine so it never stacks modals, and only calls
+// /api/manage/accept-feedback -- the actual commit -- once the human
+// clicks Accept. Resolves the queued_position on accept, or false on
+// Cancel/click-outside (both disabled while a generation is in flight,
+// so a click can't abandon an in-flight request the human can no longer
+// see or act on).
+function feedbackReviewModal(number, initialNote) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'mf-confirm-overlay';
+    document.body.appendChild(overlay);
+    let review = { generating: true, note: initialNote };
+    const render = () => {
+      overlay.innerHTML = `
+        <div class="card mf-confirm-card">
+          <p class="mf-confirm-message">Feedback for #${number}</p>
+          <p>${feedbackReviewSummaryHtml(review)}</p>
+          ${!review.generating ? `
+            <div class="row row-end" style="margin-top:0.5rem">
+              <button type="button" id="fr-modal-cancel">Cancel</button>
+              <button type="button" id="fr-modal-retry">Try again</button>
+              <button type="button" id="fr-modal-accept" class="btn-primary" ${review.error ? 'disabled' : ''}>Accept</button>
+            </div>
+            <div class="row" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
+              <textarea id="fr-modal-refine" rows="2" style="flex:1" placeholder="Not quite -- add more direction and try again..."></textarea>
+              <button type="button" id="fr-modal-refine-btn">Refine</button>
+            </div>` : ''}
+        </div>`;
+      if (review.generating) return;
+      overlay.querySelector('#fr-modal-cancel').onclick = () => { overlay.remove(); resolve(false); };
+      overlay.querySelector('#fr-modal-retry').onclick = () => generate(review.note);
+      overlay.querySelector('#fr-modal-accept').onclick = accept;
+      overlay.querySelector('#fr-modal-refine-btn').onclick = () => {
+        const extra = overlay.querySelector('#fr-modal-refine').value.trim();
+        if (!extra) return;
+        generate(`${review.note}\n\nAdditional direction: ${extra}`);
+      };
+    };
+    const generate = async (note) => {
+      review = { generating: true, note };
+      render();
+      try {
+        const result = await api('POST', '/api/manage/preview-feedback', { project: state.project, number, note });
+        review = { note, content: result.content, summary: result.change_summary, model: result.model };
+      } catch (e) {
+        review = { note, error: e.message };
+      }
+      render();
+    };
+    const accept = async () => {
+      try {
+        const result = await api('POST', '/api/manage/accept-feedback',
+          { project: state.project, number, content: review.content });
+        overlay.remove();
+        resolve(result.queued_position);
+      } catch (e) { alert(e.message); }
+    };
+    overlay.onclick = (ev) => { if (ev.target === overlay && !review.generating) { overlay.remove(); resolve(false); } };
+    generate(initialNote);
+  });
+}
+
+// Fullscreen's own entry point -- reads Review mode's #fs-feedback-input
 // textarea instead of opening promptModal, since a modal (appended to
 // document.body) would render outside the fullscreened element's
 // subtree and be invisible while actually fullscreen (see
-// buildFsOverlayHtml's comment on feedbackInline).
+// buildFsOverlayHtml's comment on feedbackInline). Kicks off the SAME
+// propose step as the modal version, just rendered inline in place --
+// see runInlineFeedbackPreview/acceptInlineFeedback and
+// buildFsOverlayHtml's feedbackInline block for the rest of that loop.
 async function submitInlineFeedback() {
   const sel = state.selected;
   if (!sel) return;
@@ -5579,23 +5746,44 @@ async function submitInlineFeedback() {
   const input = document.getElementById('fs-feedback-input');
   const note = input ? input.value.trim() : '';
   if (!note) { if (input) input.focus(); return; }
-  await postVideoFeedback(v.number, note);
-  if (input) input.value = '';
+  await runInlineFeedbackPreview(note, v.number);
 }
 
-async function postVideoFeedback(number, note) {
+// Generates (or regenerates, for Try again/Refine) a proposal into
+// state.fsFeedbackReview and re-renders JUST the overlay elements
+// (updateFsOverlay, not renderPlayerCard -- see that function's own
+// comment on why #player must stay untouched here). number is only
+// passed on the FIRST call (from submitInlineFeedback); retry/refine
+// reuse whatever's already in state.fsFeedbackReview.number.
+async function runInlineFeedbackPreview(note, number) {
+  const num = number != null ? number : (state.fsFeedbackReview && state.fsFeedbackReview.number);
+  if (num == null) return;
+  state.fsFeedbackReview = { generating: true, note, number: num };
+  updateFsOverlay();
   try {
-    const result = await api('POST', '/api/manage/submit-feedback', { project: state.project, number, note });
-    setFeedbackStatusOverlay(result.queued_position <= 1
-      ? `Reworking this video from feedback...`
-      : `Queued for rework (${result.queued_position - 1} ahead)...`);
-    startFeedbackPolling();
+    const result = await api('POST', '/api/manage/preview-feedback', { project: state.project, number: num, note });
+    state.fsFeedbackReview = { note, number: num, content: result.content, summary: result.change_summary, model: result.model };
+  } catch (e) {
+    state.fsFeedbackReview = { note, number: num, error: e.message };
+  }
+  updateFsOverlay();
+}
+
+async function acceptInlineFeedback() {
+  const review = state.fsFeedbackReview;
+  if (!review || !review.content) return;
+  try {
+    const result = await api('POST', '/api/manage/accept-feedback',
+      { project: state.project, number: review.number, content: review.content });
+    state.fsFeedbackReview = null;
+    updateFsOverlay();
+    announceFeedbackQueued(result.queued_position);
   } catch (e) { alert(e.message); }
 }
 
 // Shows/hides the corner status overlay (see .player-status-overlay's
 // CSS comment) -- a null/empty text hides it, anything else shows it.
-// A tiny helper mainly so postVideoFeedback's immediate optimistic
+// A tiny helper mainly so announceFeedbackQueued's immediate optimistic
 // update (before the first poll lands) and pollFeedbackQueueOnce's own
 // per-poll update share the exact same show/hide behavior.
 function setFeedbackStatusOverlay(text) {
