@@ -336,13 +336,15 @@
       <h2>Video review</h2>
       <p>Rendered videos show up in the <strong>Videos</strong> sidebar tab, split into
          <strong>Active</strong> (needs review) and <strong>Reviewed</strong>. Selecting one plays
-         it in the Player card, with <strong>Move to Reviewed</strong>, <strong>Delete</strong>,
-         and <strong>Provide feedback</strong> underneath.</p>
-      <p><strong>Fullscreen</strong> (the button above the player) has its own Prev/Next/Move/Exit
-         controls plus an always-expanded feedback box underneath, so a full review pass never has
-         to drop back to the main window between videos — type feedback and submit right there as
-         you go.</p>
-      <h3>Provide feedback</h3>
+         it in the Player card, with <strong>Move to Reviewed</strong> and <strong>Delete</strong>
+         underneath, plus its own Prev/Next controls and a <strong>Review mode</strong> toggle —
+         all present whether or not you've entered true fullscreen (the <strong>Fullscreen</strong>
+         button above the player just makes the whole player fill the screen; the controls
+         themselves don't change).</p>
+      <h3>Review mode &amp; feedback</h3>
+      <p>Toggling <strong>Review mode</strong> on shows a feedback box under the video — off by
+         default so it doesn't take up space during ordinary viewing, and it stays on as you step
+         through videos with Prev/Next so a review pass doesn't need re-enabling it each time.</p>
       <p>Type what didn't work about the video — the AI revises the <em>existing</em> story/prompt
          to address it (a real edit, not a fresh unrelated rewrite) and reworks the render. This
          starts immediately if nothing else is currently rendering; otherwise it queues automatically

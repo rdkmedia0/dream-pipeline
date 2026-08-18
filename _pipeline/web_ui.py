@@ -2944,7 +2944,7 @@ INDEX_HTML = r"""<!doctype html>
 </style></head>
 <body>
 <div class="app-header">
-  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">build 11</span></h1>
+  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">build 12</span></h1>
   <div class="row" style="width:auto">
     <button onclick="openHelp()">&#128214; Help</button>
     <button onclick="openSettings()">&#9881; Settings</button>
@@ -2987,7 +2987,7 @@ function setTheme(name) {
 
 const app = document.getElementById('app');
 const sidebar = document.getElementById('sidebar');
-let state = { project: null, status: null, videos: [] };
+let state = { project: null, status: null, videos: [], reviewMode: false };
 
 async function api(method, path, body) {
   const opts = { method };
@@ -4682,36 +4682,6 @@ function confirmModal(message) {
   });
 }
 
-// Same overlay/card structure as confirmModal, with a free-text input --
-// used by the video-review "Provide feedback" action. Resolves the typed
-// (trimmed) text, or null on Cancel/empty submit/clicking outside.
-function promptModal(message, placeholder) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'mf-confirm-overlay';
-    overlay.innerHTML = `
-      <div class="card mf-confirm-card">
-        <p class="mf-confirm-message">${esc(message)}</p>
-        <textarea id="prompt-modal-input" rows="3" style="width:100%" placeholder="${esc(placeholder || '')}"></textarea>
-        <div class="row row-end" style="margin-top:0.5rem">
-          <button type="button" id="prompt-modal-cancel">Cancel</button>
-          <button type="button" id="prompt-modal-ok" class="btn-primary">Submit</button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    const input = overlay.querySelector('#prompt-modal-input');
-    input.focus();
-    const finish = (result) => { overlay.remove(); resolve(result); };
-    const submit = () => { const v = input.value.trim(); finish(v || null); };
-    overlay.querySelector('#prompt-modal-ok').onclick = submit;
-    overlay.querySelector('#prompt-modal-cancel').onclick = () => finish(null);
-    overlay.onclick = (ev) => { if (ev.target === overlay) finish(null); };
-    input.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) submit();
-    });
-  });
-}
-
 // Used where a destructive action (deleteSlotImage) is about to reload
 // a row from disk, which would silently discard any unsaved edits still
 // sitting in that row's form -- e.g. typing a reworded keyframe prompt
@@ -5056,13 +5026,31 @@ function playAdjacentVideo(dir) {
   else { state.playerHtml = null; renderPlayerCard(); }
 }
 
+// Catches the <video> element's own native fullscreen when
+// controlsList="nofullscreen" isn't honored (Firefox has no such
+// attribute at all) or is bypassed some other way (double-click, a
+// keyboard shortcut). If the browser ever ends up with the raw <video>
+// itself as document.fullscreenElement instead of player-fs-wrap, exit
+// that immediately and enter OUR wrapper instead -- same controls
+// (Prev/Next/Move/Review mode) end up active regardless of which
+// fullscreen button the human actually clicked.
+document.addEventListener('fullscreenchange', () => {
+  const fsEl = document.fullscreenElement;
+  const video = document.querySelector('#player video');
+  if (fsEl && video && fsEl === video) {
+    document.exitFullscreen().then(() => {
+      const wrap = document.getElementById('player-fs-wrap');
+      if (wrap && wrap.requestFullscreen) wrap.requestFullscreen().catch(() => {});
+    }).catch(() => {});
+  }
+});
+
 function renderPlayerCard() {
   const sel = state.selected;
   const manage = sel ? `
     <div class="row" style="margin-top:0.5rem">
       <span class="muted">${sel.location === 'active' ? 'Active' : 'Reviewed'}</span>
       <button data-action="move">${sel.location === 'active' ? '&rarr; Move to Reviewed' : '&rarr; Move to Active'}</button>
-      <button data-action="feedback">Provide feedback</button>
       <button data-action="delete">Delete</button>
     </div>` : '';
   const list = sel ? filteredVideoList() : [];
@@ -5072,21 +5060,31 @@ function renderPlayerCard() {
       <button data-action="fs-prev" ${idx <= 0 ? 'disabled' : ''} title="Previous video">&larr; Prev</button>
       <button data-action="fs-next" ${idx === -1 || idx >= list.length - 1 ? 'disabled' : ''} title="Next video">Next &rarr;</button>
       <span class="fs-spacer"></span>
+      <button data-action="fs-review-toggle" title="${state.reviewMode ? 'Hide the feedback box' : 'Show a feedback box under the video, for this and every video you navigate to next'}">${state.reviewMode ? 'Review mode: on' : 'Review mode'}</button>
       <button data-action="fs-move" title="${sel.location === 'active' ? 'Move to Reviewed' : 'Move to Active'}">${sel.location === 'active' ? '&rarr; Reviewed' : '&rarr; Active'}</button>
       <button data-action="fs-exit" title="Exit fullscreen">Exit fullscreen</button>
     </div>` : '';
-  // Always-expanded feedback textarea, not a button-triggered modal --
-  // confirmModal/promptModal append to document.body, which sits OUTSIDE
-  // the fullscreened element's subtree, so a modal opened from inside
-  // fullscreen would render invisibly (Fullscreen API only paints the
-  // fullscreened element's own subtree). Keeping the input expanded
-  // in-place here means it's visible in fullscreen and ready to use as
-  // the human navigates prev/next, no popup involved either way.
-  const feedbackInline = (sel && state.playerHtml) ? `
-    <div class="row" id="fs-feedback-inline" style="margin-top:0.4rem;align-items:flex-start;gap:0.3rem">
+  // player-fs-wrap (fsControls, this, feedbackBanner) renders identically
+  // whether or not the browser is ACTUALLY in fullscreen -- it's the
+  // same DOM either way, fullscreen just makes that one element fill the
+  // screen -- so this box and the Review mode toggle above are the one
+  // feedback entry point for both the small player and fullscreen, not
+  // two separate things. A button-triggered modal was tried instead of
+  // this inline box; it doesn't work while actually fullscreen
+  // (confirmModal/promptModal append to document.body, outside the
+  // fullscreened element's subtree, so it renders invisibly there -- the
+  // Fullscreen API only paints that subtree), so a modal wasn't viable
+  // even just for the small-player case, since the goal is one
+  // consistent control that behaves the same in both. Only rendered at
+  // all when Review mode is on, instead of a feedback box permanently
+  // eating space for a flow most viewing sessions don't need -- on
+  // persists across Prev/Next so a full review pass doesn't have to
+  // re-enable it per video.
+  const feedbackInline = (sel && state.playerHtml && state.reviewMode) ? `
+    <div class="row" id="fs-feedback-inline" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
       <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical"
                 placeholder="What didn't work about this video? The AI will revise the current story/prompt and re-render it."></textarea>
-      <button data-action="fs-feedback-submit" title="Submit feedback and queue a rework of this video -- starts right away if nothing else is rendering, otherwise queues.">Submit feedback</button>
+      <button data-action="fs-feedback-submit" title="Submit and queue a rework of this video -- starts right away if nothing else is rendering, otherwise queues.">Submit</button>
     </div>` : '';
   // Empty placeholder, filled in by pollFeedbackQueueOnce() -- kept
   // inside player-fs-wrap (not the manage row below) so it's visible
@@ -5332,7 +5330,7 @@ sidebar.addEventListener('click', (ev) => {
     const action = actionBtn.dataset.action;
     if (action === 'move' || action === 'fs-move') moveVideo(state.selected.folder, state.selected.location);
     else if (action === 'delete') deleteVideo(state.selected.folder, state.selected.location);
-    else if (action === 'feedback') submitVideoFeedback();
+    else if (action === 'fs-review-toggle') { state.reviewMode = !state.reviewMode; renderPlayerCard(); }
     else if (action === 'fs-feedback-submit') submitInlineFeedback();
     else if (action === 'fullscreen') {
       const wrap = document.getElementById('player-fs-wrap');
@@ -5364,7 +5362,15 @@ sidebar.addEventListener('input', (ev) => {
 
 function playVideo(folder, location, filename) {
   const src = `/media/${encodeURIComponent(state.project)}/${location}/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}`;
-  state.playerHtml = `<video controls autoplay style="width:100%;border-radius:6px" src="${src}"></video>`;
+  // controlsList="nofullscreen" hides the <video> element's OWN native
+  // fullscreen button (Chrome/Edge honor this; Firefox has no such
+  // attribute and shows it anyway, caught instead by the
+  // 'fullscreenchange' listener near playAdjacentVideo below) -- without
+  // it, that native button fullscreens just the raw <video> tag,
+  // bypassing player-fs-wrap entirely and losing Prev/Next/Move/Review
+  // mode. The app's own "Fullscreen" button (and the redirect below) are
+  // the only paths meant to reach real fullscreen.
+  state.playerHtml = `<video controls autoplay controlsList="nofullscreen" style="width:100%;border-radius:6px" src="${src}"></video>`;
   renderPlayerCard();
 }
 
@@ -5394,32 +5400,13 @@ async function deleteVideo(folder, location) {
 
 // "Provide feedback" -- resolves the row's number the same way
 // deleteVideo does (state.selected only carries folder/location, not
-// number), then queues a rewrite-guided-by-feedback + rework via
-// /api/manage/submit-feedback (see h_submit_feedback, web_ui.py). Starts
-// immediately if nothing else is rendering, otherwise queues -- either
-// way the human keeps reviewing while it runs in the background
-// (pollFeedbackQueueOnce below).
-async function submitVideoFeedback() {
-  const sel = state.selected;
-  if (!sel) return;
-  const v = (state.videos || []).find(x => x.folder === sel.folder && x.location === sel.location);
-  if (!v || v.number == null) {
-    alert('This folder name doesn\'t match the expected "<label> #<number> <title>" pattern, so it has no number to give feedback against.');
-    return;
-  }
-  const note = await promptModal(
-    `What didn't work about #${v.number}? The AI will revise the current story/prompt based ` +
-    `on this and re-render it -- starts right away if nothing else is rendering, otherwise queues.`,
-    "e.g. the melon joke didn't land, pacing too slow, wrong voice...");
-  if (!note) return;
-  await postVideoFeedback(v.number, note);
-}
-
-// Fullscreen counterpart of submitVideoFeedback -- reads the always-
-// expanded #fs-feedback-input textarea instead of opening promptModal,
-// since a modal (appended to document.body) would render outside the
-// fullscreened element's subtree and be invisible while fullscreen (see
-// feedbackInline's comment in renderPlayerCard).
+// number), reads Review mode's #fs-feedback-input textarea (see
+// feedbackInline's comment in renderPlayerCard for why this is an inline
+// box rather than a popup), then queues a rewrite-guided-by-feedback +
+// rework via /api/manage/submit-feedback (see h_submit_feedback,
+// web_ui.py). Starts immediately if nothing else is rendering, otherwise
+// queues -- either way the human keeps reviewing while it runs in the
+// background (pollFeedbackQueueOnce below).
 async function submitInlineFeedback() {
   const sel = state.selected;
   if (!sel) return;
