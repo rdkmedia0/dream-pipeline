@@ -1,11 +1,36 @@
 # Dream Pipeline
 
-Local, single-user AI video pipeline. Generates short animal/dream-themed
-video shorts (script → keyframes → video clip → optional YouTube upload)
-using local Ollama + ComfyUI plus the Gemini API, driven through a local
-web GUI. No auth — the trust model is "one user, reached only from
-`127.0.0.1` or a private Docker network," never exposed to the open
-internet.
+Local, single-user AI video pipeline. Generates short-form videos on
+whatever subject you give it (script → keyframes → video clip → optional
+YouTube upload) using local Ollama + ComfyUI plus the Gemini API, driven
+through a local web GUI. No auth — the trust model is "one user, reached
+only from `127.0.0.1` or a private Docker network," never exposed to the
+open internet.
+
+## Features
+
+**Manage table** — edit every video's title, premise, prompts, tags, and
+reference images in one grid. Bulk-select rows for AI content generation
+or rendering, with per-row status at a glance.
+
+![Manage table](docs/screenshots/manage-table.png)
+
+**Creative Content Editor** — per-project genre, visual style, duration/
+resolution, and the actual prompt template sent to the AI — not tied to
+any particular subject or theme.
+
+![Creative Content Editor](docs/screenshots/creative-editor.png)
+
+**YouTube upload & scheduling** — connect a channel, set a publish
+template (privacy, tags, schedule cadence), and let the pipeline handle
+timed releases.
+
+![Upload to YouTube](docs/screenshots/upload-youtube.png)
+
+**Settings** — live connection status for Ollama, ComfyUI, and Gemini,
+with inline diagnostics for whatever's misconfigured.
+
+![Settings](docs/screenshots/settings.png)
 
 ## Quick start (Docker — recommended)
 
