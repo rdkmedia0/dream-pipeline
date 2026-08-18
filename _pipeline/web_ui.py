@@ -56,6 +56,22 @@ import dream_step as ds
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 
+# Video-review "Provide feedback" queue -- a separate, deliberately
+# simple lane from JOBS above. Only serializes against ITSELF (one
+# feedback-driven rework at a time, in submission order); a manual
+# Manage-table render is never blocked by this queue. The one thing
+# this DOES guard against is starting a feedback rework while ANYTHING
+# else (including a manual render) is already using ComfyUI/the AI
+# backend -- see _any_other_job_active -- since two concurrent renders
+# have no serialization anywhere in this app and real VRAM/ComfyUI-queue
+# contention risk is the whole reason this queue exists in the first
+# place, not just ordering feedback items nicely.
+FEEDBACK_QUEUE = []  # [{"project": str, "number": int, "note": str}, ...]
+FEEDBACK_QUEUE_LOCK = threading.Lock()
+FEEDBACK_WORKER_RUNNING = False
+FEEDBACK_STATUS = {"current": None, "queue_length": 0, "last_result": None}
+FEEDBACK_STATUS_LOCK = threading.Lock()
+
 # In-memory cache of the credentials from the last successful
 # client_secret authorization (Settings' Save/Reauthorize action) --
 # an in-process speedup only; the actual persistence is the encrypted
@@ -253,6 +269,106 @@ def _start_job(project, kind, numbers, fn, *args, job_id=None, **kwargs):
     t = threading.Thread(target=_run_job, args=(job_id, fn) + args, kwargs=kwargs, daemon=True)
     t.start()
     return job_id
+
+
+def _any_other_job_active():
+    """True if any Manage-table render/rework job is currently
+    queued/running -- checked before firing each queued feedback item
+    so the feedback worker never starts a second ComfyUI/AI call
+    alongside one already in flight. One-directional: a manual render
+    never waits on the feedback queue, only the feedback queue waits on
+    it, so nothing about the existing render path needs to change."""
+    with JOBS_LOCK:
+        return any(j.get("status") in ("queued", "running") for j in JOBS.values())
+
+
+def _run_feedback_queue():
+    """Background worker, started once when the first feedback item is
+    submitted and exits once the queue drains (a fresh submission
+    restarts it). Processes exactly one item at a time, in submission
+    order: rewrites the spec via write_row_spec(show_existing_for_note=
+    True) -- a real revision informed by the current content, not a
+    blind rewrite (see that function's own docstring) -- then renders
+    through the exact same _start_job/with_vram_guard/do_rework path a
+    manual Manage-table rework uses, and blocks on that job's own
+    completion before moving to the next queued item."""
+    global FEEDBACK_WORKER_RUNNING
+    while True:
+        with FEEDBACK_QUEUE_LOCK:
+            if not FEEDBACK_QUEUE:
+                FEEDBACK_WORKER_RUNNING = False
+                return
+            item = FEEDBACK_QUEUE.pop(0)
+            with FEEDBACK_STATUS_LOCK:
+                FEEDBACK_STATUS["queue_length"] = len(FEEDBACK_QUEUE)
+        while _any_other_job_active():
+            time.sleep(2)
+        with FEEDBACK_STATUS_LOCK:
+            FEEDBACK_STATUS["current"] = {"number": item["number"], "note": item["note"]}
+        error = None
+        try:
+            ds.resolve_project_globals(item["project"])
+            spec_path = ds.DATA_DIR / f"spec_{item['number']:03d}.json"
+            if not spec_path.exists():
+                raise SystemExit(f"#{item['number']}: no spec on disk -- nothing to give feedback on.")
+            existing = json.loads(spec_path.read_text(encoding="utf-8"))
+            workflow = existing.get("workflow", "fp8_t2v")
+            fields = {k: existing.get(k, "") for k in ds.ROW_SPEC_FIELDS}
+            ds.write_row_spec(item["number"], workflow, fields, item["note"],
+                               show_existing_for_note=True)
+        except SystemExit as e:
+            error = str(e)
+        if error is None:
+            job_id = _start_job(item["project"], "feedback-rework", [item["number"]],
+                                 ds.with_vram_guard, ds.do_rework, [item["number"]],
+                                 randomize_seeds=False, type_arg=None, verbose=False, cancel_check=None)
+            while True:
+                with JOBS_LOCK:
+                    status = JOBS.get(job_id, {}).get("status")
+                    job_error = JOBS.get(job_id, {}).get("error")
+                if status not in ("queued", "running"):
+                    if status == "failed":
+                        error = job_error or "render failed -- see job log"
+                    break
+                time.sleep(2)
+        with FEEDBACK_STATUS_LOCK:
+            FEEDBACK_STATUS["last_result"] = {"number": item["number"], "ok": error is None, "detail": error}
+            FEEDBACK_STATUS["current"] = None
+
+
+def h_submit_feedback(qs, body):
+    """The video-review player's "Provide feedback" action -- queues one
+    rewrite-then-rework, starting immediately if the feedback worker
+    isn't already busy (see _run_feedback_queue), or joining the line
+    behind whatever's ahead of it otherwise."""
+    project = _project_from_body(body)
+    number = int(body["number"])
+    note = (body.get("note") or "").strip()
+    if not note:
+        raise ValueError("feedback text is required")
+    global FEEDBACK_WORKER_RUNNING
+    with FEEDBACK_QUEUE_LOCK:
+        FEEDBACK_QUEUE.append({"project": project, "number": number, "note": note})
+        position = len(FEEDBACK_QUEUE)
+        start_worker = not FEEDBACK_WORKER_RUNNING
+        if start_worker:
+            FEEDBACK_WORKER_RUNNING = True
+    # Update the status snapshot immediately, not just when the worker
+    # next pops an item -- otherwise a freshly-submitted item sits in
+    # FEEDBACK_QUEUE for however long the current one takes while the
+    # status endpoint still reports the queue as empty.
+    with FEEDBACK_STATUS_LOCK:
+        FEEDBACK_STATUS["queue_length"] = position
+    if start_worker:
+        threading.Thread(target=_run_feedback_queue, daemon=True).start()
+    return {"ok": True, "queued_position": position}
+
+
+def h_feedback_queue_status(qs, body):
+    """Polled by the player's status banner while a feedback rework is
+    queued/running -- pure read, no side effects."""
+    with FEEDBACK_STATUS_LOCK:
+        return dict(FEEDBACK_STATUS)
 
 
 def h_cancel_job(qs, body, job_id):
@@ -1908,6 +2024,8 @@ ROUTES = {
     ("GET", "/api/concepts/trend-availability"): h_concepts_trend_availability,
     ("POST", "/api/generate"): lambda qs, body: h_generate_or_rework(qs, body, False),
     ("POST", "/api/rework"): lambda qs, body: h_generate_or_rework(qs, body, True),
+    ("POST", "/api/manage/submit-feedback"): h_submit_feedback,
+    ("GET", "/api/manage/feedback-queue-status"): h_feedback_queue_status,
     ("GET", "/api/active-jobs"): h_active_jobs,
     ("POST", "/api/upload"): h_upload,
     ("GET", "/api/videos"): h_videos,
@@ -4545,6 +4663,36 @@ function confirmModal(message) {
   });
 }
 
+// Same overlay/card structure as confirmModal, with a free-text input --
+// used by the video-review "Provide feedback" action. Resolves the typed
+// (trimmed) text, or null on Cancel/empty submit/clicking outside.
+function promptModal(message, placeholder) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'mf-confirm-overlay';
+    overlay.innerHTML = `
+      <div class="card mf-confirm-card">
+        <p class="mf-confirm-message">${esc(message)}</p>
+        <textarea id="prompt-modal-input" rows="3" style="width:100%" placeholder="${esc(placeholder || '')}"></textarea>
+        <div class="row row-end" style="margin-top:0.5rem">
+          <button type="button" id="prompt-modal-cancel">Cancel</button>
+          <button type="button" id="prompt-modal-ok" class="btn-primary">Submit</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('#prompt-modal-input');
+    input.focus();
+    const finish = (result) => { overlay.remove(); resolve(result); };
+    const submit = () => { const v = input.value.trim(); finish(v || null); };
+    overlay.querySelector('#prompt-modal-ok').onclick = submit;
+    overlay.querySelector('#prompt-modal-cancel').onclick = () => finish(null);
+    overlay.onclick = (ev) => { if (ev.target === overlay) finish(null); };
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) submit();
+    });
+  });
+}
+
 // Used where a destructive action (deleteSlotImage) is about to reload
 // a row from disk, which would silently discard any unsaved edits still
 // sitting in that row's form -- e.g. typing a reworded keyframe prompt
@@ -4895,6 +5043,7 @@ function renderPlayerCard() {
     <div class="row" style="margin-top:0.5rem">
       <span class="muted">${sel.location === 'active' ? 'Active' : 'Reviewed'}</span>
       <button data-action="move">${sel.location === 'active' ? '&rarr; Move to Reviewed' : '&rarr; Move to Active'}</button>
+      <button data-action="feedback">Provide feedback</button>
       <button data-action="delete">Delete</button>
     </div>` : '';
   const list = sel ? filteredVideoList() : [];
@@ -4904,9 +5053,14 @@ function renderPlayerCard() {
       <button data-action="fs-prev" ${idx <= 0 ? 'disabled' : ''} title="Previous video">&larr; Prev</button>
       <button data-action="fs-next" ${idx === -1 || idx >= list.length - 1 ? 'disabled' : ''} title="Next video">Next &rarr;</button>
       <span class="fs-spacer"></span>
+      <button data-action="fs-feedback" title="Give feedback and regenerate this video">Feedback&hellip;</button>
       <button data-action="fs-move" title="${sel.location === 'active' ? 'Move to Reviewed' : 'Move to Active'}">${sel.location === 'active' ? '&rarr; Reviewed' : '&rarr; Active'}</button>
       <button data-action="fs-exit" title="Exit fullscreen">Exit fullscreen</button>
     </div>` : '';
+  // Empty placeholder, filled in by pollFeedbackQueueOnce() -- kept
+  // inside player-fs-wrap (not the manage row below) so it's visible
+  // during fullscreen too, same reasoning as fsControls itself.
+  const feedbackBanner = '<div id="feedback-queue-banner" class="muted" style="font-size:0.85em;margin-top:0.3rem"></div>';
 
   // Replacing player-fs-wrap's own innerHTML (or its parent's, which
   // destroys and recreates this exact node) immediately exits
@@ -4926,6 +5080,7 @@ function renderPlayerCard() {
     const controls = wrap.querySelector('.player-fs-controls');
     if (controls) controls.outerHTML = fsControls || '';
     else if (fsControls) wrap.insertAdjacentHTML('beforeend', fsControls);
+    if (!wrap.querySelector('#feedback-queue-banner')) wrap.insertAdjacentHTML('beforeend', feedbackBanner);
     return;
   }
 
@@ -4936,8 +5091,10 @@ function renderPlayerCard() {
     <div class="player-fs-wrap" id="player-fs-wrap">
       <div id="player">${state.playerHtml || '<div class="muted">select a video below to play</div>'}</div>
       ${fsControls}
+      ${feedbackBanner}
     </div>
     ${manage}`;
+  pollFeedbackQueueOnce();
 }
 
 // Tabbed Active/Reviewed list in a fixed-height scroll region with a
@@ -5140,6 +5297,7 @@ sidebar.addEventListener('click', (ev) => {
     const action = actionBtn.dataset.action;
     if (action === 'move' || action === 'fs-move') moveVideo(state.selected.folder, state.selected.location);
     else if (action === 'delete') deleteVideo(state.selected.folder, state.selected.location);
+    else if (action === 'feedback' || action === 'fs-feedback') submitVideoFeedback();
     else if (action === 'fullscreen') {
       const wrap = document.getElementById('player-fs-wrap');
       if (wrap && wrap.requestFullscreen) wrap.requestFullscreen().catch(() => {});
@@ -5196,6 +5354,97 @@ async function deleteVideo(folder, location) {
     state.playerHtml = null;
     renderSidebar();
   } catch (e) { alert(e.message); }
+}
+
+// "Provide feedback" -- resolves the row's number the same way
+// deleteVideo does (state.selected only carries folder/location, not
+// number), then queues a rewrite-guided-by-feedback + rework via
+// /api/manage/submit-feedback (see h_submit_feedback, web_ui.py). Starts
+// immediately if nothing else is rendering, otherwise queues -- either
+// way the human keeps reviewing while it runs in the background
+// (pollFeedbackQueueOnce below).
+async function submitVideoFeedback() {
+  const sel = state.selected;
+  if (!sel) return;
+  const v = (state.videos || []).find(x => x.folder === sel.folder && x.location === sel.location);
+  if (!v || v.number == null) {
+    alert('This folder name doesn\'t match the expected "<label> #<number> <title>" pattern, so it has no number to give feedback against.');
+    return;
+  }
+  const note = await promptModal(
+    `What didn't work about #${v.number}? The AI will revise the current story/prompt based ` +
+    `on this and re-render it -- starts right away if nothing else is rendering, otherwise queues.`,
+    "e.g. the melon joke didn't land, pacing too slow, wrong voice...");
+  if (!note) return;
+  try {
+    const result = await api('POST', '/api/manage/submit-feedback', { project: state.project, number: v.number, note });
+    const banner = document.getElementById('feedback-queue-banner');
+    if (banner) banner.textContent = result.queued_position <= 1
+      ? `Feedback for #${v.number}: starting now...`
+      : `Feedback for #${v.number}: queued (${result.queued_position - 1} ahead)...`;
+    startFeedbackPolling();
+  } catch (e) { alert(e.message); }
+}
+
+let feedbackPollTimer = null;
+let feedbackLastResultSeen = null;
+
+function startFeedbackPolling() {
+  if (feedbackPollTimer) return;
+  feedbackPollTimer = setInterval(pollFeedbackQueueOnce, 3000);
+}
+
+// Polls the feedback queue's status (see h_feedback_queue_status) and
+// keeps the player card's banner current -- this is what lets a human
+// keep reviewing OTHER videos while a feedback rework runs in the
+// background, instead of the review flow blocking on it. When a queued
+// item finishes, refreshes the video list (a completed rework changes
+// the file on disk either way), and if the human is still looking at
+// the video that just finished, reloads the player so they see the new
+// render without a manual reload.
+async function pollFeedbackQueueOnce() {
+  let status;
+  try { status = await api('GET', '/api/manage/feedback-queue-status'); }
+  catch (e) { return; }
+  const banner = document.getElementById('feedback-queue-banner');
+  if (banner) {
+    if (status.current) {
+      banner.textContent = `Reworking #${status.current.number} from feedback` +
+        (status.queue_length ? ` (${status.queue_length} more queued)...` : '...');
+    } else if (status.queue_length) {
+      banner.textContent = `${status.queue_length} feedback item(s) queued...`;
+    } else {
+      banner.textContent = '';
+    }
+  }
+  const resultChanged = status.last_result &&
+    JSON.stringify(status.last_result) !== JSON.stringify(feedbackLastResultSeen);
+  if (resultChanged) {
+    feedbackLastResultSeen = status.last_result;
+    if (!status.last_result.ok) {
+      alert(`Feedback rework for #${status.last_result.number} failed: ${status.last_result.detail || 'see server log'}`);
+    }
+    try {
+      const data = await api('GET', `/api/videos?project=${encodeURIComponent(state.project)}`);
+      state.videos = data.videos;
+      const sel = state.selected;
+      const selVid = sel ? state.videos.find(x => x.folder === sel.folder && x.location === sel.location) : null;
+      if (selVid && selVid.number === status.last_result.number && selVid.video_file) {
+        playVideo(selVid.folder, selVid.location, selVid.video_file);
+      }
+      renderListCard();
+    } catch (e) { /* best-effort refresh */ }
+  }
+  if (!status.current && !status.queue_length && feedbackPollTimer) {
+    clearInterval(feedbackPollTimer);
+    feedbackPollTimer = null;
+  } else if ((status.current || status.queue_length) && !feedbackPollTimer) {
+    // Discovered an already-active queue (e.g. this call came from a
+    // fresh page load/project switch, not from just having submitted
+    // something) -- pick up the recurring poll rather than only ever
+    // checking once.
+    startFeedbackPolling();
+  }
 }
 
 const VIEWS = [

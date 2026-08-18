@@ -1635,7 +1635,7 @@ def _spec_trend_clause(trend_context):
     )
 
 
-def build_row_spec_payload(number, locked_fields, note, workflow):
+def build_row_spec_payload(number, locked_fields, note, workflow, show_existing_for_note=False):
     """Field-level variant of build_spec_request_payload for the web UI's
     manage table: instead of an all-or-nothing "note vs existing content"
     choice, the caller already knows exactly which fields the human typed
@@ -1650,7 +1650,18 @@ def build_row_spec_payload(number, locked_fields, note, workflow):
     spec_trend_mode_enabled is on and this project has analytics data --
     see _quiet_spec_trend_context. Off by default, and framed strictly as
     style signal, never allowed to override the concept -- see
-    _spec_trend_clause."""
+    _spec_trend_clause.
+
+    show_existing_for_note: off by default, since the Manage table's own
+    "AI direction" note field is deliberately a blind rewrite -- a note
+    given with nothing locked means the model never sees the row's
+    current content at all, just the note + creative_guidance. That's
+    wrong for a targeted revision (e.g. video-review feedback like "the
+    joke didn't land"), which needs the model to see what's there to
+    actually fix it -- when True, the row's current on-disk content
+    (for whatever fields aren't already locked) is shown as
+    payload["existing_content"], with an instruction to revise it per
+    the note rather than invent something unrelated."""
     schema_hint = {k: v for k, v in SPEC_SCHEMA_HINT.items()
                    if k not in CODE_OWNED_SPEC_FIELDS and k not in locked_fields}
     if using_strong_creative_backend() and "positive_prompt" in schema_hint:
@@ -1687,6 +1698,22 @@ def build_row_spec_payload(number, locked_fields, note, workflow):
     trend_context = _quiet_spec_trend_context()
     trend_clause = _spec_trend_clause(trend_context)
 
+    existing_content = None
+    if show_existing_for_note and note:
+        spec_path = DATA_DIR / f"spec_{number:03d}.json"
+        if spec_path.exists():
+            existing = json.loads(spec_path.read_text(encoding="utf-8"))
+            existing_content = {k: existing.get(k) for k in schema_hint if existing.get(k)} or None
+    revision_clause = (
+        f" existing_content shows what this row currently has for the fields you're "
+        f"being asked to write. The human's note above is FEEDBACK on that content -- "
+        f"what didn't work. REVISE existing_content accordingly: keep whatever the "
+        f"note doesn't call out as a problem, change what it does. This is a targeted "
+        f"fix, not a fresh unrelated idea -- stay recognizably the same story/subject "
+        f"unless the note itself explicitly asks for something completely different."
+        if existing_content else ""
+    )
+
     payload = {
         "workflow": workflow,
         "human_direction": note,
@@ -1695,11 +1722,12 @@ def build_row_spec_payload(number, locked_fields, note, workflow):
         "recent_titles_for_dedup": recent_titles_for_dedup(),
         "reviewed_examples": reviewed_examples or None,
         "trend_context": trend_context,
+        "existing_content": existing_content,
         "schema_hint": schema_hint,
     }
     if strong_backend:
         payload["instructions"] = lean_spec_instructions(
-            note, concept_entry, reviewed_examples, locked_fields=locked_fields) + trend_clause
+            note, concept_entry, reviewed_examples, locked_fields=locked_fields) + trend_clause + revision_clause
         return payload
 
     payload["creative_guidance"] = creative_guidance_pointer()
@@ -1721,11 +1749,12 @@ def build_row_spec_payload(number, locked_fields, note, workflow):
            f"reviewed_examples is empty -- nothing approved yet for this channel. ") +
         f"Follow creative_guidance."
         + trend_clause
+        + revision_clause
     )
     return payload
 
 
-def write_row_spec(number, workflow, fields, note, verbose=False):
+def write_row_spec(number, workflow, fields, note, verbose=False, show_existing_for_note=False):
     """One manage-table row's spec write -- fields is every editable base
     field as currently shown in the table (blank string for "not filled
     in"). Non-blank fields are locked verbatim; blank ones are always
@@ -1740,7 +1769,13 @@ def write_row_spec(number, workflow, fields, note, verbose=False):
     via its own per-slot weight input) the instant "Save content" ran for
     any other reason. Starting from the existing on-disk spec and
     layering locked fields + code_owned on top preserves anything this
-    function doesn't itself know or care about."""
+    function doesn't itself know or care about.
+
+    show_existing_for_note: see build_row_spec_payload's own docstring --
+    off by default (the Manage table's own note field stays a blind
+    rewrite); set True by the video-review feedback flow, where the
+    model needs to see and revise the current content, not invent
+    something unrelated."""
     spec_path = DATA_DIR / f"spec_{number:03d}.json"
     existing_on_disk = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.exists() else {}
     naive_locked_fields = {k: v for k, v in fields.items() if k in ROW_SPEC_FIELDS and (v or "").strip()}
@@ -1757,7 +1792,8 @@ def write_row_spec(number, workflow, fields, note, verbose=False):
     else:
         locked_fields = naive_locked_fields
 
-    payload = build_row_spec_payload(number, locked_fields, note, workflow)
+    payload = build_row_spec_payload(number, locked_fields, note, workflow,
+                                      show_existing_for_note=show_existing_for_note)
     if payload is None:
         spec = dict(existing_on_disk)
         spec.update(locked_fields)
@@ -1771,12 +1807,14 @@ def write_row_spec(number, workflow, fields, note, verbose=False):
         do_write_spec(number, json.dumps(spec), positive_prompt_is_human=True)
         return
     # The new minimal template (build_simple_spec_prompt) always asks for
-    # every base field at once -- no mechanism to hold some locked -- so
-    # it only replaces the old JSON-context prompt when nothing's locked
-    # (a genuine full write/regen), the common case this was tested
-    # against. A partial edit (some fields human-typed, others blank)
-    # still needs the old payload, which DOES support that.
-    if using_strong_creative_backend() and not locked_fields:
+    # every base field at once -- no mechanism to hold some locked, and no
+    # mechanism to show existing content to revise -- so it only replaces
+    # the old JSON-context prompt when nothing's locked AND this isn't a
+    # feedback-driven revision (the common case this was tested against).
+    # A partial edit (some fields human-typed, others blank), or a
+    # feedback revision (which needs existing_content in the payload),
+    # still needs the JSON-context payload path, which DOES support both.
+    if using_strong_creative_backend() and not locked_fields and not show_existing_for_note:
         prompt = build_simple_spec_prompt(number, note, workflow, title_locked="title" in locked_fields)
     else:
         prompt = _render_creative_prompt(payload)
