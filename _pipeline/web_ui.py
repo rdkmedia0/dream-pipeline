@@ -2556,6 +2556,28 @@ INDEX_HTML = r"""<!doctype html>
   .player-fs-controls button:hover { background: rgba(0,0,0,0.85); }
   .player-fs-controls button:disabled { opacity: 0.4; cursor: default; }
   .player-fs-controls .fs-spacer { flex: 1 1 auto; }
+  /* Same top-bar pattern as .player-fs-controls, pinned to the BOTTOM
+     instead -- without position:absolute this box was a plain sibling
+     of the centered <video> inside player-fs-wrap's flex row, so it
+     landed to the video's right instead of under it. display:none
+     outside :fullscreen for the same reason as .player-fs-controls: it
+     only makes sense as an overlay ON the fullscreen video, not as a
+     plain white row wedged into the small player card. */
+  .player-fs-feedback {
+    display: none; position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 0.6rem; gap: 0.5rem; z-index: 5;
+    background: linear-gradient(transparent, rgba(0,0,0,0.75));
+  }
+  .player-fs-wrap:fullscreen .player-fs-feedback { display: flex; }
+  .player-fs-feedback textarea {
+    background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
+    border-radius: var(--radius-sm); padding: 0.4rem 0.5rem;
+  }
+  .player-fs-feedback textarea::placeholder { color: rgba(255,255,255,0.65); }
+  .player-fs-feedback button {
+    background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
+  }
+  .player-fs-feedback button:hover { background: rgba(0,0,0,0.85); }
   .sidebar-list-card { flex: 1 1 auto; min-height: 220px; display: flex; flex-direction: column; overflow: hidden; }
   .video-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: 0.5rem; }
   @media (max-width: 900px) { .sidebar-list-card { flex: 1 1 auto; overflow: visible; min-height: 0; } .video-list { max-height: 55vh; } }
@@ -2832,9 +2854,16 @@ INDEX_HTML = r"""<!doctype html>
   /* Row hover normally comes from the row's own background (tr:hover),
      but a cell's OWN background (needed above, to stay opaque while
      other cells scroll underneath it) always paints over that -- these
-     two columns would otherwise never visibly highlight on hover. */
+     two columns would otherwise never visibly highlight on hover.
+     var(--accent-soft) itself is translucent (e.g. #4a90e21f, ~12%
+     alpha) -- fine as an overlay tint on a normal cell, but on a STICKY
+     cell it let whatever's scrolled underneath show straight through,
+     defeating the whole point of td:nth-child(1)/(2)'s opaque
+     background above. color-mix here bakes the same tint onto the
+     card's own opaque background instead of layering a see-through one
+     on top. */
   .manage-table tbody tr:hover td:nth-child(1),
-  .manage-table tbody tr:hover td:nth-child(2) { background: var(--accent-soft); }
+  .manage-table tbody tr:hover td:nth-child(2) { background: color-mix(in srgb, var(--accent) 12%, var(--card-bg)); }
   /* Filters live inside the header cell itself, under the label -- Excel-
      style, instead of a separate filter row (which left the header row's
      own empty space unused and needed its own sticky-offset math). */
@@ -2853,7 +2882,11 @@ INDEX_HTML = r"""<!doctype html>
   .mf-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; opacity: 1; }
   .manage-table input, .manage-table select { width: 100%; margin: 0; box-sizing: border-box; }
   .manage-table col.mf-col-select { width: 2.2rem; }
-  .manage-table col.mf-col-num { width: 4.5rem; }
+  /* 4.5rem clipped the "rendered"/"uploaded" status badges below the row
+     number -- .badge's own pill padding plus white-space:nowrap made
+     them wider than that, and the cell's overflow:hidden cut off their
+     trailing edge. 6rem is enough for the widest of those labels. */
+  .manage-table col.mf-col-num { width: 6rem; }
   .manage-table col.mf-col-narrow { width: 8rem; }
   .manage-table col.mf-col-wide { width: 13rem; }
   .manage-table col.mf-col-type { width: 12rem; }
@@ -2944,7 +2977,7 @@ INDEX_HTML = r"""<!doctype html>
 </style></head>
 <body>
 <div class="app-header">
-  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">build 12</span></h1>
+  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">v1.01</span></h1>
   <div class="row" style="width:auto">
     <button onclick="openHelp()">&#128214; Help</button>
     <button onclick="openSettings()">&#9881; Settings</button>
@@ -4682,6 +4715,42 @@ function confirmModal(message) {
   });
 }
 
+// Same overlay/card structure as confirmModal, with a free-text input --
+// used by the small (non-fullscreen) player's "Provide feedback" action.
+// Fullscreen has its OWN feedback path (the Review mode toggle + inline
+// box, see buildFsOverlayHtml) rather than this, since a modal appended
+// to document.body renders outside the fullscreened element's subtree
+// and would be invisible while actually fullscreen -- not a concern
+// here, since this is only ever opened from the small player. Resolves
+// the typed (trimmed) text, or null on Cancel/empty submit/clicking
+// outside.
+function promptModal(message, placeholder) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'mf-confirm-overlay';
+    overlay.innerHTML = `
+      <div class="card mf-confirm-card">
+        <p class="mf-confirm-message">${esc(message)}</p>
+        <textarea id="prompt-modal-input" rows="3" style="width:100%" placeholder="${esc(placeholder || '')}"></textarea>
+        <div class="row row-end" style="margin-top:0.5rem">
+          <button type="button" id="prompt-modal-cancel">Cancel</button>
+          <button type="button" id="prompt-modal-ok" class="btn-primary">Submit</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('#prompt-modal-input');
+    input.focus();
+    const finish = (result) => { overlay.remove(); resolve(result); };
+    const submit = () => { const v = input.value.trim(); finish(v || null); };
+    overlay.querySelector('#prompt-modal-ok').onclick = submit;
+    overlay.querySelector('#prompt-modal-cancel').onclick = () => finish(null);
+    overlay.onclick = (ev) => { if (ev.target === overlay) finish(null); };
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) submit();
+    });
+  });
+}
+
 // Used where a destructive action (deleteSlotImage) is about to reload
 // a row from disk, which would silently discard any unsaved edits still
 // sitting in that row's form -- e.g. typing a reworded keyframe prompt
@@ -5045,14 +5114,15 @@ document.addEventListener('fullscreenchange', () => {
   }
 });
 
-function renderPlayerCard() {
+// fsControls/feedbackInline/feedbackBanner html, shared by renderPlayerCard
+// (full render, and its in-place-during-fullscreen branch) and
+// updateFsOverlay (the lightweight path used when only these overlay
+// elements changed -- e.g. toggling Review mode -- and the video itself
+// must NOT be touched, or the browser restarts/rebuffers it from
+// scratch). Kept as its own function purely so those two callers can't
+// drift out of sync with each other.
+function buildFsOverlayHtml() {
   const sel = state.selected;
-  const manage = sel ? `
-    <div class="row" style="margin-top:0.5rem">
-      <span class="muted">${sel.location === 'active' ? 'Active' : 'Reviewed'}</span>
-      <button data-action="move">${sel.location === 'active' ? '&rarr; Move to Reviewed' : '&rarr; Move to Active'}</button>
-      <button data-action="delete">Delete</button>
-    </div>` : '';
   const list = sel ? filteredVideoList() : [];
   const idx = sel ? list.findIndex(v => v.folder === sel.folder && v.location === sel.location) : -1;
   const fsControls = (sel && state.playerHtml) ? `
@@ -5064,24 +5134,19 @@ function renderPlayerCard() {
       <button data-action="fs-move" title="${sel.location === 'active' ? 'Move to Reviewed' : 'Move to Active'}">${sel.location === 'active' ? '&rarr; Reviewed' : '&rarr; Active'}</button>
       <button data-action="fs-exit" title="Exit fullscreen">Exit fullscreen</button>
     </div>` : '';
-  // player-fs-wrap (fsControls, this, feedbackBanner) renders identically
-  // whether or not the browser is ACTUALLY in fullscreen -- it's the
-  // same DOM either way, fullscreen just makes that one element fill the
-  // screen -- so this box and the Review mode toggle above are the one
-  // feedback entry point for both the small player and fullscreen, not
-  // two separate things. A button-triggered modal was tried instead of
-  // this inline box; it doesn't work while actually fullscreen
-  // (confirmModal/promptModal append to document.body, outside the
-  // fullscreened element's subtree, so it renders invisibly there -- the
-  // Fullscreen API only paints that subtree), so a modal wasn't viable
-  // even just for the small-player case, since the goal is one
-  // consistent control that behaves the same in both. Only rendered at
-  // all when Review mode is on, instead of a feedback box permanently
-  // eating space for a flow most viewing sessions don't need -- on
-  // persists across Prev/Next so a full review pass doesn't have to
-  // re-enable it per video.
+  // .player-fs-feedback (CSS) pins this to the bottom of the fullscreen
+  // video, matching .player-fs-controls' top bar -- and like that bar,
+  // only ever actually visible via the :fullscreen selector, so this is
+  // fullscreen's OWN feedback path, separate from the small player's
+  // "Provide feedback" popup (a modal works fine there; it only breaks
+  // inside real fullscreen, since confirmModal/promptModal append to
+  // document.body, outside the fullscreened element's subtree, where the
+  // Fullscreen API won't paint it). Only rendered when Review mode is
+  // on, instead of permanently eating space in fullscreen for a flow
+  // most viewing sessions don't need -- on persists across Prev/Next so
+  // a review pass doesn't have to re-enable it per video.
   const feedbackInline = (sel && state.playerHtml && state.reviewMode) ? `
-    <div class="row" id="fs-feedback-inline" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
+    <div class="player-fs-feedback" id="fs-feedback-inline">
       <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical"
                 placeholder="What didn't work about this video? The AI will revise the current story/prompt and re-render it."></textarea>
       <button data-action="fs-feedback-submit" title="Submit and queue a rework of this video -- starts right away if nothing else is rendering, otherwise queues.">Submit</button>
@@ -5090,6 +5155,39 @@ function renderPlayerCard() {
   // inside player-fs-wrap (not the manage row below) so it's visible
   // during fullscreen too, same reasoning as fsControls itself.
   const feedbackBanner = '<div id="feedback-queue-banner" class="muted" style="font-size:0.85em;margin-top:0.3rem"></div>';
+  return { fsControls, feedbackInline, feedbackBanner };
+}
+
+// Patches ONLY the overlay elements (controls bar, feedback box, status
+// banner) inside player-fs-wrap, in place -- never touches #player, so
+// the <video> element is never recreated and playback isn't interrupted.
+// Used for changes that don't involve a different video, like toggling
+// Review mode; renderPlayerCard's own in-place-fullscreen branch
+// (below) additionally updates #player for the cases where the video
+// itself DID change (Prev/Next).
+function updateFsOverlay() {
+  const wrap = document.getElementById('player-fs-wrap');
+  if (!wrap) return;
+  const { fsControls, feedbackInline, feedbackBanner } = buildFsOverlayHtml();
+  const controls = wrap.querySelector('.player-fs-controls');
+  if (controls) controls.outerHTML = fsControls || '';
+  else if (fsControls) wrap.insertAdjacentHTML('beforeend', fsControls);
+  const inline = wrap.querySelector('#fs-feedback-inline');
+  if (inline) inline.outerHTML = feedbackInline || '';
+  else if (feedbackInline) wrap.insertAdjacentHTML('beforeend', feedbackInline);
+  if (!wrap.querySelector('#feedback-queue-banner')) wrap.insertAdjacentHTML('beforeend', feedbackBanner);
+}
+
+function renderPlayerCard() {
+  const sel = state.selected;
+  const manage = sel ? `
+    <div class="row" style="margin-top:0.5rem">
+      <span class="muted">${sel.location === 'active' ? 'Active' : 'Reviewed'}</span>
+      <button data-action="move">${sel.location === 'active' ? '&rarr; Move to Reviewed' : '&rarr; Move to Active'}</button>
+      <button data-action="feedback">Provide feedback</button>
+      <button data-action="delete">Delete</button>
+    </div>` : '';
+  const { fsControls, feedbackInline, feedbackBanner } = buildFsOverlayHtml();
 
   // Replacing player-fs-wrap's own innerHTML (or its parent's, which
   // destroys and recreates this exact node) immediately exits
@@ -5106,13 +5204,7 @@ function renderPlayerCard() {
   if (wrap && document.fullscreenElement === wrap) {
     document.getElementById('player').innerHTML =
       state.playerHtml || '<div class="muted">select a video below to play</div>';
-    const controls = wrap.querySelector('.player-fs-controls');
-    if (controls) controls.outerHTML = fsControls || '';
-    else if (fsControls) wrap.insertAdjacentHTML('beforeend', fsControls);
-    const inline = wrap.querySelector('#fs-feedback-inline');
-    if (inline) inline.outerHTML = feedbackInline || '';
-    else if (feedbackInline) wrap.insertAdjacentHTML('beforeend', feedbackInline);
-    if (!wrap.querySelector('#feedback-queue-banner')) wrap.insertAdjacentHTML('beforeend', feedbackBanner);
+    updateFsOverlay();
     return;
   }
 
@@ -5330,7 +5422,10 @@ sidebar.addEventListener('click', (ev) => {
     const action = actionBtn.dataset.action;
     if (action === 'move' || action === 'fs-move') moveVideo(state.selected.folder, state.selected.location);
     else if (action === 'delete') deleteVideo(state.selected.folder, state.selected.location);
-    else if (action === 'fs-review-toggle') { state.reviewMode = !state.reviewMode; renderPlayerCard(); }
+    else if (action === 'feedback') submitVideoFeedback();
+    // updateFsOverlay (not renderPlayerCard) -- the video itself isn't
+    // changing, so don't touch #player and force a reload/rebuffer of it.
+    else if (action === 'fs-review-toggle') { state.reviewMode = !state.reviewMode; updateFsOverlay(); }
     else if (action === 'fs-feedback-submit') submitInlineFeedback();
     else if (action === 'fullscreen') {
       const wrap = document.getElementById('player-fs-wrap');
@@ -5398,15 +5493,36 @@ async function deleteVideo(folder, location) {
   } catch (e) { alert(e.message); }
 }
 
-// "Provide feedback" -- resolves the row's number the same way
-// deleteVideo does (state.selected only carries folder/location, not
-// number), reads Review mode's #fs-feedback-input textarea (see
-// feedbackInline's comment in renderPlayerCard for why this is an inline
-// box rather than a popup), then queues a rewrite-guided-by-feedback +
-// rework via /api/manage/submit-feedback (see h_submit_feedback,
+// The small (non-fullscreen) player's "Provide feedback" action --
+// resolves the row's number the same way deleteVideo does (state.selected
+// only carries folder/location, not number), opens promptModal (fine
+// here since this is never reachable while actually fullscreen -- that
+// case has its own path below), then queues a rewrite-guided-by-feedback
+// + rework via /api/manage/submit-feedback (see h_submit_feedback,
 // web_ui.py). Starts immediately if nothing else is rendering, otherwise
 // queues -- either way the human keeps reviewing while it runs in the
 // background (pollFeedbackQueueOnce below).
+async function submitVideoFeedback() {
+  const sel = state.selected;
+  if (!sel) return;
+  const v = (state.videos || []).find(x => x.folder === sel.folder && x.location === sel.location);
+  if (!v || v.number == null) {
+    alert('This folder name doesn\'t match the expected "<label> #<number> <title>" pattern, so it has no number to give feedback against.');
+    return;
+  }
+  const note = await promptModal(
+    `What didn't work about #${v.number}? The AI will revise the current story/prompt based ` +
+    `on this and re-render it -- starts right away if nothing else is rendering, otherwise queues.`,
+    "e.g. the melon joke didn't land, pacing too slow, wrong voice...");
+  if (!note) return;
+  await postVideoFeedback(v.number, note);
+}
+
+// Fullscreen's own counterpart -- reads Review mode's #fs-feedback-input
+// textarea instead of opening promptModal, since a modal (appended to
+// document.body) would render outside the fullscreened element's
+// subtree and be invisible while actually fullscreen (see
+// buildFsOverlayHtml's comment on feedbackInline).
 async function submitInlineFeedback() {
   const sel = state.selected;
   if (!sel) return;
