@@ -2596,8 +2596,16 @@ INDEX_HTML = r"""<!doctype html>
      showing stale text about a different video after navigating away --
      this hides itself via display:none/flex per-poll instead of always
      occupying flow space. */
+  /* top:3.4rem (not 0.6rem) clears .player-fs-controls' own button row --
+     both pin to the top, and a fixed corner position collided with it in
+     fullscreen. left instead of right so it never depends on the
+     controls row's actual width (Prev/Next/Review mode/Move/Exit don't
+     wrap the same way at every viewport size). In the small (non-
+     fullscreen) player, .player-fs-controls isn't shown at all, so this
+     just reads as a modest gap from the video's top edge -- not a
+     collision with anything there either. */
   .player-status-overlay {
-    display: none; position: absolute; top: 0.6rem; right: 0.6rem; z-index: 6;
+    display: none; position: absolute; top: 3.4rem; left: 0.6rem; z-index: 6;
     background: rgba(0,0,0,0.65); color: #fff; padding: 0.25rem 0.7rem;
     border-radius: 999px; font-size: 0.78em; max-width: 80%;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -5642,6 +5650,13 @@ async function pollFeedbackQueueOnce() {
     const queuePos = (status.queued_numbers || []).indexOf(myNumber);
     setFeedbackStatusOverlay(queuePos === -1 ? null : `Queued for rework (position ${queuePos + 1})...`);
   }
+  // Picks up the Manage tab's usual render-progress panel for this job
+  // if that tab happens to be loaded right now (no-ops entirely if not --
+  // see resumeActiveVideoGenJob's own null-checks) -- without this, that
+  // panel only ever discovered an in-progress feedback rework at the
+  // moment the Manage table was (re)loaded, not while this poll is
+  // already running in the background from elsewhere in the app.
+  resumeActiveVideoGenJob();
   const resultChanged = status.last_result &&
     JSON.stringify(status.last_result) !== JSON.stringify(feedbackLastResultSeen);
   if (resultChanged) {
@@ -6109,6 +6124,14 @@ async function loadManageTable() {
 // page load, see the manage-tab restore above) so a still-running
 // "Render video" job's progress panel reappears instead of vanishing.
 async function resumeActiveVideoGenJob() {
+  // Already tracking one (pollManageJobs sets this once its first response
+  // lands, see below) -- skip, don't kick off a second parallel poll loop
+  // for the same job(s). Needed now that this is called from BOTH
+  // loadManageTable's own restore-on-load AND pollFeedbackQueueOnce's
+  // recurring 3s tick (see that function's own call to this), not just
+  // the original one-shot-on-load case.
+  const existingBtn = document.getElementById('manage-run-video-btn');
+  if (existingBtn && existingBtn.dataset.activeJobIds) return;
   let active;
   try {
     active = (await api('GET', `/api/active-jobs?project=${encodeURIComponent(state.project)}`)).jobs;
