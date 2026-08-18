@@ -117,9 +117,11 @@ Inside `_pipeline/`:
 | `golden_rules.md` | House style/format guide for this project's own docs |
 
 For AI-agent-facing architecture notes (skill routing, knowledge-file
-conventions, lifecycle detail), see `_pipeline`'s own `CLAUDE.md` if
-present, or ask an agent working in this repo to read the source
-directly — `web_ui.py` and `dream_step.py` are the ground truth.
+conventions, lifecycle detail), see this repo's own `CLAUDE.md` if
+present locally (kept out of the repo itself — development tooling, not
+part of the distributable app), or ask an agent working in this repo to
+read the source directly — `web_ui.py` and `dream_step.py` are the
+ground truth.
 
 ## Requirements
 

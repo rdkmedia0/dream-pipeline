@@ -45,7 +45,7 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Claude Code's own local session/permission state -- machine-specific,
-# not part of the application.
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
+# AI-agent tooling (Claude Code skills/hooks/config) -- kept on disk for
+# local development, not part of the distributable tool itself.
+/CLAUDE.md
+/.claude/
