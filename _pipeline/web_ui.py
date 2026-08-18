@@ -2782,7 +2782,18 @@ INDEX_HTML = r"""<!doctype html>
      horizontal scroll like any other cell instead of staying pinned.
      Corner-rounding is cosmetic and border-radius on a <table> is never
      reliably clipped by real browsers anyway -- not a meaningful loss. */
-  .manage-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 0.85em; table-layout: fixed; background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); }
+  /* width:max-content + min-width:100% (NOT width:100%) is deliberate --
+     table-layout:fixed only treats <col> widths as LITERAL pixel/rem
+     values when the table's own width is intrinsic (max-content). A
+     forced width:100% makes every <col> width just a relative PROPORTION
+     instead, so when the columns' combined width (well over 100rem here)
+     exceeds the container, the fixed algorithm scales ALL of them down
+     together to fit -- silently defeating any single column's width,
+     including Image(s), no matter how large that column's own value is.
+     min-width:100% keeps it from looking too narrow when content is
+     sparse; manage-table-scroll's overflow:auto (below) is what actually
+     handles the resulting horizontal scroll once columns overflow. */
+  .manage-table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 0.85em; table-layout: fixed; background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); }
   .manage-table th, .manage-table td { border: 1px solid var(--border-soft); padding: 0.4rem 0.5rem; vertical-align: top; text-align: left; overflow: hidden; }
   .manage-table thead th {
     position: sticky; top: 0; z-index: 2; background: var(--border-soft);
