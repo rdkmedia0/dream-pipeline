@@ -2977,7 +2977,7 @@ INDEX_HTML = r"""<!doctype html>
 </style></head>
 <body>
 <div class="app-header">
-  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">v1.01</span></h1>
+  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Semantic versioning (MAJOR.MINOR.PATCH) -- bump PATCH for fixes, MINOR for new features, MAJOR for breaking changes. Bump this by hand in web_ui.py whenever the UI changes; it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">v1.0.1</span></h1>
   <div class="row" style="width:auto">
     <button onclick="openHelp()">&#128214; Help</button>
     <button onclick="openSettings()">&#9881; Settings</button>
