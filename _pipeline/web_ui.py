@@ -2939,7 +2939,7 @@ INDEX_HTML = r"""<!doctype html>
 </style></head>
 <body>
 <div class="app-header">
-  <h1>Dream Pipeline</h1>
+  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">build 7</span></h1>
   <div class="row" style="width:auto">
     <button onclick="openHelp()">&#128214; Help</button>
     <button onclick="openSettings()">&#9881; Settings</button>
@@ -6134,7 +6134,7 @@ function renderManageTable() {
       <colgroup>
         <col class="mf-col-select"><col class="mf-col-num"><col class="mf-col-wide"><col class="mf-col-wide"><col class="mf-col-wide">
         <col class="mf-col-wide"><col class="mf-col-wide"><col class="mf-col-wide"><col class="mf-col-type">
-        <col class="mf-col-wide"><col class="mf-col-ai"><col class="mf-col-images">
+        <col class="mf-col-wide"><col class="mf-col-images">
       </colgroup>
       <thead>
         <tr>
