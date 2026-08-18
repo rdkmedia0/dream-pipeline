@@ -25,8 +25,8 @@ entire time this script is running the render, there's no way for the
 model to get reloaded out from under it, even without killing anything.
 Unloading the model with `ollama stop` -- which does NOT touch the
 Ollama server process, and does NOT touch the local Claude Code
-process -- is sufficient by itself, and was confirmed live: it freed
-this machine's VRAM from ~6.4GB to ~15.4GB free in under a second.
+process -- is sufficient by itself: it frees this machine's VRAM from
+~6.4GB to ~15.4GB free in under a second.
 
 WHAT THIS SCRIPT DOES
 ----------------------
@@ -47,26 +47,26 @@ Run this INSTEAD OF calling generate_dream.py directly:
 Everything after the bare "--" is the actual render command; run it
 from the Dreams/_pipeline folder either way.
 
-HOST-AGNOSTIC BY DESIGN (2026-08-08)
+HOST-AGNOSTIC BY DESIGN
 --------------------------------------
-Deliberately API-only now, not local-process-based: this used to shell
-out to the `ollama` CLI and, as a last resort, use psutil to force-kill
-a stuck worker process and query nvidia-smi for a numeric free-VRAM
-threshold -- both of those are fundamentally local-machine-only (no
-remote equivalent exists for "enumerate/kill a process on a different
-host" or "query a GPU this process isn't attached to"), which breaks
-entirely the moment this pipeline runs on a different machine than
-Ollama/ComfyUI/the GPU (e.g. this orchestrator in a Linux container,
-Ollama+ComfyUI+GPU on a Windows host reachable only over the network).
-Replaced with Ollama's own HTTP API (GET/POST against ollama_url,
-same as every other Ollama call this pipeline makes) for both checking
-what's loaded and unloading it -- works identically whether Ollama is
-on this machine or a remote one. Traded away: a hard numeric "X MB
-actually free" guarantee (nvidia-smi) and a forceful last-resort kill
-(psutil) for a stuck worker that wouldn't unload gracefully -- accepted
-as the right tradeoff for portability; a model that genuinely won't
-unload via its own API now surfaces as a clear failure instead of
-being forced off the GPU.
+Deliberately API-only, not local-process-based: shelling out to the
+`ollama` CLI, or using psutil to force-kill a stuck worker process and
+nvidia-smi to query a numeric free-VRAM threshold, are fundamentally
+local-machine-only approaches (no remote equivalent exists for
+"enumerate/kill a process on a different host" or "query a GPU this
+process isn't attached to"), which would break entirely the moment
+this pipeline runs on a different machine than Ollama/ComfyUI/the GPU
+(e.g. this orchestrator in a Linux container, Ollama+ComfyUI+GPU on a
+Windows host reachable only over the network). Instead this uses
+Ollama's own HTTP API (GET/POST against ollama_url, same as every
+other Ollama call this pipeline makes) for both checking what's loaded
+and unloading it -- works identically whether Ollama is on this
+machine or a remote one. The tradeoff: no hard numeric "X MB actually
+free" guarantee (nvidia-smi) and no forceful last-resort kill (psutil)
+for a stuck worker that won't unload gracefully -- accepted as the
+right tradeoff for portability; a model that genuinely won't unload
+via its own API surfaces as a clear failure instead of being forced
+off the GPU.
 
 CONFIG
 ------
@@ -74,16 +74,14 @@ Reads the same config.json as the rest of the pipeline (see
 dream_step.load_config()) -- ollama_url, creative_model,
 graceful_stop_timeout_s, comfyui_url, vision_model. This file talks to
 Ollama purely over HTTP, see the host-agnostic-by-design note above
-(there is no local-executable config anywhere in the pipeline anymore --
-ollama_exe and the "start a local service" feature it supported were
-removed 2026-08-16, per explicit direction: this pipeline only ever
-depends on a URL being reachable, never on what's installed on this
-particular machine). Edit it via the
+(there is no local-executable config anywhere in the pipeline --
+this pipeline only ever depends on a URL being reachable, never on
+what's installed on this particular machine). Edit it via the
 web UI's Settings tab, or the file directly, if the local model's
 name, timeout, or ComfyUI/Ollama location ever change -- do not
-hardcode changes here. This used to be a separate
-vram_guard.config.json; unified so relocating the pipeline to another
-machine only ever means editing one file.
+hardcode changes here. Unified into this single config file so
+relocating the pipeline to another machine only ever means editing
+one file.
 """
 import argparse
 import json
@@ -128,15 +126,15 @@ def ollama_stop_model(cfg, model_name=None):
     stop`, no CLI needed) instead of shelling out to the `ollama` CLI, so
     this works identically against a remote Ollama instance.
 
-    Confirmed bug (2026-08-08): this used to always stop
-    cfg["creative_model"] specifically (the Settings-tab default) -- but
-    the chat feature can load a DIFFERENT model per message when "Lock
-    chat to this model" is off, and a Settings change can point
-    creative_model at a new model without whatever was PREVIOUSLY loaded
-    ever getting stopped. Freeing VRAM by name only works if that name
-    matches whatever's actually loaded; it silently did nothing for a
-    model loaded under a different name, leaving it resident with no
-    error at all. Default (model_name=None) now stops EVERY model
+    Stopping cfg["creative_model"] specifically (the Settings-tab
+    default) would not be enough: the chat feature can load a DIFFERENT
+    model per message when "Lock chat to this model" is off, and a
+    Settings change can point creative_model at a new model without
+    whatever else is loaded ever getting stopped. Freeing VRAM by
+    name only works if that name matches whatever's actually loaded; a
+    fixed name would silently do nothing for a model loaded under a
+    different name, leaving it resident with no error at all. Default
+    (model_name=None) stops EVERY model
     /api/ps currently reports as loaded, not one assumed name -- pass
     model_name for the one case that genuinely wants a single specific
     model stopped (e.g. the vision model after --review-images)."""
@@ -165,16 +163,15 @@ def comfyui_free_vram(cfg):
     /free API endpoint) -- this is a SEPARATE cache from Ollama's, and
     'ollama stop' does nothing to release it. Hits comfyui_url directly
     -- local or remote, exactly like every other call this pipeline
-    makes to ComfyUI. FIXED 2026-08-15: this used to hardcode
-    http://127.0.0.1:<port>, discarding comfyui_url's actual host
-    entirely, on the reasoning that "VRAM freeing only makes sense
-    against a ComfyUI instance running on this machine" -- true when
-    this pipeline only supported a local ComfyUI, but false now that a
-    remote ComfyUI is a fully supported real configuration: for a
-    remote setup this always failed (wasting a timeout on an
-    unreachable localhost port, every single render) AND never actually
-    freed anything on the GPU that matters, silently letting VRAM
-    accumulate there across renders. Silently returns False if ComfyUI
+    makes to ComfyUI. Hardcoding http://127.0.0.1:<port> instead, on
+    the reasoning that "VRAM freeing only makes sense against a
+    ComfyUI instance running on this machine," would discard
+    comfyui_url's actual host and break the fully supported remote-
+    ComfyUI configuration: for a remote setup it would always fail
+    (wasting a timeout on an unreachable localhost port, every single
+    render) AND never actually free anything on the GPU that matters,
+    silently letting VRAM accumulate there across renders. Silently
+    returns False if ComfyUI
     isn't reachable at all (not fatal -- wait_for_ready below still does
     the real check)."""
     payload = json.dumps({"unload_models": True, "free_memory": True}).encode("utf-8")
@@ -209,31 +206,29 @@ def start_reload_guard(cfg, poll_interval_s=5):
     timeout, or any other trigger -- this guards against ALL of them
     instead of relying on a single stop-once-at-the-start check).
 
-    Confirmed need for this: a session's render succeeded despite the
-    model getting reloaded mid-render multiple times that same night,
-    purely because the user was manually re-running `ollama stop` by
-    hand in another terminal to compensate -- this makes that manual
-    babysitting unnecessary by having the render process do it itself.
+    Without this, a model getting reloaded mid-render requires manually
+    re-running `ollama stop` by hand in another terminal to compensate;
+    this makes that manual babysitting unnecessary by having the render
+    process do it itself.
 
     Returns a threading.Event -- call .set() on it once the render
     subprocess has finished to stop the guard thread.
 
-    Confirmed real bug (2026-08-13): this used to log the STOPPED model
-    as cfg["creative_model"] unconditionally, regardless of what /api/ps
-    actually reported -- with creative_backend set to something other
-    than Ollama (e.g. Gemini), every log line named a model that was
-    never even the one running, always the stale creative_model config
-    value. Worse, the guard didn't distinguish an unwanted external
-    reload from the render's OWN vision-QC step legitimately loading
-    vision_model mid-render (generate_dream.py reviews each generated
-    keyframe via Ollama while this guard is still active for the whole
-    render) -- stopping that model out from under its own in-flight
-    query forced pointless reload/retry cycles, visible as vision
-    queries taking 20s+ for what should be a quick call. The guard now
-    logs the real loaded model name(s) and leaves vision_model alone
-    when vision_backend is "ollama" (that's expected, legitimate
-    concurrent use, not something to fight), still stopping anything
-    else exactly as before.
+    Logging the STOPPED model as cfg["creative_model"] unconditionally,
+    regardless of what /api/ps actually reports, would be wrong: with
+    creative_backend set to something other than Ollama (e.g. Gemini),
+    every log line would name a model that was never even the one
+    running, always the stale creative_model config value. The guard
+    also needs to distinguish an unwanted external reload from the
+    render's OWN vision-QC step legitimately loading vision_model
+    mid-render (generate_dream.py reviews each generated keyframe via
+    Ollama while this guard is still active for the whole render) --
+    stopping that model out from under its own in-flight query would
+    force pointless reload/retry cycles, visible as vision queries
+    taking 20s+ for what should be a quick call. The guard logs the
+    real loaded model name(s) and leaves vision_model alone when
+    vision_backend is "ollama" (that's expected, legitimate concurrent
+    use, not something to fight), still stopping anything else.
     """
     stop_event = threading.Event()
     expected_model = cfg.get("vision_model") if cfg.get("vision_backend") == "ollama" else None
@@ -255,22 +250,21 @@ def start_reload_guard(cfg, poll_interval_s=5):
 
 
 def wait_for_ready(cfg, label, stop_retries=4):
-    """Waits until Ollama reports nothing loaded (replaces the old numeric
-    "X MB actually free" nvidia-smi check -- see the module docstring's
+    """Waits until Ollama reports nothing loaded, trusting Ollama's own
+    bookkeeping of what it has loaded instead of independently verifying
+    VRAM via a numeric nvidia-smi check (see the module docstring's
     host-agnostic-by-design note for why: no remote equivalent exists for
-    querying a GPU this process isn't attached to, so this now trusts
-    Ollama's own bookkeeping of what it has loaded instead of independently
-    verifying VRAM). ComfyUI's own cache (a separate holder, freed via its
+    querying a GPU this process isn't attached to). ComfyUI's own cache
+    (a separate holder, freed via its
     /free API) is checked too, since that's equally API-only and equally
     portable.
 
     stop_retries: re-issue the unload request for whatever's actually
     loaded (see ollama_stop_model) this many times across the wait
-    window, not just once up front. Confirmed live (2026-08-08): a
-    graceful unload that reports success can still take multiple
-    attempts before the model actually releases -- calling it exactly
-    once and then just passively polling left real cases stuck for the
-    full graceful_stop_timeout_s."""
+    window, not just once up front. A graceful unload that reports
+    success can still take multiple attempts before the model actually
+    releases -- calling it exactly once and then just passively polling
+    would leave real cases stuck for the full graceful_stop_timeout_s."""
     deadline = time.time() + cfg["graceful_stop_timeout_s"]
     retry_interval = cfg["graceful_stop_timeout_s"] / (stop_retries + 1)
     next_retry_at = time.time() + retry_interval

@@ -254,7 +254,7 @@ def detect_seed_nodes(path_or_graph, comfyui_url=None, sampler_node_ids=None, ca
     whole-graph scan for a literal (non-link) "noise_seed"/"seed" input,
     NOT tied to whatever detect_prompt_nodes() identified as a "sampler"
     (i.e. a node with both CONDITIONING "positive"/"negative" inputs).
-    Confirmed live 2026-08-08 against the bundled fp8_t2v graph that
+    In the bundled fp8_t2v graph
     those two concepts are NOT the same node: fp8_t2v's actual seed
     holders are two RandomNoise nodes (114/115) feeding a
     SamplerCustomAdvanced node's "noise" input, while

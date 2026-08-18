@@ -22,9 +22,6 @@ _pipeline/model_check_cache.json
 # both in case that happens during local testing.
 /data/
 /state/
-/ChatAiMals/
-/dreams/
-/guitest/
 
 # Per-host override of docker-compose.yml's default volume paths -- see
 # .env.example for what this can set. Real values are host-specific,

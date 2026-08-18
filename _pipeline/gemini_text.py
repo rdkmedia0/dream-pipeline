@@ -23,12 +23,10 @@ import urllib.request
 
 import gemini_image
 
-# "gemini-2.5-flash" was Google's retired-for-new-users default until
-# 2026-08-16, discovered live when it started 404ing generateContent calls
-# ("no longer available to new users") despite still appearing in
-# models.list. "-latest" is a stable alias Google itself maintains to
-# always point at the current recommended flash model, so this shouldn't
-# go stale the same way again.
+# A pinned model id like "gemini-2.5-flash" can become retired-for-new-users
+# while still appearing in models.list, causing generateContent calls to
+# 404. "-latest" is a stable alias Google itself maintains to always point
+# at the current recommended flash model, avoiding that failure mode.
 MODEL = "gemini-flash-latest"
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -186,21 +184,15 @@ def generate_json(prompt, retries=3, model=None, api_key=None):
     retries with the parse error fed back on failure) so the two backends
     are interchangeable from that function's point of view.
 
-    2026-08-12: NO LONGER sets responseMimeType="application/json" --
-    confirmed live, real side-by-side comparison: the exact same prompt,
-    run manually in Gemini's own chat UI (free-form, no JSON-mode), gave
-    consistently funnier/more committed writing than this function's own
-    output for that identical prompt, on BOTH Flash and Pro -- and the
-    gap held even when the user re-ran the pipeline's own verbatim
-    prompt by hand. responseMimeType="application/json" forces
+    Does NOT set responseMimeType="application/json". That setting forces
     constrained/structured decoding -- the model has to keep every token
     choice valid against a JSON grammar, which is a well-documented
     creativity tax on generation quality, distinct from and additional
     to whatever effect the prompt's own wording has. Ollama's parallel
-    format="json" constraint is the same mechanism and was never ruled
-    out as a contributor to ITS weaker output either.
+    format="json" constraint is the same mechanism and is a likely
+    contributor to its weaker output too.
 
-    Now free-form generation + a permissive first-{...}/[...]-block
+    Uses free-form generation + a permissive first-{...}/[...]-block
     extraction instead -- the prompt's own existing "Return ONLY a valid
     JSON object" instruction is what keeps output parseable, same as it
     already does for Ollama's prompts."""

@@ -55,12 +55,11 @@ def _default_venv_dir():
 
     A venv is NOT portable: it bakes in absolute paths and OS-specific
     binaries, so one created on Linux is useless on Windows and vice
-    versa. Confirmed live 2026-08-15: this pipeline's own project
-    folder is meant to be shareable over a network mount and run from
-    multiple machines/OSes against the same data -- if .venv lived
-    inside that shared folder (the old default), every machine would
-    fight over or silently break the same directory. It also flatly
-    can't be created there at all in one confirmed real case: a GVFS
+    versa. This pipeline's own project folder is meant to be shareable
+    over a network mount and run from multiple machines/OSes against
+    the same data -- if .venv lived inside that shared folder, every
+    machine would fight over or silently break the same directory. It
+    also flatly can't be created there at all in some cases: a GVFS
     SMB-mounted path containing a literal ':' character makes
     `python -m venv` refuse outright ("Refusing to create a venv...
     because it contains the PATH separator :")."""
@@ -71,14 +70,14 @@ def _default_venv_dir():
 def venv_python_path(venv_dir=None):
     """Path to the dedicated pipeline venv's own python -- the launcher
     every other entry point (web_ui.py, dream_step.py, etc) should be run
-    with after setup. Confirmed live 2026-08-15: install_pip_requirements()
-    used to install into sys.executable's own environment directly, which
-    on modern Debian/Ubuntu is PEP-668 "externally managed" and refuses
-    `pip install` outright (real error, blocks every Linux user on such a
-    distro, not just this test) -- and separately, on a Python missing the
-    `pip` module entirely, raised an unhandled CalledProcessError instead
-    of any actionable message. A dedicated venv sidesteps both: it's never
-    externally-managed, and `python -m venv` bundles its own pip."""
+    with after setup. Installing into sys.executable's own environment
+    directly instead would, on modern Debian/Ubuntu, hit PEP-668
+    "externally managed" and refuse `pip install` outright (a real error
+    that blocks every Linux user on such a distro) -- and separately, on
+    a Python missing the `pip` module entirely, would raise an unhandled
+    CalledProcessError instead of any actionable message. A dedicated
+    venv sidesteps both: it's never externally-managed, and
+    `python -m venv` bundles its own pip."""
     venv_dir = Path(venv_dir) if venv_dir else _default_venv_dir()
     if platform.system() == "Windows":
         return venv_dir / "Scripts" / "python.exe"
@@ -160,10 +159,10 @@ def install_ollama():
             dest.unlink(missing_ok=True)
     elif system == "Linux":
         print("Running the official install script (curl | sh)...")
-        # Confirmed live 2026-08-15: fails with an unhandled traceback
-        # when the script needs sudo and no password is available
-        # non-interactively (e.g. this session) -- same crash pattern
-        # install_pip_requirements() had, fixed the same way here.
+        # Caught explicitly because the script raises an unhandled
+        # traceback when it needs sudo and no password is available
+        # non-interactively -- handled the same way as
+        # install_pip_requirements()'s subprocess errors.
         try:
             subprocess.run(["sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"], check=True)
         except subprocess.CalledProcessError as e:
@@ -251,9 +250,9 @@ def _object_info(class_type):
     this codebase maintains. A COMBO input's option list IS ComfyUI's
     real folder listing already (folder_paths.get_filename_list(),
     merged across any extra_model_paths.yaml redirect -- this project's
-    own real setup redirects every model folder to a separate drive,
-    confirmed live 2026-08-08), so no separate /models/<folder> call is
-    needed either. Returns None if ComfyUI isn't reachable or doesn't
+    own real setup redirects every model folder to a separate drive),
+    so no separate /models/<folder> call is needed either. Returns
+    None if ComfyUI isn't reachable or doesn't
     know that class_type (e.g. a custom node not currently installed)
     -- callers must treat that as "can't determine", never as "not a
     model field"."""
@@ -276,8 +275,8 @@ MODEL_FILE_EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf"
 def _looks_like_model_options(options):
     """Whether a COMBO input's live option list actually looks like
     model filenames, not some other dropdown-from-folder-shaped enum --
-    confirmed live 2026-08-08: KSamplerSelect's sampler_name field
-    matches the "_name" naming convention AND is COMBO-typed (e.g.
+    KSamplerSelect's sampler_name field, for example, matches the
+    "_name" naming convention AND is COMBO-typed (e.g.
     ["euler", "euler_ancestral", ...]) but isn't a file picker at all,
     so naming + COMBO-type together still aren't sufficient on their
     own. Empty option lists (a genuinely empty models/ folder -- exactly
@@ -294,16 +293,16 @@ def _looks_like_model_options(options):
 
 def _combo_options(field_spec):
     """Extracts the live option list from a COMBO input's declared spec
-    -- confirmed live 2026-08-08 that this ComfyUI instance returns TWO
-    different shapes for different nodes: the older bare-list style
-    `[[opt1, opt2, ...], {meta}]` (UNETLoader/VAELoader/... -- the first
-    element IS the option list), and a newer explicit type-string style
+    -- this ComfyUI instance returns TWO different shapes for different
+    nodes: a bare-list style `[[opt1, opt2, ...], {meta}]`
+    (UNETLoader/VAELoader/... -- the first element IS the option list),
+    and an explicit type-string style
     `["COMBO", {"options": [...], meta}]` (LatentUpscaleModelLoader --
     options live inside the second element's "options" key). Missing
-    either shape silently drops real model fields (confirmed live: this
-    is exactly what made LatentUpscaleModelLoader's file vanish from the
-    required list entirely before this fix). Returns None if field_spec
-    isn't a COMBO input in either shape."""
+    either shape silently drops real model fields -- e.g. it would make
+    LatentUpscaleModelLoader's file vanish from the required list
+    entirely. Returns None if field_spec isn't a COMBO input in either
+    shape."""
     if not isinstance(field_spec, list) or not field_spec:
         return None
     first = field_spec[0]
@@ -371,11 +370,10 @@ def _huggingface_search_url(filename):
 # check_models_status()'s cache -- IN-MEMORY ONLY, never written to
 # disk. Naturally empty on every fresh process start (satisfies
 # "checked at least on load of the tool" with no extra bookkeeping) and
-# can never survive a port to a different machine/OS the way the old
-# on-disk model_check_cache.json did (that was the actual root cause of
-# the 2026-08-15 Windows->Linux port bug: a stale cross-OS "0 missing"
-# served from disk). Set to None by check_models_status() itself on any
-# failed check, so a later success never serves pre-failure data.
+# can never survive a port to a different machine/OS -- an on-disk
+# cache risks serving a stale cross-OS "0 missing" result instead. Set
+# to None by check_models_status() itself on any failed check, so a
+# later success never serves pre-failure data.
 _MODELS_STATUS_CACHE = None
 
 
@@ -402,22 +400,21 @@ def check_models_status(comfyui_dir, force=False):
     (_confirm_model_candidates()) -- which also gives presence directly
     from that same COMBO's live option list (already merged across any
     extra_model_paths.yaml redirect, no separate /models/<folder> call
-    needed). This combination is what fixed three real problems this
-    project hit in turn: false "missing" positives from files on a
-    redirected drive a plain directory scan can't see, a manifest that
-    could silently drift out of sync with what the graphs actually
-    reference, and a hardcoded node-type list that would've silently
-    missed any new loader a future workflow/custom node introduces.
+    needed). This combination avoids three real problems: false
+    "missing" positives from files on a redirected drive a plain
+    directory scan can't see, a manifest that could silently drift out
+    of sync with what the graphs actually reference, and a hardcoded
+    node-type list that would silently miss any new loader a future
+    workflow/custom node introduces.
 
     Cached IN-MEMORY ONLY, for this process's lifetime (see
-    _MODELS_STATUS_CACHE below) -- per explicit direction 2026-08-15:
-    caching is fine, but must always be re-checked at least once per
-    tool launch (a fresh process starts with an empty cache, so this is
-    automatic -- no on-disk file to go stale across a restart or a port
-    to a different machine, which is exactly the bug an on-disk cache
-    caused before), and a failed check must invalidate any cached good
-    result rather than let a later success silently serve pre-failure
-    data or a since-changed answer. `force` bypasses a valid cache hit
+    _MODELS_STATUS_CACHE below): caching is fine, but must always be
+    re-checked at least once per tool launch (a fresh process starts
+    with an empty cache, so this is automatic -- no on-disk file to go
+    stale across a restart or a port to a different machine), and a
+    failed check must invalidate any cached good result rather than let
+    a later success silently serve pre-failure data or a since-changed
+    answer. `force` bypasses a valid cache hit
     on demand (the "Re-check" button).
 
     Returns (required_total, missing, meta). missing is a list of
@@ -438,8 +435,8 @@ def check_models_status(comfyui_dir, force=False):
     expected to surface that plainly rather than treat it as equivalent
     to a real check.
 
-    IMPORTANT (per explicit direction 2026-08-15): the actual "is this
-    model file present" answer comes ENTIRELY from ComfyUI's own live
+    IMPORTANT: the actual "is this model file present" answer comes
+    ENTIRELY from ComfyUI's own live
     /object_info API (_confirm_model_candidates/_object_info below,
     which already reads config.json's comfyui_url itself) -- it was
     NEVER a local directory scan, local or remote alike. A workflow
@@ -451,16 +448,16 @@ def check_models_status(comfyui_dir, force=False):
     offer to download a file into a models/ folder it can actually see."""
     comfyui_dir = Path(comfyui_dir) if comfyui_dir else None
     local_models_dir = comfyui_dir / "models" if comfyui_dir else None
-    # Confirmed live 2026-08-15: Path.is_dir() is NOT safe to assume
-    # always returns a plain bool -- a foreign-OS path (e.g. a leftover
-    # Windows "C:\comfyui\..." value in comfyui_path) can make the
-    # underlying os.stat() raise OSError instead of just reporting
-    # "not found", especially over a network filesystem (confirmed on
-    # a GVFS SMB mount: os.stat() raised EINVAL for a path containing
-    # literal backslashes, which the SMB layer treats specially, rather
-    # than a clean ENOENT). This crashed the entire --web startup, since
-    # check_dependencies() calls this at boot. Any such error just means
-    # "not usable," same as any other reason it isn't a real local dir.
+    # Path.is_dir() is NOT safe to assume always returns a plain bool --
+    # a foreign-OS path (e.g. a leftover Windows "C:\comfyui\..." value
+    # in comfyui_path) can make the underlying os.stat() raise OSError
+    # instead of just reporting "not found", especially over a network
+    # filesystem (e.g. a GVFS SMB mount: os.stat() raises EINVAL for a
+    # path containing literal backslashes, which the SMB layer treats
+    # specially, rather than a clean ENOENT). An uncaught error here
+    # would crash the entire --web startup, since check_dependencies()
+    # calls this at boot. Any such error just means "not usable," same
+    # as any other reason it isn't a real local dir.
     try:
         local_models_dir_usable = bool(local_models_dir and local_models_dir.is_dir())
     except OSError:
@@ -474,16 +471,15 @@ def check_models_status(comfyui_dir, force=False):
             and cache["comfyui_url"] == comfyui_url):
         return cache["required_total"], cache["missing"], {"stale": False, "checked_at": cache["checked_at"], "reason": None}
 
-    # Fast upfront reachability gate (2026-08-16, per explicit direction:
-    # "the model check can only happen once connected") -- BEFORE the
-    # expensive per-class_type loop below, not after it. Confirmed real
-    # bug: with ComfyUI genuinely down, _confirm_model_candidates() used
-    # to still fire one urlopen(timeout=5) per DISTINCT class_type across
-    # every workflow graph (candidates can easily span 10+ node types)
-    # entirely sequentially, so a single unreachable ComfyUI could hang
-    # this call for a minute or more -- check_dependencies() calls this
-    # at boot, so that hang blocked the whole web UI's startup dependency
-    # check. One cheap probe here catches the down case in ~3s instead.
+    # Fast upfront reachability gate -- BEFORE the expensive per-class_type
+    # loop below, not after it. Without it, with ComfyUI genuinely down,
+    # _confirm_model_candidates() would fire one urlopen(timeout=5) per
+    # DISTINCT class_type across every workflow graph (candidates can
+    # easily span 10+ node types) entirely sequentially, so a single
+    # unreachable ComfyUI could hang this call for a minute or more --
+    # check_dependencies() calls this at boot, so that hang would block
+    # the whole web UI's startup dependency check. One cheap probe here
+    # catches the down case in ~3s instead.
     import urllib.request
     try:
         with urllib.request.urlopen(f"{comfyui_url}/queue", timeout=3):
@@ -497,11 +493,11 @@ def check_models_status(comfyui_dir, force=False):
 
     if candidates and asked and resolved == 0:
         # ComfyUI couldn't answer a single class_type -- unreachable.
-        # A failed check invalidates any existing cache outright (per
-        # explicit direction 2026-08-15) -- never let a LATER success
-        # serve a result that predates this failure, and never serve
-        # this failure's absence-of-data as if it were a cache hit
-        # either. The next successful check starts clean.
+        # A failed check invalidates any existing cache outright --
+        # never let a LATER success serve a result that predates this
+        # failure, and never serve this failure's absence-of-data as if
+        # it were a cache hit either. The next successful check starts
+        # clean.
         _MODELS_STATUS_CACHE = None
         return 0, [], {"stale": True, "checked_at": None,
                         "reason": f"Could not reach ComfyUI at {comfyui_url!r} to check required model files."}

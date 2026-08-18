@@ -37,13 +37,13 @@ Always run this as its own Bash call with an explicit long timeout (e.g.
 timeout: 600000 for 10 minutes) -- it blocks synchronously through
 however many real renders it does in one call, each taking several
 minutes. Hitting the Bash tool's 120s default backgrounds the call and
-forces a response that reloads the local model into VRAM mid-render --
-see CLAUDE.md for the full incident. The process itself now defends
-against that too (see the reload guard below), but the explicit timeout
-remains the first line of defense and should still always be used.
+forces a response that reloads the local model into VRAM mid-render.
+The process itself defends against that too (see the reload guard
+below), but the explicit timeout remains the first line of defense and
+should still always be used.
 
-STATUS-FIRST, SCRIPT-DRIVEN MODEL (2026-08-06 redesign)
----------------------------------------------------------
+STATUS-FIRST, SCRIPT-DRIVEN MODEL
+----------------------------------
 `--status` is the mandatory first call of every session: it inspects
 real project state (specs/renders/uploads on disk) and prints ONLY the
 menu options that are actually valid right now, each paired with the
@@ -51,14 +51,10 @@ exact command to run. The agent's job is to relay that menu verbatim,
 ask the human which option + number(s), then run EXACTLY the command
 `--status` named -- never decide the next step from memory/prose.
 
-Why: every serious failure on 2026-08-06 traced back to the agent being
-trusted to decide scope itself from advisory text in CLAUDE.md. Most
-seriously, the old sequential-batch mode below silently used a STALE
-agent_memory.json's range_end (365, left over from early in the
-project) instead of the CLI argument once that file existed -- so a
-`--range-end 83` call kept rendering past #83 into fabricated #84/#85
-before being caught. That continuation mode is gone. `--generate` and
-`--rework` now only ever touch the EXACT numbers passed to them.
+Why: trusting the agent to decide scope itself from advisory text
+invites exactly the kind of drift a deterministic menu prevents.
+`--generate` and `--rework` only ever touch the EXACT numbers passed
+to them -- there is no stale/carried-over range state anywhere.
 AI-composed creative content (spec fields, keyframe prompts) is written
 via the manage table's Run updates (see write_row_spec/
 write_row_keyframes) -- `--write-spec` on the CLI is direct-content-only
@@ -74,14 +70,11 @@ REWORK MODE -- --rework N[,N...|N-N|all]:
   For each listed number (or all rendered ones for "all"), in order,
   within this same call: re-renders from the spec's CURRENT content, no
   questions asked -- the human decided this needs a re-render by asking
-  for it, so the script just does it. (An earlier version of this script
-  refused to re-render when the spec's premise/positive_prompt/
-  negative_prompt hash matched the last render, on the theory that an
-  unchanged hash meant nothing was actually fixed -- removed 2026-08-07:
-  that overrode explicit human intent with the script's own guess.
+  for it, so the script just does it, regardless of whether the spec's
+  premise/positive_prompt/negative_prompt hash matches the last render.
   What's rendered is the spec's content; the concept-list markdown is
   the source of ideas; nothing else needs tracking to decide whether a
-  requested rerun happens.)
+  requested rerun happens.
   Only the numbers you explicitly list are touched. It will not pull in
   a "related" number (e.g. a duplicate-pair partner) on its own.
 
@@ -135,19 +128,17 @@ if hasattr(sys.stdout, "reconfigure"):
 # limits, the reasoning alone was exhausting the token budget before any
 # visible "response" text got generated at all, returning silently empty
 # every time. num_predict/num_ctx below give enough room for the (mandatory,
-# often 4000-6000 token) thinking phase AND a real answer -- confirmed
-# necessary on every call, not just longer/multi-image ones.
+# often 4000-6000 token) thinking phase AND a real answer -- necessary
+# on every call, not just longer/multi-image ones.
 VISION_OPTIONS = {"num_predict": 8192, "num_ctx": 16384}
 
 PIPELINE_DIR = Path(__file__).resolve().parent
 
 # Single consolidated source for every mechanical/render-quality rule
-# this pipeline has confirmed necessary (2026-08-12: replaced the old
-# separate format_rules.md + each project's own CREATIVE.md rule-prose --
-# see golden_rules.md's own header for why) -- shared across every
-# project; a project's CREATIVE.md now holds only genuinely
-# project-specific facts (visual style options, genre), not rules. See
-# format_rules().
+# this pipeline needs (see golden_rules.md's own header for why) --
+# shared across every project; a project's CREATIVE.md holds only
+# genuinely project-specific facts (visual style options, genre), not
+# rules. See format_rules().
 FORMAT_RULES_PATH = PIPELINE_DIR / "golden_rules.md"
 
 # The strong-backend (Gemini) spec-generation prompt SKELETON --
@@ -191,21 +182,15 @@ def project_prompt_template():
     back to the pipeline-wide default for any project created before this
     existed (no section header yet in its CREATIVE.md).
 
-    Confirmed real bug (2026-08-12), two layers deep:
-    (1) originally took EVERYTHING after the header, including the
-    human-facing explanatory sentence above the fenced block -- that
-    sentence mentioned "$genre/$title/..." as plain-prose documentation,
-    which is also valid string.Template syntax, so it silently got swept
-    into the "template" and had ITS OWN $vars substituted, corrupting the
-    output with a garbled duplicate.
-    (2) fixed that by requiring a ``` fence -- but naively used str.find
-    for the opening fence, which matched a literal ``` mentioned INSIDE
-    that same explanatory sentence ("keep it inside the ``` fence")
-    before ever reaching the real one.
-    Fixed properly this time: only a ``` that starts its own line (the
-    actual markdown fence convention) counts, found via regex anchored to
-    line start -- an inline mention of the word/characters can't match
-    this no matter how the surrounding prose is worded."""
+    The human-facing explanatory sentence above the fenced block mentions
+    "$genre/$title/..." as plain-prose documentation, which is also valid
+    string.Template syntax -- so only text inside the ``` fence must be
+    taken as the template, never everything after the header. And only a
+    ``` that starts its own line (the actual markdown fence convention)
+    counts as the fence, found via regex anchored to line start -- an
+    inline mention of the word/characters (e.g. "keep it inside the ```
+    fence") can't match this no matter how the surrounding prose is
+    worded."""
     text = read_creative_md() or ""
     idx = text.find(PROMPT_TEMPLATE_SECTION_HEADER)
     if idx == -1:
@@ -225,16 +210,15 @@ def project_prompt_template():
 # config.json stays next to the pipeline code as before.
 CONFIG_PATH = Path(os.environ.get("DREAM_PIPELINE_CONFIG_DIR", PIPELINE_DIR)) / "config.json"
 DEFAULT_CONFIG = {
-    # Where project folders (ChatAiMals, dreams, guitest, ...) live --
+    # Where project/channel folders live --
     # empty string means "use PIPELINE_DIR.parent" (this pipeline's own
-    # install location), the original, backward-compatible default.
-    # Added 2026-08-15 per explicit direction: a user may want project
-    # data (which can grow very large -- rendered videos, keyframes) on
-    # a separate disk/path from where the pipeline code itself is
-    # installed. See projects_root() below -- every project-path
-    # resolution in this codebase goes through that one function, never
-    # PIPELINE_DIR.parent directly, so this setting actually takes
-    # effect everywhere consistently.
+    # install location). A user may want project data (which can grow
+    # very large -- rendered videos, keyframes) on a separate disk/path
+    # from where the pipeline code itself is installed. See
+    # projects_root() below -- every project-path resolution in this
+    # codebase goes through that one function, never PIPELINE_DIR.parent
+    # directly, so this setting actually takes effect everywhere
+    # consistently.
     "projects_root": "",
     "ollama_url": "http://localhost:11434",
     "comfyui_url": "http://localhost:8000",
@@ -249,8 +233,7 @@ DEFAULT_CONFIG = {
     # human typing it in saves a real choice.
     "comfyui_path": "",
     # No hardcoded model name here on purpose -- any specific model can be
-    # deleted from Ollama at any time (confirmed live 2026-08-07: deleted
-    # qwen3-coder-agent after switching off it), so a fixed fallback would
+    # deleted from Ollama at any time, so a fixed fallback would
     # eventually point at nothing. load_config() below fills these in
     # dynamically (first model in the live Ollama list) only when unset;
     # once Settings saves a real choice to config.json, this default is
@@ -260,7 +243,7 @@ DEFAULT_CONFIG = {
     # When on, chat always uses creative_model with no per-message
     # override -- the model-name dropdown in chat is hidden entirely
     # rather than shown-but-pointless. Off by default so the picker
-    # stays available (e.g. for comparing models, as done 2026-08-07).
+    # stays available (e.g. for comparing models).
     "lock_creative_model": False,
     # vram_guard.py settings -- unified here (was its own separate
     # vram_guard.config.json) so relocating this pipeline to another
@@ -269,8 +252,7 @@ DEFAULT_CONFIG = {
     # Which Gemini model gemini_image.py uses for "Online photo" reference-
     # image generation. No hardcoded fallback here either, same reasoning
     # as creative_model/vision_model above -- Google renames/replaces
-    # these fairly often (2.5 Flash Image -> 3.1 Flash Image within this
-    # project's own lifetime), so a fixed default would eventually point
+    # these fairly often, so a fixed default would eventually point
     # at a retired model. None means gemini_image.py's own MODEL constant
     # is used until Settings' "Refresh models" + a real choice sets this.
     "gemini_model": None,
@@ -283,14 +265,13 @@ DEFAULT_CONFIG = {
     # key isn't silently disabled the first time this field appears in
     # an existing config.json.
     "gemini_enabled": True,
-    # Optional spend guard for gemini_image.py's PAID API calls (confirmed
-    # 2026-08-09: no usable free tier for image generation on this
-    # account). Off by default -- a pay-as-you-go Google Cloud billing
-    # account already caps real spend on its own; this is a convenience
-    # stop for catching a runaway/automated batch before it burns through
-    # a lot of calls, not a required safety net. A call COUNT, not a $
-    # figure -- per-image price varies by model/resolution and has
-    # already changed multiple times within this project's own lifetime,
+    # Optional spend guard for gemini_image.py's PAID API calls (there is
+    # no usable free tier for image generation on this account). Off by
+    # default -- a pay-as-you-go Google Cloud billing account already
+    # caps real spend on its own; this is a convenience stop for catching
+    # a runaway/automated batch before it burns through a lot of calls,
+    # not a required safety net. A call COUNT, not a $ figure --
+    # per-image price varies by model/resolution and changes over time,
     # so a fixed $ rate baked in here would just go stale.
     "gemini_pay_guard_enabled": False,
     "gemini_pay_guard_monthly_limit": 200,
@@ -302,9 +283,8 @@ DEFAULT_CONFIG = {
     "creative_backend": "ollama",
     # Which backend _vision_query() (keyframe/image QC review) actually
     # calls -- same "ollama" (default, local/free) / "gemini" choice as
-    # creative_backend, added 2026-08-12 once "gemini" already had
-    # multimodal (image-in) support wired up for creative writing. Kept
-    # as its own independent setting rather than reusing creative_
+    # creative_backend. Kept as its own independent setting rather than
+    # reusing creative_
     # backend's value: a user may want strong-model creative writing but
     # keep vision review on cheap/free local Ollama, or vice versa -- see
     # gemini_text.generate_vision_text.
@@ -334,21 +314,19 @@ DEFAULT_CONFIG = {
     # MODEL constant is used until Settings' "Refresh models" sets this.
     # This is the CREATIVE-writing model specifically -- vision_backend
     # has its OWN separate model setting below (gemini_vision_model),
-    # never silently reusing this one. Confirmed real gap (2026-08-12):
-    # forcing vision QC onto whatever model creative writing happens to
-    # be using means a genuinely vision-capable model can't be picked
-    # independently of (and at different cost from) the creative-writing
-    # choice. Concept research (build_concepts_request_payload's web-
-    # search-driven flow) always follows creative_backend/this model
-    # directly instead (2026-08-16, aligned -- research feeds straight
-    # into writing, so a separate backend/model choice added a decision
-    # with no real payoff).
+    # never silently reusing this one: forcing vision QC onto whatever
+    # model creative writing happens to be using would mean a genuinely
+    # vision-capable model can't be picked independently of (and at
+    # different cost from) the creative-writing choice. Concept research
+    # (build_concepts_request_payload's web-search-driven flow) always
+    # follows creative_backend/this model directly instead -- research
+    # feeds straight into writing, so a separate backend/model choice
+    # would add a decision with no real payoff.
     "gemini_text_model": None,
     "gemini_vision_model": None,
-    # Render output size/duration used to live here (2026-08-11) --
-    # 2026-08-12: moved to per-project CREATIVE.md (Duration:/Resolution:
-    # lines, see project_render_settings()) since it's genuinely a
-    # per-channel decision, not pipeline-wide. No longer read from config.
+    # Render output size/duration lives in per-project CREATIVE.md
+    # (Duration:/Resolution: lines, see project_render_settings())
+    # since it's genuinely a per-channel decision, not pipeline-wide.
 }
 
 
@@ -489,18 +467,17 @@ def list_ollama_models(ollama_url=None):
 # always be reported missing (not actually broken) on another OS, since
 # nothing in this codebase currently branches on sys.platform.
 EXTERNAL_BINARIES = [
-    # Neither ffmpeg nor ffprobe are listed here -- ffmpeg's only caller
-    # (multi-shot/spliced-sides rendering) was removed 2026-08-07 as an
-    # unused, non-working feature; ffprobe's job (every render's duration/
-    # stream check) now goes through PyAV (the `av` pip package) instead
-    # of a subprocess call, so neither is a real external dependency
-    # anymore -- both fully replaced by pip packages, see requirements.txt.
+    # Neither ffmpeg nor ffprobe are listed here -- ffmpeg has no caller
+    # (multi-shot/spliced-sides rendering is an unused, non-working
+    # feature); ffprobe's job (every render's duration/stream check)
+    # goes through PyAV (the `av` pip package) instead of a subprocess
+    # call, so neither is a real external dependency anymore -- both
+    # fully replaced by pip packages, see requirements.txt.
     #
-    # nvidia-smi used to be listed here (VRAM guard's own dependency) --
-    # removed 2026-08-08 along with vram_guard.py's local-GPU-query check
-    # itself: VRAM guard is now purely API-based (asks Ollama/ComfyUI what
-    # THEY have loaded over HTTP, not the local card's own free memory),
-    # specifically so this pipeline can be relocated to a machine that
+    # nvidia-smi is not listed here either: VRAM guard is purely
+    # API-based (asks Ollama/ComfyUI what THEY have loaded over HTTP, not
+    # the local card's own free memory), specifically so this pipeline
+    # can be relocated to a machine that
     # isn't the GPU host at all (e.g. this orchestrator in a Linux
     # container, Ollama/ComfyUI/the GPU on a separate Windows box) without
     # a dependency check falsely failing/warning about a local binary
@@ -510,7 +487,7 @@ EXTERNAL_BINARIES = [
 
 def _dep_status(defined, available, critical):
     """Three-state classification applied uniformly across every
-    check_dependencies() entry, per explicit direction 2026-08-15: a
+    check_dependencies() entry: a
     check must never collapse "never configured" and "configured but
     broken right now" into the same generic MISSING/red -- they're
     different problems with different fixes. Returns (status, critical):
@@ -529,14 +506,14 @@ def _dep_status(defined, available, critical):
 
 def local_machine_addresses():
     """Every hostname/IP that actually refers to THIS machine -- not just
-    the literal strings "localhost"/"127.0.0.1"/"::1". Confirmed real gap
-    (2026-08-16): a common setup points ollama_url/comfyui_url at the
-    machine's own LAN IP (e.g. http://192.168.10.8:11434) rather than
-    localhost -- same machine, just addressed differently, but the old
-    literal-string check treated that as "remote", hiding the local-only
-    Settings fields (Ollama executable, ComfyUI install path) AND the
-    dependency-check popup's "appears to be installed -- start it?" offer
-    even when Ollama/ComfyUI genuinely are installed right here. Best-
+    the literal strings "localhost"/"127.0.0.1"/"::1". A common setup
+    points ollama_url/comfyui_url at the machine's own LAN IP (e.g.
+    http://192.168.10.8:11434) rather than localhost -- same machine,
+    just addressed differently, but a literal-string-only check would
+    treat that as "remote", hiding the local-only Settings fields (Ollama
+    executable, ComfyUI install path) AND the dependency-check popup's
+    "appears to be installed -- start it?" offer even when Ollama/ComfyUI
+    genuinely are installed right here. Best-
     effort: a sandboxed/offline environment where hostname resolution
     itself fails still gets the three literal fallbacks."""
     addrs = {"localhost", "127.0.0.1", "::1"}
@@ -554,10 +531,10 @@ def check_dependencies(services=None):
     """Reports whether everything this pipeline needs is actually
     reachable right now, purely over HTTP -- Ollama's and ComfyUI's own
     APIs at their configured URLs, local or remote alike. No local-
-    executable/binary check of any kind (removed 2026-08-16, per explicit
-    direction): this pipeline never shells out to Ollama/ComfyUI itself,
-    so whether a binary happens to be on THIS machine's PATH was never
-    actually the thing that mattered -- only reachability is. Returns a
+    executable/binary check of any kind: this pipeline never shells out
+    to Ollama/ComfyUI itself, so whether a binary happens to be on THIS
+    machine's PATH is never actually the thing that matters -- only
+    reachability is. Returns a
     list of {name, found, status, critical, path, note, platform_note} so
     both the CLI and the web UI's Settings tab can surface the same check
     -- `found` is kept for backward compatibility (found == status=="ok"),
@@ -565,12 +542,10 @@ def check_dependencies(services=None):
     Advisory only -- doesn't block anything.
 
     `services` (default None = both) restricts which service(s) actually
-    get probed -- {"ollama"} or {"comfyui"}. Added 2026-08-16, per
-    explicit direction: "comfyui and ollama url checks should run
-    independently so its not so heavy each refresh of a url" -- Settings'
-    per-field refresh (editing just the Ollama URL, or clicking its own
-    refresh icon) used to always probe BOTH services and re-run the
-    ComfyUI model-file check even when only Ollama's URL changed."""
+    get probed -- {"ollama"} or {"comfyui"}. This lets Settings' per-field
+    refresh (editing just the Ollama URL, or clicking its own refresh
+    icon) probe only that one service instead of always re-running the
+    ComfyUI model-file check too."""
     services = set(services) if services else {"ollama", "comfyui"}
     results = []
     for name, note, platform_note in EXTERNAL_BINARIES:
@@ -583,12 +558,11 @@ def check_dependencies(services=None):
     ollama_selected = any(config.get(k) == "ollama" for k in
                            ("creative_backend", "vision_backend"))
 
-    # Service reachability is checked FIRST (moved ahead of the local
-    # binary/install/model-file rows below) -- per explicit direction
-    # 2026-08-15: "if remote or local checks pass then the result should
-    # be green, no need to warn for unused [local] services if they are
-    # ... reachable via one of the options available." A local install
-    # is genuinely one of two equally-valid ways to satisfy Ollama/
+    # Service reachability is checked FIRST, ahead of the local
+    # binary/install/model-file rows below: if remote or local checks
+    # pass the result should be green, with no warning for unused local
+    # services that are reachable via one of the options available. A
+    # local install is genuinely one of two equally-valid ways to satisfy Ollama/
     # ComfyUI, not a separate hard requirement layered on top of the
     # URL check -- so each local-fallback row below reads these results
     # and reports fully "ok" (not even the softer amber) whenever the
@@ -617,9 +591,9 @@ def check_dependencies(services=None):
         ("comfyui", "ComfyUI service", "comfyui_url", "/queue"),
     ) if spec[0] in services)
     # future.result(timeout=...) hard-bounds the WAIT even though the
-    # underlying thread can't actually be killed -- confirmed real
-    # complaint (2026-08-16): a garbage/unreachable host's DNS lookup can
-    # hang well past urlopen's own timeout= parameter (getaddrinfo doesn't
+    # underlying thread can't actually be killed: a garbage/unreachable
+    # host's DNS lookup can hang well past urlopen's own timeout=
+    # parameter (getaddrinfo doesn't
     # always respect it, especially on Windows), making a single bad URL
     # save silently take 20-30s with the button just saying "Checking..."
     # the whole time. This caps what the human actually waits to ~6s (5s
@@ -652,9 +626,8 @@ def check_dependencies(services=None):
             "service_key": service_key,
             # Shown any time the service isn't reachable -- the only
             # offered fix besides editing the URL above. No local-install
-            # detection or "start it for me" option (removed 2026-08-16,
-            # per explicit direction): the human is assumed capable of
-            # installing/starting/exposing these themselves, per
+            # detection or "start it for me" option: the human is assumed
+            # capable of installing/starting/exposing these themselves, per
             # help.html's install + network-exposure guides.
             "install_url": SERVICE_INSTALL_URLS.get(service_key) if not reachable else None,
         }
@@ -673,17 +646,15 @@ def check_dependencies(services=None):
     if "comfyui" in service_rows:
         results.append(service_rows["comfyui"])
 
-    # No local-install-path check of any kind (removed 2026-08-16, per
-    # explicit direction: "we dont need the comfyui install path all
-    # checks should be done via api") -- ComfyUI's own reachability
-    # (above) and its model files (below) are both confirmed purely
-    # through comfyui_url's live HTTP API, local or remote alike. There
-    # is nothing left for a separate "is ComfyUI installed on THIS
+    # No local-install-path check of any kind -- ComfyUI's own
+    # reachability (above) and its model files (below) are both checked
+    # purely through comfyui_url's live HTTP API, local or remote alike.
+    # There is nothing left for a separate "is ComfyUI installed on THIS
     # machine" row to tell a human that the reachability check doesn't
     # already cover.
 
     # Model-file completeness is ALWAYS a real dependency, local or
-    # remote ComfyUI alike -- per explicit direction 2026-08-15: a
+    # remote ComfyUI alike: a
     # workflow graph fails identically either way if the model is
     # genuinely missing wherever ComfyUI actually runs, and
     # check_models_status() already answers this purely from ComfyUI's
@@ -712,13 +683,13 @@ def check_dependencies(services=None):
         elif meta["stale"]:
             note += " -- COULD NOT VERIFY (ComfyUI unreachable during recheck), showing last known result"
         # meta["stale"] means "unconfirmed right now" (ComfyUI unreachable),
-        # not "confirmed fine" -- confirmed live 2026-08-15: with reason
-        # unset but stale=True and a cached missing=[], this used to still
-        # report status "ok"/green ("all present -- COULD NOT VERIFY..." in
-        # the SAME breath as a green badge), inconsistent with the sibling
-        # "ComfyUI service"/"ComfyUI install" rows correctly going red the
-        # moment ComfyUI is unreachable. An unverifiable claim must never
-        # render as a confident green pass.
+        # not "confirmed fine" -- with reason unset but stale=True and a
+        # cached missing=[], reporting status "ok"/green would put
+        # "all present -- COULD NOT VERIFY..." in the SAME breath as a
+        # green badge, inconsistent with the sibling "ComfyUI service"/
+        # "ComfyUI install" rows correctly going red the moment ComfyUI is
+        # unreachable. An unverifiable claim must never render as a
+        # confident green pass.
         if reason or meta["stale"]:
             status, critical = "error", True
         else:
@@ -799,8 +770,8 @@ COMFYUI_CLIENT_ID = "dream_pipeline"
 
 def query_comfyui_progress(timeout=2.0):
     """Real render progress straight from ComfyUI's own websocket API --
-    confirmed live 2026-08-08 by reading ComfyUI's own source
-    (comfy_execution/progress.py, server.py): there is no REST endpoint
+    per ComfyUI's own source (comfy_execution/progress.py, server.py):
+    there is no REST endpoint
     that exposes step-level percentage (/api/jobs/<id> only has
     pending/in_progress/completed/failed, no numeric progress), only a
     "progress_state" event pushed over /ws to whichever connection's
@@ -870,11 +841,10 @@ REQUIRED_SPEC_FIELDS = [
 DEFAULT_NEGATIVE_PROMPT = ("blurry image, low detail, camera shake, "
                             "text overlay, subtitles, watermark, morphing")
 
-# The Scene Setup / Timeline & Audio Sync structure (2026-08-08, replacing
-# the old fixed 4x[00:00-00:05] single-block format as the default --
-# confirmed to produce reliable audio/lip-sync vs. a flowing paragraph,
-# same reason as before, but flexible on beat count/timing and scales
-# from one voice to several without forcing an artificial split). Voice
+# The Scene Setup / Timeline & Audio Sync structure produces reliable
+# audio/lip-sync vs. a flowing paragraph, while staying flexible on beat
+# count/timing and scaling from one voice to several without forcing an
+# artificial split. Voice
 # count follows the content: Voice A alone for a single narrator/
 # character, Voice B/C/... added only when the piece genuinely has that
 # many distinct voices trading lines -- never added just to fill a
@@ -905,8 +875,8 @@ def _build_beat_format_example():
     lines = ['[Scene Setup]: Cinematic shot of a barn owl perched on a rafter in a '
              'dim barn, moonlight cutting through a gap in the boards.\n',
              '[Timeline & Audio Sync]:']
-    # Confirmed failure (2026-08-08, live render test): a beat with Video:
-    # but no Audio: line at all pushed that beat's audio to the WRONG
+    # A beat with Video:
+    # but no Audio: line at all pushes that beat's audio to the WRONG
     # place in the render (audio from an earlier beat bled into it) --
     # every beat needs both lines, always, even when there's no dialogue.
     # A "silent" beat still gets an Audio: line, just one describing
@@ -1017,9 +987,8 @@ def golden_rules_body():
 
 def golden_negative_baseline():
     """The negative-prompt baseline CSV, parsed out of golden_rules.md's
-    own marker line -- one real source for this list (used to be a
-    separately-maintained Python constant, which could silently drift
-    from the file a human actually edits)."""
+    own marker line -- one real source for this list, so it can't
+    silently drift from the file a human actually edits."""
     text = format_rules() or ""
     for line in text.splitlines():
         if line.startswith(_NEGATIVE_BASELINE_MARKER):
@@ -1047,10 +1016,9 @@ _FALLBACK_STYLE_OPTIONS = (
 
 def style_negative_terms(style):
     """Contra-style exclusion terms for the negative-prompt baseline --
-    Gemini's own fix (2026-08-12) for a real contradiction it caught: an
-    animated-style request with a negative baseline that never excludes
-    photorealism/live-action risks the video model morphing between
-    render styles mid-clip. Gemini's fix assumed one fixed style; this
+    an animated-style request with a negative baseline that never
+    excludes photorealism/live-action risks the video model morphing
+    between render styles mid-clip. This
     project's $style is chosen per-generation from two real options
     (project_genre_and_styles), so the same exclusion mechanism is
     applied to whichever style actually got picked THIS call, by keyword
@@ -1063,9 +1031,8 @@ def style_negative_terms(style):
     return ""
 # Byte-identical to every current workflow_api_*.json's own baked-in
 # defaults -- a project that's never set Duration:/Resolution: in its
-# CREATIVE.md gets exactly the render behavior it always had (2026-08-11's
-# "Set the default to what it is already" requirement, now sourced
-# per-project instead of from a global Settings field).
+# CREATIVE.md gets exactly the render behavior it always had, sourced
+# per-project rather than from a global Settings field.
 _FALLBACK_RENDER_WIDTH = 512
 _FALLBACK_RENDER_HEIGHT = 896
 _FALLBACK_RENDER_DURATION_S = 24
@@ -1101,11 +1068,10 @@ def project_genre_and_styles():
 def project_render_settings():
     """(width, height, duration_s) parsed live from this project's own
     CREATIVE.md -- "Duration: 24" (seconds) and "Resolution: 512x896"
-    lines, same marker-line pattern as Genre:/Visual style:. 2026-08-12:
-    moved here from a global config.json Settings field -- render size/
-    length is genuinely a per-PROJECT decision (a channel's own format),
-    not a pipeline-wide one, and this keeps it next to the genre/style
-    facts that already live in the same per-project file. Falls back to
+    lines, same marker-line pattern as Genre:/Visual style:. Render
+    size/length is genuinely a per-PROJECT decision (a channel's own
+    format), not a pipeline-wide one, so this lives next to the
+    genre/style facts already in the same per-project file. Falls back to
     this pipeline's original baked-in defaults for a project that hasn't
     set these yet."""
     text = creative_guidance_pointer() or ""
@@ -1153,7 +1119,7 @@ RESOLUTION_OPTIONS = (
 def project_concept_directive():
     """This project's standing creative directive, from CREATIVE.md's
     '## Concept directive' section -- everything between that header and
-    the next '##' (or end of file). REAL, functional input (2026-08-12):
+    the next '##' (or end of file). REAL, functional input:
     fed into every build_simple_spec_prompt() call via the template's
     $concept_directive slot. Blank means exactly what the form says --
     the AI originates a new idea from scratch each call; non-blank is a
@@ -1174,13 +1140,12 @@ def project_concept_directive():
 def creative_fields():
     """Every field the Creative tab's FORM edits, parsed live from this
     project's own CREATIVE.md -- one call backing the form's GET load.
-    2026-08-12: the Creative tab moved from a raw free-text markdown
-    editor to a real form (genre/style/duration/resolution as dropdown-
-    plus-custom fields, concept directive as plain text, prompt template
-    as its own textarea) -- a human editing this shouldn't need to know
-    or preserve CREATIVE.md's exact markdown shape (marker lines, fence
-    syntax) by hand; the form/compose_creative_md pair is now the only
-    thing that needs to agree on that shape."""
+    The Creative tab is a real form (genre/style/duration/resolution as
+    dropdown-plus-custom fields, concept directive as plain text, prompt
+    template as its own textarea) -- a human editing this shouldn't need
+    to know or preserve CREATIVE.md's exact markdown shape (marker
+    lines, fence syntax) by hand; the form/compose_creative_md pair is
+    the only thing that needs to agree on that shape."""
     genre, styles = project_genre_and_styles()
     width, height, duration_s = project_render_settings()
     concept_path, concept_total, concept_remaining = concept_list_stats()
@@ -1228,14 +1193,13 @@ def compose_creative_md(display_name, genre, styles, duration_s, resolution, con
         f"{_DURATION_MARKER} {int(duration_s or _FALLBACK_RENDER_DURATION_S)}\n"
         f"{_RESOLUTION_MARKER} {resolution or f'{_FALLBACK_RENDER_WIDTH}x{_FALLBACK_RENDER_HEIGHT}'}\n\n"
         f"{_CONCEPT_DIRECTIVE_HEADER}\n\n"
-        # Confirmed real bug (2026-08-12): a placeholder sentence used to
-        # get written here when blank ("(Blank -- the AI originates...")
-        # -- which project_concept_directive() then read straight back as
-        # if it were real, human-provided directive text, and
-        # build_simple_spec_prompt() would have silently included that
+        # Must never write a placeholder sentence here when blank (e.g.
+        # "(Blank -- the AI originates...") -- project_concept_directive()
+        # reads this section back as real, human-provided directive text,
+        # and build_simple_spec_prompt() would silently include that
         # SENTENCE ITSELF in every prompt as a "standing directive."
-        # Genuinely empty means genuinely empty now; the explanation
-        # lives only in the form's tooltip/placeholder, never in the file.
+        # Genuinely empty means genuinely empty; the explanation lives
+        # only in the form's tooltip/placeholder, never in the file.
         f"{(concept_directive or '').strip()}\n\n"
         f"{PROMPT_TEMPLATE_SECTION_HEADER}\n\n"
         "This is the actual prompt sent to the AI for each story -- tweak its "
@@ -1260,14 +1224,14 @@ def _simple_prompt_title_and_style(existing_spec, master_list_entry, style_optio
     list entry (format 'Tale #N: TITLE -- premise...') and picks a style
     at random, same as a human manually varying it call to call.
 
-    title_locked=False (2026-08-12): the manage table's title FIELD was
-    cleared by the human, not just "still whatever this row already had"
-    -- confirmed real bug: build_simple_spec_prompt always reused
-    existing_spec's on-disk title regardless of what the browser form
-    actually showed, because it had no way to tell "human cleared this
-    on purpose, wants a genuinely new idea" apart from "field just
-    happens to be blank because nothing's been generated yet." Now an
-    explicit instruction substituted into $title itself asks the model
+    title_locked=False means the manage table's title FIELD was cleared
+    by the human, not just "still whatever this row already had" --
+    build_simple_spec_prompt must not just reuse existing_spec's on-disk
+    title regardless of what the browser form actually showed, since
+    there's otherwise no way to tell "human cleared this on purpose,
+    wants a genuinely new idea" apart from "field just happens to be
+    blank because nothing's been generated yet." An explicit instruction
+    substituted into $title itself asks the model
     to invent an all-new title/premise, ignoring both the existing spec
     AND the master list entry (which is itself just the OLD idea for
     this slot) -- see write_row_spec's own master-list sync for how the
@@ -1291,26 +1255,19 @@ def _simple_prompt_title_and_style(existing_spec, master_list_entry, style_optio
 
 def build_simple_spec_prompt(number, note=None, workflow=None, title_locked=True):
     """The minimal spec-generation prompt for strong creative backends
-    (Gemini API) -- replaces the old JSON-context payload
-    (build_spec_request_payload + _render_creative_prompt's big Context
-    (JSON) blob) for this case. Confirmed live 2026-08-12: a bare,
-    hand-written template with no dedup-as-JSON, no reviewed-examples
-    few-shot, no schema-hint prose produced funnier, more committed
-    writing than the old heavier payload in a real side-by-side test
-    (numbat infomercial, serval sprint log).
+    (Gemini API) -- a bare, hand-written template with no dedup-as-JSON,
+    no reviewed-examples few-shot, no schema-hint prose, which produces
+    funnier, more committed writing than a heavier JSON-context payload.
 
     This exact section layout is Gemini's OWN preference: shown its
     prompt, asked to critique it, then asked to rebuild it per its own
-    critique and further tighten that rebuild -- this is the result of
-    that two-round self-review, with two real bugs it caught fixed
-    (fml2v_keyframe_prompts' type contradiction; the JSON skeleton's
-    trailing comma) plus a third it didn't catch itself: the dedup list
-    used to include THIS spec's own current title, telling the model not
-    to repeat the very thing it was just asked to write -- now excluded.
+    critique and further tighten that rebuild. The dedup list excludes
+    THIS spec's own current title -- including it would tell the model
+    not to repeat the very thing it was just asked to write.
 
     $rules is golden_rules_body() -- the single consolidated rules file
     (see its own header) -- so every mechanical/render-quality fix this
-    pipeline has confirmed necessary rides along here too, not just the
+    pipeline needs rides along here too, not just the
     motion-continuity note. $genre/$style come from THIS project's own
     CREATIVE.md (project_genre_and_styles()) -- the same file the
     Creative tab edits -- so that page actually controls what gets sent,
@@ -1374,13 +1331,12 @@ def build_simple_spec_prompt(number, note=None, workflow=None, title_locked=True
 
 def lean_spec_instructions(note, concept_entry, reviewed_examples, locked_fields=None):
     """Minimal instructions for a strong creative_backend (Gemini
-    API) -- confirmed live 2026-08-11: piling on CREATIVE.md's full rule
+    API) -- piling on CREATIVE.md's full rule
     set PLUS an explicit "you have creative freedom" caveat on top of it
-    was still more context than a genuinely strong model needs, and (per
-    direct user feedback, comparing a bare hand-written prompt that
-    worked great in Gemini's own web UI) risks the model tripping over
-    contradicting/redundant instructions rather than just writing a good
-    story. This intentionally sends far LESS than the Ollama path: no
+    is more context than a genuinely strong model needs, and risks the
+    model tripping over contradicting/redundant instructions rather
+    than just writing a good story. This intentionally sends far LESS
+    than the Ollama path: no
     CREATIVE.md dump, no numbered rules, no labeled-draft process -- just
     the required format (already in schema_hint), the human's own
     direction if given, and reviewed_examples as few-shot style/tone
@@ -1409,16 +1365,15 @@ def lean_spec_instructions(note, concept_entry, reviewed_examples, locked_fields
 def creative_guidance_pointer():
     """This project's own CREATIVE.md -- its creative STYLE (tone, subject
     matter, content modes, worked examples, dedup rules, etc.), specific
-    to this one channel. The mechanical/technical prompt-format rules
-    that used to live inside CREATIVE.md (bracket beats, camera rules,
-    negative-prompt baseline) have moved to format_rules() instead --
-    shared pipeline-wide, not duplicated per project (see format_rules.md).
+    to this one channel. Mechanical/technical prompt-format rules
+    (bracket beats, camera rules, negative-prompt baseline) live in
+    format_rules() instead -- shared pipeline-wide, not duplicated per
+    project (see format_rules.md).
 
-    Bug fix (2026-08-08): this used to hard-truncate to the first 4000
-    characters, which silently dropped most of a channel's own guidance
-    once its CREATIVE.md grew past that. Kept as a generous sanity cap
-    here (not an expected truncation point) now that the file is
-    creative-style-only and much smaller."""
+    The 60000-character cap is a generous sanity cap, not an expected
+    truncation point, now that the file is creative-style-only and much
+    smaller -- hard-truncating to a low number would silently drop most
+    of a channel's own guidance once its CREATIVE.md grows past that."""
     path = DATA_DIR / "CREATIVE.md"
     if not path.exists():
         return None
@@ -1437,9 +1392,9 @@ SPEC_SCHEMA_HINT = {
 }
 
 # Swapped in for "positive_prompt" when using_strong_creative_backend() --
-# confirmed live 2026-08-11: reviewed_examples' own full positive_prompt
-# text already demonstrates the exact [Scene Setup]/[Timeline & Audio
-# Sync] structure via real examples, so restating it as prescriptive prose
+# reviewed_examples' own full positive_prompt text already demonstrates
+# the exact [Scene Setup]/[Timeline & Audio Sync] structure via real
+# examples, so restating it as prescriptive prose
 # on top is redundant context a strong model doesn't need (same reasoning
 # as lean_spec_instructions). Landing near 20-24s stays explicit since
 # that's not something a model can infer from reading examples alone.
@@ -1458,11 +1413,10 @@ def lean_positive_prompt_hint():
 
 # Fields the model is NEVER asked for and NEVER allowed to return -- these
 # are facts about real files/decisions, owned entirely by code or a direct
-# human answer, not creative content. Confirmed necessary (2026-08-07): even
-# after fixing the model to stop copying stale dialogue, it still had to be
-# TRUSTED to correctly echo back a real file path -- and the one time that
-# path was missing from its context, it fabricated a plausible-looking fake
-# ("existing_reference_photo.jpg") rather than say it didn't know. Removing
+# human answer, not creative content. Trusting the model to correctly echo
+# back a real file path is fragile -- if that path is ever missing from
+# its context, it will fabricate a plausible-looking fake (e.g.
+# "existing_reference_photo.jpg") rather than say it doesn't know. Removing
 # these fields from the model's schema entirely, and having the SCRIPT set
 # them after the fact, makes that failure mode structurally impossible: the
 # model is never in a position to invent a path because it's never asked
@@ -1499,8 +1453,8 @@ def build_spec_request_payload(number, note=None, workflow=None):
     is decided automatically -- a spec that already exists gets its
     current content embedded (so the model edits/regenerates it in
     context), one that doesn't gets the master-list entry (if any) plus
-    dedup context instead. One shape either way, per the 2026-08-06
-    design decision not to have separate "new" and "regen" flags.
+    dedup context instead. One shape either way -- there are no separate
+    "new" and "regen" flags.
 
     note: optional free-text creative direction from the human, embedded
     directly in the payload. Exists because relying on a model to
@@ -1516,15 +1470,15 @@ def build_spec_request_payload(number, note=None, workflow=None):
     workflow = workflow or (existing_spec or {}).get("workflow")
     concept_entry = master_list_concept_entry(number)
 
-    # Confirmed bug (2026-08-07): giving the model the OLD full creative
-    # content (premise/positive_prompt/etc) alongside a human_direction
-    # note made it just copy the old content almost verbatim and ignore
-    # the note -- a small model anchors hard on a large, already-well-
-    # formed block of text sitting right next to a much shorter
-    # instruction. Fix: when a note is given, don't show the old creative
-    # content at all (nothing to anchor on) -- without a note (pure "fix
-    # what's wrong" regen), show it, since the model genuinely needs to
-    # see the old content to know what to fix. Either way, CODE_OWNED_
+    # Giving the model the OLD full creative content (premise/
+    # positive_prompt/etc) alongside a human_direction note makes it
+    # just copy the old content almost verbatim and ignore the note --
+    # a small model anchors hard on a large, already-well-formed block
+    # of text sitting right next to a much shorter instruction. So when
+    # a note is given, the old creative content isn't shown at all
+    # (nothing to anchor on) -- without a note (pure "fix what's wrong"
+    # regen), it is shown, since the model genuinely needs to see the
+    # old content to know what to fix. Either way, CODE_OWNED_
     # SPEC_FIELDS are stripped out entirely -- the model never sees or
     # returns them.
     if note and existing_spec:
@@ -1545,21 +1499,20 @@ def build_spec_request_payload(number, note=None, workflow=None):
             # fml2v_keyframe_prompts: skip asking for it at all once three
             # real reference images already exist -- write_row_keyframes
             # itself treats that as "nothing to write" (all-or-nothing on
-            # the prompt side), so asking the model here too was pure
-            # waste, and (confirmed 2026-08-09) it doesn't even reliably
-            # return the required {"first"/"middle"/"last"} object shape
-            # when asked, since nothing here told it that shape was
-            # required -- it wrote one flat string instead, which crashed
-            # every later read of this row (get_manage_row's kf.get(...)).
+            # the prompt side), so asking the model here too is pure
+            # waste, and it doesn't reliably return the required
+            # {"first"/"middle"/"last"} object shape when asked without
+            # this skip, since nothing here tells it that shape is
+            # required -- it would write one flat string instead, which
+            # crashes every later read of this row (get_manage_row's
+            # kf.get(...)).
             if field == "fml2v_keyframe_prompts" and fml2v_images_satisfied(number):
                 continue
-            # Confirmed real failure (2026-08-09): "ANIMATION/dialogue"
-            # wording here was backwards -- these are still-image T2I/I2I
-            # prompts (see generate_keyframes), not video content. Telling
-            # the model to describe ANIMATION produced motion verbs a
-            # single still frame can't depict ("stalking across the
-            # snow"), which then failed its own post-generation review
-            # every attempt, no matter how many retries ran. Matches
+            # These are still-image T2I/I2I prompts (see generate_keyframes),
+            # not video content. Wording that describes ANIMATION produces
+            # motion verbs a single still frame can't depict ("stalking
+            # across the snow"), which then fails its own post-generation
+            # review every attempt, no matter how many retries run. Matches
             # build_keyframes_request_payload's schema_hint (the K chip's
             # own path to this same field) -- still POSE, never animation.
             schema_hint[field] = (f"required for workflow={workflow!r} -- an OBJECT "
@@ -1710,17 +1663,14 @@ def write_row_spec(number, workflow, fields, use_ai, note, verbose=False):
     field validation to reject with a clear error (use_ai False -- the
     human chose to fill everything in by hand and missed one).
 
-    Confirmed real bug (2026-08-17): this used to build the new spec dict
-    from scratch (just naive_locked_fields + code_owned) instead of
-    starting from what's already on disk -- do_write_spec does a full
-    overwrite (spec_path.write_text), so ANY field not in ROW_SPEC_FIELDS
-    or CODE_OWNED_SPEC_FIELDS (e.g. fml2v_guide_strengths, saved
-    separately via its own per-slot weight input) was silently dropped
-    the instant "Save content" ran for any OTHER reason -- from the
-    human's side, a weight they'd just set appeared to randomly reset.
-    Starting from the existing on-disk spec and layering locked fields +
-    code_owned on top preserves anything this function doesn't itself
-    know or care about."""
+    do_write_spec does a full overwrite (spec_path.write_text), so
+    building the new spec dict from scratch (just naive_locked_fields +
+    code_owned) would silently drop any field not in ROW_SPEC_FIELDS or
+    CODE_OWNED_SPEC_FIELDS (e.g. fml2v_guide_strengths, saved separately
+    via its own per-slot weight input) the instant "Save content" ran for
+    any other reason. Starting from the existing on-disk spec and
+    layering locked fields + code_owned on top preserves anything this
+    function doesn't itself know or care about."""
     spec_path = DATA_DIR / f"spec_{number:03d}.json"
     existing_on_disk = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.exists() else {}
     naive_locked_fields = {k: v for k, v in fields.items() if k in ROW_SPEC_FIELDS and (v or "").strip()}
@@ -1804,21 +1754,15 @@ def generate_row_spec_content(number, workflow, fields, note, verbose=False):
     errors write_row_spec would (missing required fields, or the AI
     failing validation after retries).
 
-    Confirmed real bug (2026-08-09): the manage table always pre-fills
-    every field with the row's existing on-disk content, so "the human
-    deliberately typed/kept this exact value" and "this field was never
-    touched, it's just what was already there" were indistinguishable --
-    ANY non-blank field counted as "locked, final, don't touch." For an
-    already-written row (i.e. every real row), that's EVERY field, so
-    schema_hint ended up empty and this degenerated to "hand back
-    whatever was already there," silently ignoring `note` entirely --
-    a batch of "regenerate with this direction" requests all reported
-    success while actually changing nothing. Fix: when a note is given,
-    only a field that actually DIFFERS from the on-disk spec counts as
-    locked -- an untouched field is fair game for the model to rewrite,
-    matching build_spec_request_payload's own existing "note given ->
-    don't even show old content, nothing to anchor on" fix for the CLI
-    path, which this manage-table path never had."""
+    The manage table always pre-fills every field with the row's existing
+    on-disk content, so "the human deliberately typed/kept this exact
+    value" and "this field was never touched, it's just what was already
+    there" are indistinguishable from a non-blank value alone. When a
+    note is given, only a field that actually DIFFERS from the on-disk
+    spec counts as locked -- an untouched field is fair game for the
+    model to rewrite, matching build_spec_request_payload's own "note
+    given -> don't even show old content, nothing to anchor on" behavior
+    for the CLI path."""
     if note:
         spec_path = DATA_DIR / f"spec_{number:03d}.json"
         existing_on_disk = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.exists() else {}
@@ -1871,7 +1815,7 @@ def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_f
     object, never a partial mix -- so unless all three images are already
     present, all three prompts are needed (each individually still locked
     verbatim if the human typed it; the model, if used, only fills the
-    rest).
+    rest.
 
     first_frame_source_hint: whether the CONTENT being written here was
     AI-composed, independent of `use_ai` -- the web UI's "Generate
@@ -1883,9 +1827,9 @@ def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_f
     step); None (the CLI's single-step generate-and-save path, which has
     no separate preview) falls back to use_ai itself. When true and this
     row is about to auto-generate a first frame (no real image yet),
-    "first_frame_source": "online" is set on the spec -- confirmed
-    working end to end (2026-08-09): a real CC0 photo seeds the same
-    T2I/I2I graph instead of the blank placeholder, fixing the species
+    "first_frame_source": "online" is set on the spec, so a real CC0
+    photo seeds the same T2I/I2I graph instead of the blank placeholder,
+    fixing the species
     accuracy AI-authored image prompts can't guarantee on their own."""
     prefer_online = use_ai if first_frame_source_hint is None else first_frame_source_hint
     images = find_reference_images(number)
@@ -1928,12 +1872,12 @@ def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_f
         if len(images) == 3 and {p.stem for p in images} == {"1", "2", "3"}:
             if not typed:
                 return  # already satisfied, nothing new to record
-            # Confirmed real bug (2026-08-13): a story rewrite (S chip) that
-            # leaves stale keyframe images in place used to silently drop
-            # freshly-typed/composed keyframe text right here -- fields was
-            # never even looked at once images satisfied the workflow, so
-            # the spec kept pointing at images from the OLD story with no
-            # record the human/AI had just written new prompts for it. Any
+            # A story rewrite (S chip) that leaves stale keyframe images in
+            # place would otherwise silently drop freshly-typed/composed
+            # keyframe text right here -- fields is never even looked at
+            # once images satisfy the workflow, so the spec would keep
+            # pointing at images from the OLD story with no record the
+            # human/AI had just written new prompts for it. Any
             # real text arriving here means an explicit new set was
             # composed for this save -- delete the stale images so they
             # can't keep being silently reused, same as the manual
@@ -1947,11 +1891,10 @@ def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_f
             updates = {"fml2v_keyframe_prompts": locked}
             if prefer_online:
                 updates["first_frame_source"] = "online"
-            # Confirmed real bug (2026-08-13, same day as the delete-stale-
-            # images fix above): deleting the FILES isn't enough on its own
-            # -- the spec's own fml2v_first_image/middle/last fields (set
-            # by a PREVIOUS render to the old images' paths) survive a
-            # merge untouched otherwise, since merge_and_write_spec only
+            # Deleting the FILES isn't enough on its own -- the spec's own
+            # fml2v_first_image/middle/last fields (set by a prior render
+            # to the old images' paths) survive a merge untouched
+            # otherwise, since merge_and_write_spec only
             # overwrites keys actually present in `updates`. The next
             # render then tries to load a path that no longer exists and
             # fails outright ("spec's fml2v_first_image does not exist")
@@ -2007,14 +1950,14 @@ def generate_row_keyframes_content(number, workflow, fields, verbose=False, spec
     is only ever called from the 'K' chip's Generate action, so use_ai is
     implied True -- unlike write_row_keyframes, which also serves the
     AI-off Save path). Deliberately does NOT skip/return None just
-    because real images already satisfy the workflow (confirmed real
-    bug, 2026-08-09: it used to, which made ticking K on a row that
-    already had an image silently produce a bare "Nothing to generate."
-    with zero explanation, both here AND client-side -- see
-    runManageUpdates' own matching fix) -- being called here at all
-    already means a human explicitly asked to compose a fresh prompt
-    (e.g. to then regenerate/replace an existing image via "Online
-    photo"), a legitimate request this used to just refuse outright.
+    because real images already satisfy the workflow -- doing so would
+    make ticking K on a row that already had an image silently produce a
+    bare "Nothing to generate." with zero explanation, both here AND
+    client-side -- see runManageUpdates' own matching handling --
+    being called here at all already means a human explicitly asked to
+    compose a fresh prompt (e.g. to then regenerate/replace an existing
+    image via "Online photo"), a legitimate request that must not be
+    refused outright.
     Raises SystemExit on the same errors write_row_keyframes would.
 
     spec_override: when the 'S' spec chip was ALSO ticked and generated
@@ -2077,18 +2020,17 @@ def resolve_slot_image_lenient(number, workflow, slot):
     Dream with only 2 of 3 keyframe images still shows whichever ones
     actually exist, rather than requiring a complete triple.
 
-    Confirmed real bug (2026-08-12): an earlier all-or-nothing version
-    (only counting a slot as filled once all three fml2v images were
-    present, matching the render-time rule that fml2v needs a complete
-    triple) meant deleting just the 'first' slot's image (to force a
-    regen after a story rewrite) made the OTHER TWO still-good images
-    ('middle'/'last', 2.png/3.png, physically still on disk) vanish from
-    the manage table entirely -- nothing to look at, reuse, or manually
-    reassign to a different slot. "Only show once render-ready" is right
-    for deciding whether a render can proceed, wrong for deciding what a
-    human editing this row gets to see -- so this lookup is now the only
-    one the manage table uses; render-readiness is checked separately
-    where it actually matters."""
+    An all-or-nothing version (only counting a slot as filled once all
+    three fml2v images are present, matching the render-time rule that
+    fml2v needs a complete triple) would mean deleting just the 'first'
+    slot's image (to force a regen after a story rewrite) makes the OTHER
+    TWO still-good images ('middle'/'last', 2.png/3.png, physically still
+    on disk) vanish from the manage table entirely -- nothing to look at,
+    reuse, or manually reassign to a different slot. "Only show once
+    render-ready" is right for deciding whether a render can proceed,
+    wrong for deciding what a human editing this row gets to see -- so
+    this lookup is the only one the manage table uses; render-readiness
+    is checked separately where it actually matters."""
     if workflow == "i2v":
         images = find_reference_images(number)
         return images[0] if len(images) == 1 else None
@@ -2242,14 +2184,14 @@ def get_manage_row(number):
     # Only counts files actually relevant to the keyframe/reference set
     # this Dream uses -- properly-named keyframe files (stems "1"/"2"/
     # "3") when any exist, or any OTHER image when none of those do (the
-    # i2v single-reference case). Confirmed real gap (2026-08-12): a flat
-    # "any image file in the folder" scan meant an unrelated file sitting
-    # there (a debug artifact like _online_reference_seed.png, or a
-    # human's own kept-around reference photo) read as "real images
-    # present" even with zero actual keyframes rendered yet -- wrong for
-    # what this flag exists to answer. Same "is this related to our
-    # selected keyframes" test find_reference_images itself now uses,
-    # not a naming-convention (underscore-prefix) heuristic.
+    # i2v single-reference case). A flat "any image file in the folder"
+    # scan would let an unrelated file sitting there (a debug artifact
+    # like _online_reference_seed.png, or a human's own kept-around
+    # reference photo) read as "real images present" even with zero
+    # actual keyframes rendered yet -- wrong for what this flag exists to
+    # answer. Uses the same "is this related to our selected keyframes"
+    # test find_reference_images itself uses, not a naming-convention
+    # (underscore-prefix) heuristic.
     _all_folder_images = [
         p for folder_name in existing_dream_folders(number)
         for p in (DREAMS_ROOT / folder_name).iterdir()
@@ -2325,10 +2267,9 @@ def build_keyframes_request_payload(number, image_count, spec_override=None):
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
     if image_count == 1:
         fields_needed = ["i2v_generate_image_prompt"]
-        # Confirmed real (2026-08-09, ChatAiMals #85/#91/#93/#95/#98 batch
-        # test): the model kept copying positive_prompt's own "[Scene
-        # Setup]:" section label onto the FRONT of this field too, since
-        # nothing here said not to -- harmless to the T2I render itself
+        # Without an explicit prohibition, the model tends to copy
+        # positive_prompt's own "[Scene Setup]:" section label onto the
+        # FRONT of this field too -- harmless to the T2I render itself
         # (just extra text), but sloppy and not what this field is.
         schema = {"i2v_generate_image_prompt": "string -- still-image description "
                   "of the opening frame (appearance/pose/setting, NOT animation). "
@@ -2337,14 +2278,13 @@ def build_keyframes_request_payload(number, image_count, spec_override=None):
                   "positive_prompt's format; this is a separate, standalone field."}
     else:
         fields_needed = ["fml2v_keyframe_prompts"]
-        # Confirmed real failure (2026-08-09): "full scene description"
-        # alone let the model write ACTION verbs into "first" ("stalking
-        # slowly and cautiously across the snow") -- a single still frame
-        # can't actually depict "stalking across," so the T2I output kept
-        # getting judged a mismatch against its own prompt no matter how
-        # many retries ran, every single attempt. Same fix i2v's own
-        # schema hint already uses just below: force a still POSE, not a
-        # motion/action description.
+        # "full scene description" alone lets the model write ACTION verbs
+        # into "first" ("stalking slowly and cautiously across the snow")
+        # -- a single still frame can't actually depict "stalking across,"
+        # so the T2I output gets judged a mismatch against its own prompt
+        # no matter how many retries run. Same approach i2v's own schema
+        # hint uses just below: force a still POSE, not a motion/action
+        # description.
         schema = {"fml2v_keyframe_prompts": {
             "first": "string -- still-image description of this frame's held pose "
                      "(appearance/pose/setting, NOT motion or action -- e.g. 'crouched "
@@ -2470,20 +2410,19 @@ def reviewed_spec_examples(limit=3):
     """title/premise/positive_prompt for a RANDOM sample of Tales a human
     has actually moved into DREAMS_ROOT/Reviewed -- i.e. the approved
     bar, not just whatever made it into concepts.md or got a spec
-    written. Concept generation used to only dedup against
-    existing_list_tail (the draft master list), which can't catch a new
-    concept re-treading an animal/role/joke-type that already shipped,
-    and gives the model no signal on what tone actually cleared review
-    vs. what merely got drafted.
+    written. Deduping concept generation only against existing_list_tail
+    (the draft master list) can't catch a new concept re-treading an
+    animal/role/joke-type that already shipped, and gives the model no
+    signal on what tone actually cleared review vs. what merely got
+    drafted -- this supplies that signal.
 
-    Randomized rather than most-recent (changed 2026-08-11, direct user
-    request): always citing the same handful of most-recent Tales as the
-    style reference risked the model's own output converging toward
-    whatever those few happened to be, rather than the full breadth of
-    what's actually shipped -- a fresh random draw each call keeps the
-    style reference varied across a batch of generations. limit=3 per
-    user's own request (down from 15 -- a strong model needs a few good
-    examples, not an exhaustive dump).
+    Randomized rather than most-recent: always citing the same handful of
+    most-recent Tales as the style reference risks the model's own output
+    converging toward whatever those few happen to be, rather than the
+    full breadth of what's actually shipped -- a fresh random draw each
+    call keeps the style reference varied across a batch of generations.
+    limit=3 keeps the prompt tight -- a strong model needs a few good
+    examples, not an exhaustive dump.
 
     Uses list_media_folders' existing reviewed-vs-active split rather
     than re-deriving it. Returns [] if nothing's been reviewed yet."""
@@ -2629,11 +2568,11 @@ def sync_master_list_entry(number, title, premise):
     save path (human-typed, AI-composed, either backend) goes through
     this the same way.
 
-    Confirmed real gap (2026-08-12): clearing a row's title/premise and
-    letting the AI (or a human) invent a genuinely new idea left the OLD
-    list line untouched -- the list kept advertising whatever idea used
-    to be there, silently falling out of sync with what actually got
-    rendered. Overwrites the existing line if this number already has
+    Clearing a row's title/premise and letting the AI (or a human) invent
+    a genuinely new idea would otherwise leave the OLD list line
+    untouched -- the list would keep advertising the old idea, silently
+    falling out of sync with what actually got rendered. Overwrites the
+    existing line if this number already has
     one, appends a new line if not -- always reality-matches, no matter
     which direction the change came from.
 
@@ -2724,12 +2663,12 @@ def _validate_and_normalize_spec(number, spec, allow_custom_beats=False, positiv
         beats_missing_lines = [i + 1 for i, seg in enumerate(segments)
                                 if "- Video:" not in seg or "- Audio:" not in seg]
         has_voice_tag = bool(re.search(r"Voice [A-Z]\s*\[", positive_prompt))
-        # Bug fix (2026-08-08): the char class used to omit the plain
-        # apostrophe ' -- smaller local models often quote dialogue with
-        # straight single quotes ('like this') rather than curly/double
-        # ones, so real dialogue was being scored as 0 beats and the
-        # model kept getting told to "fix" prompts that were already fine.
-        # The lookarounds keep contractions (it's, don't) from being
+        # The char class includes the plain apostrophe ' because smaller
+        # local models often quote dialogue with straight single quotes
+        # ('like this') rather than curly/double ones; omitting it scores
+        # real dialogue as 0 beats and gets the model told to "fix"
+        # prompts that are already fine. The lookarounds keep
+        # contractions (it's, don't) from being
         # miscounted as a quote pair -- a bare ' next to a letter on the
         # inward side is a contraction, not a quote boundary.
         beats_with_dialogue = sum(
@@ -2832,8 +2771,8 @@ def _validate_and_normalize_spec(number, spec, allow_custom_beats=False, positiv
 def _log_ai_call(label, backend, model, fn):
     """Runs fn() (a zero-arg callable wrapping one AI backend call) with
     a start/elapsed-time log line naming the backend and model actually
-    used. Confirmed real gap (2026-08-12): the render log showed generic
-    stage names ("t2i (keyframe: first)") with no indication of which
+    used. Without this, the render log would show only generic stage
+    names ("t2i (keyframe: first)") with no indication of which
     backend/model answered or how long it took -- impossible to tell
     from the log alone whether a slow step was local Ollama, a real
     Gemini API round-trip (with real cost), or a retry loop.
@@ -2992,10 +2931,9 @@ _OLLAMA_SEARCH_TOOLS = [
 def tool_completion(prompt, retries=3, model=None):
     """Web-search-capable completion for concept generation -- backend
     picked by config.json's creative_backend -- always aligned with
-    Creative writing's own backend choice (2026-08-16: previously tracked
-    independently via its own tool_calling_backend setting, but concept
-    research feeds straight into creative writing, so letting them
-    diverge just added a decision with no real payoff).
+    Creative writing's own backend choice, since concept research feeds
+    straight into creative writing and letting the two diverge would
+    just add a decision with no real payoff.
 
     "gemini" delegates to gemini_text.py's generate_json_with_search,
     which uses Gemini's own NATIVE server-side web search tool (google_
@@ -3012,9 +2950,9 @@ def tool_completion(prompt, retries=3, model=None):
         import gemini_text
         return _log_ai_call("tool completion (web search)", "gemini", model or config.get("gemini_text_model"),
                              lambda: gemini_text.generate_json_with_search(prompt, retries=retries, model=model))
-    # Concept research shares Creative writing's own model choice
-    # (2026-08-16, merged -- both are lightweight text tasks, a separate
-    # model per role added a dropdown with no real benefit).
+    # Concept research shares Creative writing's own model choice --
+    # both are lightweight text tasks, so a separate model per role would
+    # just add a dropdown with no real benefit.
     resolved_model = model or config.get("creative_model")
     return _log_ai_call("tool completion (web search)", "ollama", resolved_model,
                          lambda: _ollama_tool_completion(prompt, retries=retries, model=resolved_model))
@@ -3024,10 +2962,10 @@ def _ollama_tool_completion(prompt, retries=3, max_tool_rounds=4, model=None):
     """Local tool-calling loop against Ollama's OWN /api/chat 'tools'
     parameter -- gives a fully local model real web_search/
     wikipedia_search access with no external API and no Ollama account
-    of any kind involved. Confirmed live 2026-08-07: a plain curl to
-    /api/chat with a custom tool schema returns a genuine tool_calls
-    response using nothing but a locally running Ollama instance --
-    Ollama's own account-gated web-search PRODUCT is a separate,
+    of any kind involved. A plain curl to /api/chat with a custom tool
+    schema returns a genuine tool_calls response using nothing but a
+    locally running Ollama instance -- Ollama's own account-gated
+    web-search PRODUCT is a separate,
     unrelated feature this never touches. We execute the tool calls
     ourselves in plain Python (importing web_search_mcp's functions
     directly as plain callables, not through the MCP stdio protocol),
@@ -3134,21 +3072,16 @@ def do_review_images(number):
     every other model this pipeline uses -- it doesn't sit holding VRAM
     after its job is finished.
 
-    Bug fixed 2026-08-06: this used to look up each image's intended
-    description by `img.stem` ("1", "2", "3" -- the actual filenames),
-    but the sidecar's own keys are "first"/"middle"/"last", so the
-    lookup NEVER matched and every fml2v image silently fell through to
-    the generic no-description fallback prompt below. That fallback
-    also hardcoded "photorealistic nature-documentary style (required)"
-    as the only acceptable art style, which is wrong per CREATIVE.md --
-    both photorealistic and animated/CGI are legitimate, Tale-by-Tale
-    choices, so a Tale that deliberately picked animated style was
-    getting FAILed by this check for correctly NOT being photorealistic.
-    Fixed by mapping filename -> role via the same 1/2/3 = first/
-    middle/last convention generate_dream.py uses, and by dropping the
-    hardcoded style requirement from the fallback (it now only checks
-    natural anatomy, not a specific art style, when no sidecar
-    description is available)."""
+    Looks up each image's intended description by mapping filename ->
+    role via the same 1/2/3 = first/middle/last convention
+    generate_dream.py uses, since the sidecar's own keys are "first"/
+    "middle"/"last" rather than the actual filenames ("1", "2", "3").
+    The generic no-description fallback prompt below only checks natural
+    anatomy, not a specific art style, when no sidecar description is
+    available -- both photorealistic and animated/CGI are legitimate,
+    Tale-by-Tale choices per CREATIVE.md, so the fallback must not
+    hardcode "photorealistic nature-documentary style" as the only
+    acceptable art style."""
     images = find_reference_images(number)
     if not images:
         print(f"[dream_step] no reference images found for #{number} to review.", flush=True)
@@ -3208,11 +3141,9 @@ def do_review_images(number):
             # beat). Ask specifically about the SETTING/OBJECTS, not just
             # the animal -- that's what actually drifted and what the
             # vague version missed.
-            # Calibrated by direct A/B testing (3 known-bad real keyframes):
-            # a holistic "are these consistent" question scored 0/6 FAIL on
-            # images with confirmed real defects; an itemized YES/NO
-            # checklist scored 6/6. Use the checklist structure, not a
-            # holistic question.
+            # A holistic "are these consistent" question misses real
+            # defects that an itemized YES/NO checklist catches -- use
+            # the checklist structure, not a holistic question.
             b64_all = [base64.b64encode(p.read_bytes()).decode("utf-8") for p in images]
             prompt = (f"These {len(images)} keyframes ({', '.join(p.stem for p in images)}) "
                       f"are meant to be the SAME continuous physical scene -- same animal, "
@@ -3252,10 +3183,10 @@ def load_json(path, default):
 def rel_path_str(path, base):
     """The ONLY way a spec's image_path/fml2v_*_image fields should ever
     be written -- ALWAYS forward-slash (.as_posix()), never OS-native
-    separators. Confirmed real bug (2026-08-16): a spec written while
-    this pipeline ran on Windows stored these fields with backslashes
-    (bare str(Path) is OS-native); read later on Linux, "...Faceoff\\1.png"
-    is treated as ONE literal filename (backslash is a normal filename
+    separators. A spec written while this pipeline runs on Windows would
+    store these fields with backslashes if written via bare str(Path)
+    (which is OS-native); read later on Linux, "...Faceoff\\1.png" is
+    treated as ONE literal filename (backslash is a normal filename
     character on Linux, not a separator) instead of two path segments,
     so a real, existing file gets reported as "does not exist". Forcing
     forward slashes on write means the stored value is valid on either
@@ -3313,18 +3244,18 @@ def find_reference_images(number):
     upload location -- but only if the Dream folder itself has none, so a
     human manually dropping a file into the real render folder still wins
     (closer to canonical / more recently touched by a human on purpose)."""
-    # Confirmed real bug (2026-08-12): a leading underscore marks a
-    # pipeline-internal file everywhere else in this codebase (e.g.
-    # _fml2v_keyframe_prompts.json, _swap_tmp*), but this loop counted
-    # generate_dream.py's own "_online_reference_seed.png" debug artifact
-    # as a fourth REAL reference image for any online-sourced fml2v Tale
-    # -- resolve_slot_image's all-or-nothing len(images)==3 check then
-    # silently failed for every slot (breaking manage-table image
-    # delete), and do_rework's {"1","2","3"} stem-equality check fell
-    # through to the "ambiguous, refusing to render" branch instead of
-    # recognizing a perfectly normal complete triple.
+    # A leading underscore marks a pipeline-internal file everywhere else
+    # in this codebase (e.g. _fml2v_keyframe_prompts.json, _swap_tmp*), so
+    # this loop must not count generate_dream.py's own
+    # "_online_reference_seed.png" debug artifact as a fourth REAL
+    # reference image for an online-sourced fml2v Tale -- doing so would
+    # break resolve_slot_image's all-or-nothing len(images)==3 check for
+    # every slot (breaking manage-table image delete), and would send
+    # do_rework's {"1","2","3"} stem-equality check to the "ambiguous,
+    # refusing to render" branch instead of recognizing a perfectly
+    # normal complete triple.
     #
-    # Further widened same day: any OTHER unrelated photo sitting in a
+    # More generally: any OTHER unrelated photo sitting in a
     # Dream folder alongside a genuine 1/2/3 keyframe set (e.g. a human
     # keeping a reference/inspiration image nearby for their own use)
     # hit the exact same confusion -- 4+ images made the "exactly 3,
@@ -3416,12 +3347,12 @@ def delete_slot_image(number, slot):
     resolve_slot_image_lenient's per-slot exact-stem lookup (1.*/2.*/3.*
     for fml2v, the sole image for i2v), NOT resolve_slot_image's
     all-or-nothing "only counts as real once all three exist" check.
-    Confirmed real bug (2026-08-12): delete used resolve_slot_image, so
-    it silently deleted NOTHING whenever that stricter check didn't
-    resolve a path for any reason (e.g. an unrelated extra file in the
-    Dream folder made the "exactly 3" count wrong) -- the confirm
-    dialog fired, the API call reported success, but nothing on disk
-    changed. Delete must only ever act on the one file actually
+    Using resolve_slot_image (the stricter check) for delete would
+    silently delete NOTHING whenever that check fails to resolve a path
+    for any reason (e.g. an unrelated extra file in the Dream folder
+    makes the "exactly 3" count wrong) -- the confirm dialog would fire,
+    the API call would report success, but nothing on disk would
+    change. Delete must only ever act on the one file actually
     displayed for this slot, never re-derive "is this a complete,
     render-ready set" as a precondition for removing it.
 
@@ -3530,24 +3461,23 @@ def migrate_uploaded_images(number, spec):
     moved_map = {}
     for p in staged:
         dest = dest_folder / p.name
-        # Confirmed real bug (2026-08-16): a staged upload REPLACING an
-        # existing slot (e.g. re-uploading a new "first"/"middle" keyframe
-        # for a Dream that's already been rendered once) used to be
-        # silently skipped here forever -- "don't clobber" treated the
-        # OLD, now-outdated folder image as the winner, so the new upload
-        # never made it into the real folder, never got used by the next
-        # render (which then "succeeded" using the stale images, looking
-        # like nothing happened), and never got cleared out of staging
-        # either (the manage table kept showing it as "new"). The whole
+        # A staged upload REPLACING an existing slot (e.g. re-uploading a
+        # new "first"/"middle" keyframe for a Dream that's already been
+        # rendered once) must not be silently skipped here -- a naive
+        # "don't clobber" would treat the OLD, now-outdated folder image
+        # as the winner, so the new upload would never make it into the
+        # real folder, never get used by the next render (which would
+        # then "succeed" using the stale images, looking like nothing
+        # happened), and never get cleared out of staging either (the
+        # manage table would keep showing it as "new"). The whole
         # point of staging a same-named upload IS to replace whatever's
         # currently in that slot -- remove the stale file first so the
         # move actually lands.
         #
-        # Confirmed real follow-up bug (2026-08-17): fixing THAT wasn't
-        # enough on its own when the replacement's file FORMAT also
-        # changed (e.g. the old slot was "2.png", the new upload is
+        # This must also cover the case where the replacement's file
+        # FORMAT differs (e.g. the old slot is "2.png", the new upload is
         # "2.jpg") -- dest.exists() only checks the exact same filename,
-        # so the differently-named old file was never removed, leaving
+        # so a differently-named old file would never be removed, leaving
         # BOTH "2.png" and "2.jpg" in the folder ("found 4 image files...
         # ambiguous"). The GUI is the source of truth for what a SLOT
         # (stem) contains, not whatever extension happens to already be
@@ -3567,17 +3497,17 @@ def migrate_uploaded_images(number, spec):
     if old_image_path in moved_map:
         spec["image_path"] = moved_map[old_image_path]
         changed = True
-    # Confirmed real bug (2026-08-16): moving a staged upload into place
-    # never updated the spec's OWN fml2v_first_image/middle/last fields to
-    # point at it -- only a narrower special case elsewhere did this for
-    # itself. A staged upload only ever exists because the human used the
+    # Moving a staged upload into place must also update the spec's OWN
+    # fml2v_first_image/middle/last fields to point at it -- relying on a
+    # narrower special case elsewhere to do this isn't enough on its own.
+    # A staged upload only ever exists because the human used the
     # GUI's per-slot upload feature (unlike a human manually dropping a
     # raw file into the folder, which is genuinely ambiguous) -- that's
     # already unambiguous confirmed intent, so this shouldn't need a
     # separate manual JSON edit to "confirm" what the upload already
     # confirmed. dest_folder / "1.png" (etc) is always named by slot stem
     # (see IMAGE_SLOT_STEMS/staged_upload_path), so the stem alone is
-    # enough to know which fml2v_*_image field a given migrated file
+    # enough to know which fml2v_*_image field a given moved file
     # belongs to, regardless of its extension.
     if spec.get("workflow") == "fml2v":
         stem_to_field = {"1": "fml2v_first_image", "2": "fml2v_middle_image", "3": "fml2v_last_image"}
@@ -3672,7 +3602,7 @@ def list_media_folders(project_name):
             title = m.group(2) if m else folder.name
             video_files = sorted(p.name for p in folder.iterdir()
                                   if p.is_file() and p.suffix.lower() == ".mp4")
-            # Confirmed bug (2026-08-08): a stray extra .mp4 dropped into the
+            # A stray extra .mp4 dropped into the
             # folder (e.g. a manual ComfyUI test render, or a raw
             # LTX_2.3_i2v_NNNNN_.mp4 the pipeline itself left behind before
             # copying the real result over it) can sort alphabetically
@@ -3792,14 +3722,14 @@ def check_image_prerequisites(number, spec):
             return True
         existing = find_reference_images(number)
         if len(existing) == 1:
-            # Auto-repoint rather than refuse -- same fix/reasoning as
-            # do_rework's own stale-image_path handling (confirmed real,
-            # 2026-08-09: a human/pipeline replacing the image, or
-            # 2026-08-11's folder-rename-on-title-change, both leave
-            # image_path pointing at a file that no longer exists even
-            # though workflow is already correctly "i2v" -- refusing here
-            # just reports "clicking render does nothing" a second time
-            # despite do_rework's own check already having this fix).
+            # Auto-repoint rather than refuse -- same reasoning as
+            # do_rework's own stale-image_path handling: a human/pipeline
+            # replacing the image, or a folder rename on title change,
+            # both leave image_path pointing at a file that no longer
+            # exists even though workflow is already correctly "i2v" --
+            # refusing here would just report "clicking render does
+            # nothing" a second time despite do_rework's own check
+            # already handling this.
             new_rel = rel_path_str(existing[0], DREAMS_ROOT)
             spec["image_path"] = new_rel
             spec_path = DATA_DIR / f"spec_{number:03d}.json"
@@ -3873,25 +3803,25 @@ def run_render(number, event_type, randomize_seeds=False, verbose=False, cancel_
     if verbose:
         print(f"[dream_step] full command: {' '.join(cmd)}", flush=True)
         print(f"[dream_step] spec content:\n{json.dumps(spec, indent=2)}", flush=True)
-    # Confirmed bug (2026-08-08): subprocess.run() with no stdout capture
-    # writes straight to this process's inherited file descriptor, which
-    # bypasses the web UI's own sys.stdout redirect entirely (_LiveLog) --
-    # nothing render_dream.py/generate_dream.py/vram_guard ever printed,
-    # including the ACTUAL REASON a render failed, ever reached the GUI's
-    # job log (which showed status "done" even for a real failure -- see
-    # _run_job -- with zero evidence why). Popen + reading stdout line by
+    # subprocess.run() with no stdout capture would write straight to
+    # this process's inherited file descriptor, which bypasses the web
+    # UI's own sys.stdout redirect entirely (_LiveLog) -- nothing
+    # render_dream.py/generate_dream.py/vram_guard prints, including the
+    # ACTUAL REASON a render failed, would reach the GUI's job log (which
+    # would show status "done" even for a real failure -- see _run_job --
+    # with zero evidence why). Popen + reading stdout line by
     # line makes each line a real print() in THIS process instead, so it
     # flows through whatever sys.stdout currently is (the GUI's _LiveLog
     # mid-job, or the real console for the CLI), live, not just the two or
     # three lines dream_step itself happens to print directly.
-    # Confirmed real crash (2026-08-09, live render): text=True with no
-    # explicit encoding defaults to locale.getpreferredencoding(), which
-    # on Windows is the console's ANSI codepage (cp1252 here) -- NOT
+    # text=True with no explicit encoding defaults to
+    # locale.getpreferredencoding(), which on Windows is the console's
+    # ANSI codepage (cp1252 here) -- NOT
     # UTF-8. A vision-model response (real Ollama JSON, genuinely UTF-8)
     # containing so much as one curly quote/em-dash/etc. outside cp1252's
-    # range crashed this read outright ('charmap' codec can't decode byte
+    # range crashes this read outright ('charmap' codec can't decode byte
     # ...), killing an otherwise-successful multi-minute render at
-    # whatever random point that byte happened to appear. errors="replace"
+    # whatever random point that byte happens to appear. errors="replace"
     # rather than strict UTF-8, since a still-wrong byte from some other
     # source shouldn't be able to repeat this failure mode ever again --
     # worst case a mangled character in the log, never a crashed render.
@@ -3926,9 +3856,9 @@ def run_render(number, event_type, randomize_seeds=False, verbose=False, cancel_
                 # fml2v_first_image/etc never point at them, so a later
                 # rework's "is this already configured for the image
                 # that's there" check (do_rework) fails and skips instead
-                # of reworking. Confirmed real (2026-08-09): #6 rendered
-                # clean via i2v_generate_image_prompt, but its spec still
-                # had no image_path afterward.
+                # of reworking -- e.g. a render that goes clean via
+                # i2v_generate_image_prompt can still leave the spec with
+                # no image_path afterward.
                 backfill_generated_image_path(number, spec)
                 # Automatic, not dependent on the agent remembering to run
                 # --review-images separately -- the local coding agent is
@@ -3987,17 +3917,16 @@ def do_rework(numbers, randomize_seeds=False, type_arg=None, verbose=False, canc
         if type_arg and type_arg != "keep" and not ensure_workflow_type(number, spec, type_arg, kind="rework"):
             continue  # missing fields reported, skip this number for now
 
-        # Confirmed real bug (2026-08-16): this used to only run AFTER a
-        # successful render (see migrate_uploaded_images' own docstring),
-        # except for the special-cased 1-of-3 fml2v branch below which
-        # already had to call it early for the same reason. That left
-        # every OTHER case -- most commonly, replacing 2 of 3 (or all 3)
-        # keyframe images on a Dream that's already been rendered once --
-        # completely unmigrated: find_reference_images below only looks at
-        # what's actually IN the Dream folder already, so it kept finding
+        # Running this only AFTER a successful render (see
+        # migrate_uploaded_images' own docstring) would leave every case
+        # other than the special-cased 1-of-3 fml2v branch below --
+        # most commonly, replacing 2 of 3 (or all 3) keyframe images on a
+        # Dream that's already been rendered once -- completely
+        # unmigrated: find_reference_images below only looks at what's
+        # actually IN the Dream folder already, so it would keep finding
         # the OLD images (all 3 still present from the previous render),
-        # took the "already configured, nothing to do" branch, and
-        # rendered with the stale images -- reporting success ("done")
+        # take the "already configured, nothing to do" branch, and
+        # render with the stale images -- reporting success ("done")
         # while visually nothing had changed, since the newly staged
         # uploads were never even looked at. Migrating unconditionally
         # here, before find_reference_images runs, means any pending
@@ -4012,12 +3941,12 @@ def do_rework(numbers, randomize_seeds=False, type_arg=None, verbose=False, canc
             # dropped in) with the other two roles still covered by
             # written keyframe prompts -- same legitimate-partial-set
             # reasoning as the 2-of-3 branch below, just for 1-of-3.
-            # Confirmed real (2026-08-12): a human uploading just the
+            # Without this branch, a human uploading just the
             # 'first' image (intending 'middle'/'last' to be AI-generated
-            # off it) hit the len==1 branch below instead, which assumes
-            # ANY single image found means "switch this to i2v" and
-            # refuses to render at all -- even though this is exactly what
-            # fml2v with a partially-provided keyframe set looks like.
+            # off it) would hit the len==1 branch below instead, which
+            # assumes ANY single image found means "switch this to i2v"
+            # and refuses to render at all -- even though this is exactly
+            # what fml2v with a partially-provided keyframe set looks like.
             #
             # generate_dream.py's generate_keyframes() decides whether to
             # skip regenerating a role purely by whether that role's file
@@ -4051,14 +3980,13 @@ def do_rework(numbers, randomize_seeds=False, type_arg=None, verbose=False, canc
             if not configured_for_this_image and spec.get("workflow") == "i2v":
                 # workflow is ALREADY i2v -- the human already confirmed
                 # image-conditioning intent when the spec was written;
-                # image_path just went stale (confirmed real bug,
-                # 2026-08-09: manually replacing the image with a
-                # different filename/extension -- e.g. dropping in a
-                # downloaded .jpg where the spec still pointed at an old
-                # .png -- left image_path pointing at a file that no
-                # longer exists. This check refused to render at all,
-                # but the web UI's job still reported "done", reading
-                # as "clicking render does nothing"). Auto-repoint to
+                # image_path just went stale -- manually replacing the
+                # image with a different filename/extension -- e.g.
+                # dropping in a downloaded .jpg where the spec still
+                # points at an old .png -- leaves image_path pointing at
+                # a file that no longer exists. Refusing to render here
+                # while the web UI's job still reports "done" would read
+                # as "clicking render does nothing". Auto-repoint to
                 # the real file and proceed -- same auto-detection
                 # determine_code_owned_spec_fields already does at
                 # spec-write time, just also applied here at render
@@ -4103,12 +4031,11 @@ def do_rework(numbers, randomize_seeds=False, type_arg=None, verbose=False, canc
             # workflow is ALREADY explicitly "fml2v" -- that's unambiguous
             # confirmed intent already on record (same reasoning as the
             # i2v auto-repoint above), it just needs the three fields
-            # synced to match what's actually in the folder. Confirmed
-            # real bug (2026-08-16): this used to refuse and ask for a
-            # manual JSON edit even when workflow was already fml2v and
-            # the images were sitting right there correctly named --
-            # e.g. after migrate_uploaded_images moved a staged upload in
-            # on an EARLIER render attempt (before field-syncing existed),
+            # synced to match what's actually in the folder. Refusing and
+            # asking for a manual JSON edit here would be wrong whenever
+            # workflow is already fml2v and the images are sitting right
+            # there correctly named -- e.g. after migrate_uploaded_images
+            # moved a staged upload in on an earlier render attempt,
             # leaving nothing left in staging to re-trigger a sync on a
             # later attempt. A human uploading through the GUI's own
             # first/middle/last slots, with the spec already marked
@@ -4155,13 +4082,13 @@ def do_rework(numbers, randomize_seeds=False, type_arg=None, verbose=False, canc
               and all((spec.get("fml2v_keyframe_prompts") or {}).get(r) for r in ("first", "middle", "last"))):
             # A partial fml2v set -- exactly 2 of the 3 named 1/2/3 files
             # present, the missing one covered by a written keyframe
-            # prompt. Real case (2026-08-12): the manage table's "Use
-            # as..." slot reassignment moves/swaps existing keyframe
-            # images between roles, which can legitimately leave exactly
-            # one slot needing a fresh generation while the other two
-            # (still-good, already-approved poses) stay untouched -- that
-            # used to hit the generic "ambiguous, refuse" branch below
-            # even though it's a perfectly resolvable state.
+            # prompt. The manage table's "Use as..." slot reassignment
+            # moves/swaps existing keyframe images between roles, which
+            # can legitimately leave exactly one slot needing a fresh
+            # generation while the other two (still-good, already-approved
+            # poses) stay untouched -- that must not fall into the generic
+            # "ambiguous, refuse" branch below since it's a perfectly
+            # resolvable state.
             # generate_dream.py's generate_keyframes() already handles
             # this correctly per-role (only regenerates a role whose
             # image file is actually missing, via its own sidecar-based
@@ -4198,10 +4125,10 @@ def do_rework(numbers, randomize_seeds=False, type_arg=None, verbose=False, canc
             # A title change since the last render would otherwise make
             # run_render (generate_dream.py) create a BRAND NEW folder
             # under the new title, orphaning the old one under its stale
-            # name instead of replacing it in place (confirmed real,
-            # 2026-08-11: a rework batch that only changed titles/premises
-            # -- images untouched -- left every renamed Tale with two
-            # folders, one dead). Rename the existing folder to match
+            # name instead of replacing it in place -- a rework batch that
+            # only changes titles/premises (images untouched) would
+            # otherwise leave every renamed Tale with two folders, one
+            # dead. Rename the existing folder to match
             # up front so run_render's own folder_name computation lands
             # on it and overwrites cleanly, same as when the title didn't
             # change at all.
@@ -4223,9 +4150,7 @@ def do_rework(numbers, randomize_seeds=False, type_arg=None, verbose=False, canc
                     # render that's about to happen writes fresh
                     # {new_name}.mp4/.txt alongside them, leaving both the
                     # old-titled output AND the new one sitting in the same
-                    # folder -- confirmed real, 2026-08-13 (spotted live: a
-                    # Tale #111 folder renamed to the new title still had
-                    # its old title's .mp4/.txt inside). Delete the
+                    # folder if left alone. Delete the
                     # old-named leftovers now so the folder only ever holds
                     # the current title's output once the render finishes.
                     for suffix in (".mp4", ".txt"):
@@ -4235,13 +4160,11 @@ def do_rework(numbers, randomize_seeds=False, type_arg=None, verbose=False, canc
                     # Any code-owned image path field pointing INSIDE the
                     # renamed folder (image_path for i2v; fml2v_first_image/
                     # middle/last for fml2v) still has the OLD folder name
-                    # baked into its stored path string -- confirmed real
-                    # failure, 2026-08-11: this renamed #86's folder fine,
-                    # but its fml2v_first_image still read ".../Tale #86 The
-                    # Corgi's.../1.png" (the old name), so the very next
-                    # render step failed with "does not exist" even though
-                    # the file is right there under its new folder name.
-                    # Rewrite each such field's leading folder-name segment
+                    # baked into its stored path string -- left as-is, the
+                    # very next render step fails with "does not exist"
+                    # even though the file is right there under its new
+                    # folder name. Rewrite each such field's leading
+                    # folder-name segment
                     # to match, same rename, not a content change.
                     # Normalizes to forward-slash for BOTH the comparison
                     # and the rewritten value (matches rel_path_str's own
@@ -4782,9 +4705,9 @@ def _validate_project_folder_name(name):
 def _retry_on_windows_lock(fn, attempts=6, delay=0.3):
     """Windows can transiently deny a rename/delete on a directory with a
     PermissionError ([WinError 5]) even when nothing in THIS process has
-    anything under it open -- confirmed live (2026-08-08): a rename that
-    failed here succeeded instantly from a brand-new process seconds
-    later, no code change. That points at an OS-level transient hold
+    anything under it open -- a rename that fails here can succeed
+    instantly from a brand-new process moments later, no code change.
+    That points at an OS-level transient hold
     (search indexer, AV real-time scan, a just-closed handle not yet
     released) rather than a real conflict -- short retries absorb it
     instead of failing outright on what's usually a sub-second race."""
@@ -4920,8 +4843,7 @@ def do_status(project_name):
 
 def with_vram_guard(fn, *args, **kwargs):
     """Wrap a render-triggering call (do_generate/do_rework) with the
-    reload guard + post-call VRAM cleanup that used to live only in
-    main()'s single-shot dispatch. Extracted 2026-08-07 so --interactive
+    reload guard + post-call VRAM cleanup, so --interactive
     gets the exact same VRAM discipline on every render it triggers
     inside its loop, not just once at process exit."""
     cfg = vram_guard.load_config()
@@ -4955,10 +4877,9 @@ def do_generate(numbers, type_arg, verbose=False, cancel_check=None):
     cancel_check: see run_render's own docstring -- checked here too,
     BEFORE starting each number, so a mid-batch Cancel actually stops
     the batch instead of just interrupting the render that happened to
-    be in flight and then silently continuing on to the next number
-    (confirmed real, 2026-08-12: a 9-number batch kept rendering #103+
-    after Cancel was clicked during #102, since nothing here ever
-    checked the flag between numbers)."""
+    be in flight and then silently continuing on to the next number --
+    without this check, a mid-batch Cancel keeps rendering later numbers
+    since nothing else in the loop checks the flag between numbers."""
     for number in numbers:
         if cancel_check is not None and cancel_check():
             print(f"[dream_step] >>> cancelled -- stopping before #{number} "
@@ -5087,8 +5008,8 @@ def ask_multiline(prompt):
     """For long-form/pasted creative content (scripts, lyrics, anything
     with line breaks) -- plain input() only reads ONE line, so pasting
     multi-line text into a single ask() cuts it off after the first line
-    and the rest bleeds into whatever prompt comes next as garbage answers
-    (confirmed real failure, 2026-08-07). Reads lines until a lone line
+    and the rest bleeds into whatever prompt comes next as garbage answers.
+    Reads lines until a lone line
     containing just EOF, joins them with real newlines preserved -- this
     is how you paste a whole script/lyrics block safely: paste it all,
     then on its own line type EOF and press enter."""
@@ -5304,12 +5225,12 @@ def determine_code_owned_spec_fields(number, workflow):
     -- error is reserved for genuine failures; kept in the return shape
     for callers, but nothing below actually produces one anymore.
 
-    Bug fix (2026-08-08): this used to hard-block writing an i2v/fml2v
-    spec at all until a reference image already existed on disk --
-    confirmed a real deadlock, since the thing that GENERATES that image
-    (write_row_keyframes) requires a spec to already exist first ("no
-    spec exists yet"). A fresh i2v/fml2v row could never get past either
-    step: no spec without an image, no image without a spec. image_path
+    Must not hard-block writing an i2v/fml2v spec until a reference image
+    already exists on disk -- that would be a real deadlock, since the
+    thing that GENERATES that image (write_row_keyframes) requires a spec
+    to already exist first ("no spec exists yet"). A fresh i2v/fml2v row
+    could never get past either step: no spec without an image, no image
+    without a spec. image_path
     is only ever set here when a real file is already on disk; when none
     exists yet, it's simply left unset (never asked of the AI --
     CODE_OWNED_SPEC_FIELDS already keeps it out of schema_hint either
@@ -5319,16 +5240,16 @@ def determine_code_owned_spec_fields(number, workflow):
     prompt is set" as a normal, expected case, so spec-write time doesn't
     need its own separate, stricter copy of that same requirement.
 
-    Confirmed real bug (2026-08-16): this used to call find_reference_images
-    straight away, which -- like migrate_uploaded_images' own docstring
-    explains -- ignores the uploads staging dir entirely once the real
-    Dream folder already has SOME image for that slot. "Save content"
-    (write_row_spec) then did a full spec replace using these fields,
-    silently overwriting a correctly-migrated fml2v_first_image/middle
-    back to whatever the STALE folder contents implied -- from the human's
-    side, clicking Save appeared to make a just-uploaded replacement image
-    vanish. Migrating first means this always sees the current, real
-    state, the same fix already applied to do_rework."""
+    Calling find_reference_images straight away, without migrating first,
+    would -- like migrate_uploaded_images' own docstring explains --
+    ignore the uploads staging dir entirely once the real Dream folder
+    already has SOME image for that slot. "Save content" (write_row_spec)
+    then does a full spec replace using these fields, so that would
+    silently overwrite a correctly-migrated fml2v_first_image/middle
+    back to whatever the STALE folder contents implied -- from the
+    human's side, clicking Save would appear to make a just-uploaded
+    replacement image vanish. Migrating first means this always sees the
+    current, real state, the same approach do_rework uses."""
     spec_path = DATA_DIR / f"spec_{number:03d}.json"
     existing_spec = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.exists() else {}
     migrate_uploaded_images(number, existing_spec)
@@ -5338,16 +5259,16 @@ def determine_code_owned_spec_fields(number, workflow):
         if len(ref_images) == 1:
             code_owned["image_path"] = rel_path_str(ref_images[0], DREAMS_ROOT)
     elif workflow == "fml2v" and fml2v_images_satisfied(number):
-        # Confirmed real bug (2026-08-09): three real, correctly-named
-        # (1/2/3) images being present was already enough for
-        # check_image_prerequisites to greenlight rendering, but nothing
-        # ever copied that into fml2v_first_image/middle/last -- the only
-        # fields generate_dream.py itself actually reads (it has no idea
-        # find_reference_images or the uploads staging dir exist). A
-        # first-time fml render with directly-uploaded keyframe images
-        # always failed at the subprocess with "neither existing keyframe
-        # images nor a complete fml2v_keyframe_prompts", even though the
-        # images were right there. Mirrors image_path's i2v handling
+        # Three real, correctly-named (1/2/3) images being present is
+        # already enough for check_image_prerequisites to greenlight
+        # rendering, but nothing else copies that into
+        # fml2v_first_image/middle/last -- the only fields
+        # generate_dream.py itself actually reads (it has no idea
+        # find_reference_images or the uploads staging dir exist).
+        # Without this, a first-time fml render with directly-uploaded
+        # keyframe images fails at the subprocess with "neither existing
+        # keyframe images nor a complete fml2v_keyframe_prompts", even
+        # though the images are right there. Mirrors image_path's i2v handling
         # above exactly.
         images_by_stem = {p.stem: p for p in find_reference_images(number)}
         code_owned["fml2v_first_image"] = rel_path_str(images_by_stem["1"], DREAMS_ROOT)

@@ -60,10 +60,10 @@ import gemini_image
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# Both vision review functions below delegate to dream_step._vision_query
-# (2026-08-12), which picks the actual backend (Ollama/Gemini/Claude API)
-# from config.json's vision_backend -- the qwen3-vl thinking-model context-
-# sizing workaround (VISION_OPTIONS) now lives there, next to the Ollama
+# Both vision review functions below delegate to dream_step._vision_query,
+# which picks the actual backend (Ollama/Gemini/Claude API) from
+# config.json's vision_backend -- the qwen3-vl thinking-model context-
+# sizing workaround (VISION_OPTIONS) lives there, next to the Ollama
 # call it applies to, not duplicated here.
 MAX_IMAGE_RETRIES = 2  # extra attempts beyond the first, so 3 total tries max per image
 
@@ -100,24 +100,16 @@ def review_keyframe_pair(reference_path, reference_role, new_path, new_role, del
     frame it's conditioned on, structured as a pairwise challenge rather
     than a vague "are these consistent" question.
 
-    Calibrated by direct A/B testing against 3 known-bad real keyframes
-    (confirmed by eye to have a drifted fence gap, no clear side-of-
-    barrier transition, and inconsistent background): a vague "are
-    these consistent" question scored 0/6 (0%) FAIL on images with
-    confirmed real defects -- it always said PASS. A structured,
-    itemized yes/no checklist per named element scored 6/6 (100%)
-    across repeated trials on the same images. This prompt uses that
-    calibrated checklist structure -- do not simplify it back to a
-    holistic "are these consistent" question, that specific phrasing
-    is confirmed unreliable on this model.
+    A structured, itemized yes/no checklist per named element scores far
+    more reliably on this model than a holistic "are these consistent"
+    question, which tends to answer PASS even on images with clear
+    defects -- do not simplify this prompt back to that holistic framing.
 
-    Also confirmed: this model's /api/generate can return an EMPTY
-    response for 3 images + a long prompt in one call -- pairwise (2
-    images at a time) avoids that failure mode entirely.
+    Pairwise comparison (2 images at a time) is used because this model's
+    /api/generate can return an EMPTY response for 3 images + a long
+    prompt in one call.
 
-    Also confirmed (by re-running this checklist against 3 already-
-    approved, published Tales as a false-positive check): a terse
-    delta_description alone ("maintain everything, but the goat
+    A terse delta_description alone ("maintain everything, but the goat
     argues more") makes the model flag STORY-INTENDED changes (a
     fence breaking, a duck's secret being revealed mid-scene) as
     defects, since nothing told it those changes were expected.
@@ -126,30 +118,23 @@ def review_keyframe_pair(reference_path, reference_role, new_path, new_role, del
     progression" apart from "unwanted drift," so pass it whenever
     it's available instead of the delta line alone.
 
-    Also confirmed: even WITH story_context, question 1's original
-    wording ("is every fixed object identical") auto-failed a Tale
+    Question 1's identical-object check explicitly excludes "objects the
+    delta/story names as changing" -- without that exception, a Tale
     where the story's own action destroys a fixed object (a goat
-    shattering a fence) -- the object itself is the thing that's
-    SUPPOSED to change, but the question didn't carve out that
-    exception, so it always answered NO regardless of context. Fixed
-    by explicitly excluding "objects the delta/story names as
-    changing" from question 1's identical-object check. That same
-    re-test also caught genuine unrelated drift the model was right
-    to flag (goat's fur color shifting brown->gray, a house/flower
-    beds appearing that neither the delta nor story mentioned) --
-    so the fix is narrowing question 1's scope, not loosening the
-    checklist overall.
+    shattering a fence) would auto-fail, since the object itself is the
+    thing that's SUPPOSED to change but the question wouldn't otherwise
+    carve out that case. The exception is scoped narrowly (only objects
+    the delta/story actually names) so genuine unrelated drift -- fur
+    color shifting, an unmentioned object appearing -- still gets flagged.
 
-    Also confirmed (real production render, Tale #81, 2026-08-06): the
-    original 4 questions only check "did anything UNWANTED change,"
-    never "did the WANTED change actually happen." A weasel that was
-    supposed to end up on the opposite side of a fence instead stayed
-    on the same side in all 3 keyframes (just posed differently at the
-    gap each time) -- every question above still answered cleanly
-    PASS, because nothing else drifted and no unwanted object showed
-    up. Added question 5 to explicitly verify the delta's own
-    positional/spatial change actually occurred, not just that nothing
-    extra broke."""
+    The original 4 questions only check "did anything UNWANTED change,"
+    never "did the WANTED change actually happen" -- an intended
+    positional/spatial change (e.g. a character ending up on the far
+    side of a fence) could fail to occur while every other question
+    still answers cleanly PASS, since nothing else drifted and no
+    unwanted object showed up. Question 5 explicitly verifies the
+    delta's own intended change actually occurred, not just that
+    nothing extra broke."""
     context_line = (
         f"For context, here is the full story action across all three keyframes: "
         f"{story_context!r} -- treat anything explicitly described there as an "
@@ -210,38 +195,27 @@ INDEX_PATH = None
 
 # The only supported workflow -- the user's own proven, tested graph.
 WORKFLOWS = {
-    # A "gguf12gb" entry (Q4_K_M GGUF unet) used to live here -- removed,
-    # its workflow_api_gguf12gb.json no longer exists on disk (deleted at
-    # some point after fp8_t2v replaced it as the default below, for a
-    # severe unexplained per-step slowdown -- renders that normally took
-    # ~3 minutes started taking 15-155 minutes). The dict entry survived
-    # the file's deletion and was still a valid `--workflow gguf12gb` CLI
-    # choice (via choices=sorted(WORKFLOWS)) that would crash on load --
-    # confirmed dead, removed rather than left as a landmine. Comments
-    # elsewhere in this file still reference "gguf12gb" by name as
-    # historical context for other workflows' hardcoded values (they
-    # matched its node layout); those references are accurate history,
+    # There is no "gguf12gb" entry here; workflow_api_gguf12gb.json does not
+    # exist on disk. Comments elsewhere in this file still reference
+    # "gguf12gb" by name as context for other workflows' hardcoded values
+    # (they matched its node layout); those references are accurate context,
     # not a sign the workflow itself still exists.
     #
-    # Image-to-video: same GGUF checkpoint/CLIP/VAE stack as gguf12gb (the
-    # user's own graph, rectified from a fp8-based ComfyUI template -- see
-    # session notes), output size/length hardcoded to match gguf12gb exactly
-    # (512x896, 588 frames @24fps) so a Dream looks the same regardless of
-    # which workflow rendered it. Used ONLY when a spec has an "image_path"
-    # (see do_rework's image-detection in dream_step.py) -- renders from the
-    # spec's normal positive_prompt/negative_prompt, same as every other
-    # workflow (a separate i2v_positive_prompt/i2v_negative_prompt used to
-    # exist here, removed 2026-08-08: in practice it was byte-identical to
-    # positive_prompt on 29 of 37 real specs, and an incomplete/truncated
-    # copy of it on the rest -- never a deliberately different, better-tuned
-    # version, just a second place the same content could silently go
-    # stale. See Tale #83's postmortem in session notes.).
+    # Image-to-video: same GGUF checkpoint/CLIP/VAE stack as gguf12gb used,
+    # output size/length hardcoded to match gguf12gb exactly (512x896, 588
+    # frames @24fps) so a Dream looks the same regardless of which workflow
+    # rendered it. Used ONLY when a spec has an "image_path" (see do_rework's
+    # image-detection in dream_step.py) -- renders from the spec's normal
+    # positive_prompt/negative_prompt, same as every other workflow. A
+    # separate i2v_positive_prompt/i2v_negative_prompt field does not exist
+    # here: keeping prompt content in one field avoids a second place it
+    # could silently go stale relative to the other.
     "i2v": {
         "path": PIPELINE_DIR / "workflow_api_i2v.json",
         "positive": "320:319", "negative": "320:313", "seeds": ["320:276", "320:277"],
         # 320:319 is a PrimitiveStringMultiline ("value"), NOT a
         # CLIPTextEncode ("text") like every other prompt node in this
-        # pipeline -- confirmed missing this caused every i2v render so far
+        # pipeline -- missing this field type distinction causes i2v renders
         # to silently ignore the real prompt (see build_prompt).
         "positive_field": "value",
         "image_node": "269", "image_field": "image",
@@ -326,9 +300,9 @@ WORKFLOWS = {
     # neutral blank placeholder image instead of a real prior frame, which
     # lets the text prompt dominate. No negative-prompt node (Flux-family
     # models don't use classifier-free negative guidance the way LTX does).
-    # Output size hardcoded to 512x896 to match the video workflows exactly
-    # (originally derived from whatever reference image was loaded, scaled
-    # to ~1 megapixel -- decoupled from that so it's always our standard).
+    # Output size hardcoded to 512x896 to match the video workflows exactly,
+    # decoupled from whatever reference image is loaded so it's always our
+    # standard regardless of that image's own dimensions.
     "t2i_i2i": {
         "path": PIPELINE_DIR / "workflow_api_t2i_flux2.json",
         "positive": "68:6", "negative": None,
@@ -336,8 +310,7 @@ WORKFLOWS = {
         "image_node": "118", "image_field": "image",
     },
 }
-# fp8_t2v replaced gguf12gb as the default after the GGUF slowdown (see
-# WORKFLOWS above) -- workflow_api_fp8_t2v.json, do not "improve" it.
+# workflow_api_fp8_t2v.json -- do not "improve" it.
 DEFAULT_WORKFLOW = "fp8_t2v"
 
 
@@ -348,7 +321,7 @@ def load_workflow_template(workflow_name):
     top-level key in it. Node IDs are fixed, hand-recorded strings (see
     WORKFLOWS above) -- if the graph is ever re-exported from ComfyUI
     (even a trivial resave in a newer version), those IDs can silently
-    shift, and prompt[stale_id] would previously either KeyError deep
+    shift, and prompt[stale_id] would either KeyError deep
     inside build_prompt with no context, or -- if a stale ID happened to
     collide with an unrelated node -- write the prompt into the WRONG
     node and render successfully with silently wrong content. Failing
@@ -412,18 +385,15 @@ MAX_ATTEMPTS = 2
 
 def find_comfyui_base_url():
     """Returns a full working base URL ("http://host:port"), not just a
-    bare port -- confirmed real bug (2026-08-08): every ComfyUI call in
-    this file used to hardcode "http://127.0.0.1:{port}", completely
-    ignoring the configured comfyui_url from config.json (which every
+    bare port -- hardcoding "http://127.0.0.1:{port}" would silently
+    ignore the configured comfyui_url from config.json (which every
     OTHER part of this pipeline -- web_ui.py, vram_guard.py -- already
-    honors). That silently only worked because ComfyUI happened to
-    always be on this same machine; it would have made remote ComfyUI
-    (comfyui_url pointing at a different host) unreachable outright,
-    regardless of what Settings said. Derives the host from the
-    configured comfyui_url, then probes CANDIDATE_PORTS against THAT
-    host (configured port tried first) the same way this always probed
-    localhost, so it stays robust to the exact port drifting without
-    needing comfyui_url to be byte-perfect."""
+    honors) and make a remote ComfyUI (comfyui_url pointing at a
+    different host) unreachable outright, regardless of what Settings
+    said. Derives the host from the configured comfyui_url, then probes
+    CANDIDATE_PORTS against THAT host (configured port tried first), so
+    it stays robust to the exact port drifting without needing
+    comfyui_url to be byte-perfect."""
     cfg = dream_step.load_config()
     parsed = urllib.parse.urlparse(cfg["comfyui_url"])
     scheme = parsed.scheme or "http"
@@ -456,8 +426,8 @@ def get_episode_label(data_dir):
 
 
 def sanitize_filename(name):
-    # Confirmed defensive gap (2026-08-18): every CURRENT call site passes a
-    # string that already includes a numbered prefix (e.g.
+    # Every CURRENT call site passes a string that already includes a
+    # numbered prefix (e.g.
     # f"Dream #{number} {title}"), so in practice the combined result can't
     # collapse to empty even when title itself is nothing but forbidden/dot
     # characters -- but this function has no guarantee of that shape, and
@@ -477,8 +447,7 @@ def sanitize_filename(name):
 # in. apply_render_settings only ever writes to a node when a project's
 # own Duration:/Resolution: (CREATIVE.md) differs from these, so a
 # project that's never set them changes NOTHING about existing render
-# behavior (confirmed requirement, 2026-08-11: "Set the default to what
-# it is already").
+# behavior ("set the default to what it is already").
 _DEFAULT_RENDER_WIDTH = 512
 _DEFAULT_RENDER_HEIGHT = 896
 _DEFAULT_RENDER_DURATION_S = 24
@@ -487,9 +456,10 @@ _DEFAULT_RENDER_DURATION_S = 24
 def apply_render_settings(prompt, workflow_cfg):
     """Overrides a workflow graph's own width/height/length nodes to match
     the current PROJECT's own Duration:/Resolution: settings (see
-    dream_step.project_render_settings() -- moved 2026-08-12 from a global
-    config.json Settings field to per-project CREATIVE.md, since render
-    size/length is a per-channel decision, not a pipeline-wide one) -- but
+    dream_step.project_render_settings(); this lives in per-project
+    CREATIVE.md rather than a global config.json Settings field since
+    render size/length is a per-channel decision, not a pipeline-wide
+    one) -- but
     ONLY when a value differs from this pipeline's long-standing default
     (_DEFAULT_RENDER_*), so a project that's never set these gets
     byte-identical behavior to before this existed. workflow_cfg's
@@ -559,10 +529,9 @@ def build_prompt(template, workflow_cfg, positive_prompt, negative_prompt,
     # the i2v graph's positive node is a PrimitiveStringMultiline ("value")
     # instead -- positive_field/negative_field let each workflow say which
     # input field its own prompt nodes actually take (same pattern as
-    # length_field below). Confirmed bug this fixes: assuming "text" for
-    # i2v's positive node silently wrote to a field that node doesn't read,
-    # leaving its real "value" field stuck on the graph's placeholder text
-    # for every i2v render so far -- the script was never reaching the model.
+    # length_field below). Assuming "text" for i2v's positive node would
+    # silently write to a field that node doesn't read, leaving its real
+    # "value" field stuck on the graph's placeholder text.
     positive_field = workflow_cfg.get("positive_field", "text")
     negative_field = workflow_cfg.get("negative_field", "text")
     prompt[workflow_cfg["positive"]]["inputs"][positive_field] = positive_prompt
@@ -654,7 +623,7 @@ def _find_output_item(history_entry, extensions):
     """Scans a ComfyUI history entry's outputs for the first item whose
     filename ends in one of `extensions` -- shared by find_output_video
     (a single ".mp4") and find_output_image (the keyframe still-image
-    extensions), which previously duplicated this exact scan."""
+    extensions) so they don't each duplicate this scan."""
     outputs = history_entry.get("outputs", {})
     for node_id, out in outputs.items():
         for key, items in out.items():
@@ -677,8 +646,8 @@ def find_output_image(history_entry):
 
 
 def download_or_locate(comfyui_base, item, comfyui_output_dir=None):
-    """Shared by the video and image output paths -- previously duplicated
-    byte-for-byte as download_or_locate_video/download_or_locate_image."""
+    """Shared by the video and image output paths so the logic isn't
+    duplicated byte-for-byte between them."""
     subfolder = item.get("subfolder", "")
     filename = item["filename"]
     itype = item.get("type", "output")
@@ -701,8 +670,8 @@ def download_or_locate(comfyui_base, item, comfyui_output_dir=None):
 def upload_image_to_comfyui(comfyui_base, src_path, dest_filename):
     """Uploads a local file's bytes to ComfyUI's own /upload/image endpoint
     (standard ComfyUI API, saves into ComfyUI's own input/ folder) instead
-    of a local shutil.copy2() into comfyui_input_dir -- confirmed real gap
-    (2026-08-08): a plain file copy only works when this process and
+    of a local shutil.copy2() into comfyui_input_dir -- a plain file copy
+    only works when this process and
     ComfyUI share a filesystem (comfyui_input_dir is actually the same
     physical folder ComfyUI reads from, e.g. same machine or an NFS/SMB
     mount). Uploading the bytes over HTTP instead works identically
@@ -752,23 +721,23 @@ def try_online_first_frame(spec, dest_dir, scene_prompt, dest_path, force=False)
     Either gate failing is a silent, ordinary skip straight to local
     generation, not an error.
 
-    2026-08-12, two rounds of simplification: first removed a local
-    T2I/I2I redraw pass that used to run on top of the Gemini image
-    before accepting it as the first frame (confirmed live: Gemini
-    already honors the requested 512x896 size from the prompt text, and
-    every downstream stage resizes/composes on top of the first frame
-    anyway, so the redraw was pure extra generation cost with a real
-    risk of undoing exactly the species/subject accuracy online sourcing
-    exists to get right). Then removed a SEPARATE cached
-    "_online_reference_seed.png" file this function used to write the
-    Gemini image to first, with its own independent existence-based
-    reuse check -- confirmed real bug: the caller (generate_keyframes's
+    Does not run a local T2I/I2I redraw pass on top of the Gemini image
+    before accepting it as the first frame -- Gemini already honors the
+    requested 512x896 size from the prompt text, and every downstream
+    stage resizes/composes on top of the first frame anyway, so a redraw
+    would be pure extra generation cost with a real risk of undoing
+    exactly the species/subject accuracy online sourcing exists to get
+    right.
+
+    Does not write the Gemini image to an intermediate cached
+    "_online_reference_seed.png" file with its own independent
+    existence-based reuse check -- the caller (generate_keyframes's
     role_changed()) already decides whether a fresh first frame is
     needed by comparing prompt text; a second, independent cache with no
     awareness of that decision could go stale (an old cached image
     surviving a genuinely new prompt) or look "stuck" (deleting the
-    real 1.png didn't clear this file, so the next render silently
-    reused the old image anyway). Generates fresh every time this
+    real 1.png wouldn't clear such a file, so the next render would
+    silently reuse the old image anyway). Generates fresh every time this
     function is actually called, writing directly to dest_path -- no
     intermediate file, nothing to fall out of sync.
 
@@ -776,10 +745,9 @@ def try_online_first_frame(spec, dest_dir, scene_prompt, dest_path, force=False)
     this beat (fml2v's keyframe_prompts["first"], or i2v's own
     prompt_text) -- used verbatim as the Gemini prompt (prefixed with
     an explicit size instruction), not a generic "a photo of the
-    animal" description. Confirmed necessary (2026-08-09): a generic
-    species-only prompt gives Gemini no framing/pose guidance, and
-    parts of the subject came back cut off in real renders -- Gemini
-    has no separate width/height parameter, sizing is inferred from the
+    animal" description. A generic species-only prompt gives Gemini no
+    framing/pose guidance, risking the subject coming back cut off --
+    Gemini has no separate width/height parameter, sizing is inferred from the
     prompt text itself, so "512x896 portrait image: <the real scene
     description>" both grounds the composition in the actual story beat
     AND tells the model the target aspect ratio up front.
@@ -993,7 +961,7 @@ def generate_keyframes(spec, keyframe_prompts, comfyui_base, comfyui_output_dir,
               f"infinite retry loop.", flush=True)
         return last_path
 
-    # kf_backend (2026-08-12): a pipeline-wide 2x2 choice -- first frame
+    # kf_backend is a pipeline-wide 2x2 choice -- first frame
     # and middle/last are each independently local or Gemini:
     #   "all_local" (default, cheapest): unchanged -- first respects this
     #     Tale's OWN first_frame_source=="online" toggle (may still be
@@ -1133,10 +1101,9 @@ def ffprobe_check(path):
     """Confirms a render actually produced a real, playable video within
     the expected duration band. Uses PyAV (a Python binding to ffmpeg's
     own decoding libraries, pip-installed -- see requirements.txt)
-    instead of shelling out to a separate ffprobe binary -- confirmed
-    live 2026-08-07 reading the same stream/duration info a real
-    ffprobe call would, with no subprocess call or system PATH
-    dependency at all."""
+    instead of shelling out to a separate ffprobe binary -- reads the
+    same stream/duration info a real ffprobe call would, with no
+    subprocess call or system PATH dependency at all."""
     path = Path(path)
     try:
         container = av.open(str(path))
@@ -1161,10 +1128,9 @@ def ffprobe_check(path):
 def write_txt(dest_path, spec, final_negative_prompt, keyframe_prompts=None):
     """keyframe_prompts: the fml2v_keyframe_prompts dict (first/middle/last
     still-image descriptions), if this was an fml2v render -- these are
-    NOT the same as spec['positive_prompt'] (the video animation prompt)
-    and were previously missing from this file entirely, leaving no
-    written record of what each keyframe still was actually asked to
-    show."""
+    NOT the same as spec['positive_prompt'] (the video animation prompt);
+    including them here gives a written record of what each keyframe
+    still was actually asked to show."""
     sections = [
         "POSITIVE PROMPT:\n\n"
         f"{spec['positive_prompt']}\n\n"
@@ -1300,16 +1266,15 @@ def main():
     spec_path = Path(args.spec).resolve()
     DREAMS_DIR = spec_path.parent.parent  # spec lives in <project>/_data/, output goes in <project>/
     INDEX_PATH = spec_path.parent / "index.json"
-    # Confirmed real bug (2026-08-12): this script has always derived its
-    # own DREAMS_DIR/INDEX_PATH directly from --spec rather than calling
-    # dream_step.resolve_project_globals() -- harmless while nothing here
-    # touched dream_step's own module-level DATA_DIR, but
-    # apply_render_settings() now calls dream_step.project_render_settings()
-    # -> creative_guidance_pointer() -> `DATA_DIR / "CREATIVE.md"`, and
-    # DATA_DIR was still None in this subprocess -- "unsupported operand
-    # type(s) for /: 'NoneType' and 'str'", a real render-breaking crash.
-    # spec_path.parent IS this project's _data dir already (see DREAMS_DIR
-    # above), exactly what resolve_project_globals() would have set.
+    # This script derives DREAMS_DIR/INDEX_PATH directly from --spec rather
+    # than calling dream_step.resolve_project_globals(), so dream_step's own
+    # module-level DATA_DIR is never set in this subprocess.
+    # apply_render_settings() calls dream_step.project_render_settings()
+    # -> creative_guidance_pointer() -> `DATA_DIR / "CREATIVE.md"`, which
+    # would crash with "unsupported operand type(s) for /: 'NoneType' and
+    # 'str'" if DATA_DIR were left None. spec_path.parent IS this project's
+    # _data dir already (see DREAMS_DIR above), exactly what
+    # resolve_project_globals() would have set.
     dream_step.DATA_DIR = spec_path.parent
 
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
@@ -1346,40 +1311,29 @@ def main():
 
     i2v_image_filename = None
     if is_i2v:
-        # Confirmed on Tale #83 (2026-08-08): positive_prompt/negative_prompt
-        # are the ONE source of truth for every workflow now -- image_path is
-        # the only thing i2v needs beyond the base spec fields (see run_once,
-        # which renders straight from spec["positive_prompt"]/
-        # spec["negative_prompt"] when no override is given). A separate
-        # i2v_positive_prompt/i2v_negative_prompt used to exist "to avoid
-        # re-describing appearance the image already fixes," but in practice
-        # 29 of 37 real i2v specs had it byte-identical to positive_prompt
-        # anyway, and the other 8 were just incomplete/truncated copies of
-        # it -- never a deliberately different, better-tuned version. #83's
-        # i2v_positive_prompt was one of those incomplete copies (no
-        # dialogue at all), silently used instead of its own good, complete
-        # positive_prompt, producing a real render with no scripted lip-sync
-        # content. Two fields that are supposed to hold the same content but
-        # can silently drift apart is worse than one field that's sometimes
+        # positive_prompt/negative_prompt are the ONE source of truth for
+        # every workflow -- image_path is the only thing i2v needs beyond
+        # the base spec fields (see run_once, which renders straight from
+        # spec["positive_prompt"]/spec["negative_prompt"] when no override
+        # is given). A separate i2v_positive_prompt/i2v_negative_prompt
+        # field would let two fields meant to hold the same content
+        # silently drift apart -- worse than one field that's sometimes
         # more detailed than strictly necessary.
-        # Bug fix (2026-08-09): this used to hard-require image_path be
-        # PRE-SET on the spec, full stop -- before ever even looking at
-        # i2v_generate_image_prompt. That's inconsistent with fml2v just
-        # below, which correctly treats "no images yet, but a generate-
-        # prompt is set" as a normal case needing nothing pre-computed.
-        # Confirmed real: a spec written with ONLY i2v_generate_image_
-        # prompt set (image_path never given -- nothing to point it at
-        # yet, since generate_i2v_first_frame decides that path itself)
-        # always failed here, even though everything needed to auto-
-        # generate the image was right there. image_path is relative to
+        # image_path is not required to be pre-set on the spec:
+        # i2v_generate_image_prompt is checked too, consistent with fml2v
+        # just below, which treats "no images yet, but a generate-prompt is
+        # set" as a normal case needing nothing pre-computed. A spec written
+        # with ONLY i2v_generate_image_prompt set (image_path never given --
+        # nothing to point it at yet, since generate_i2v_first_frame decides
+        # that path itself) still works, since everything needed to
+        # auto-generate the image is right there. image_path is relative to
         # the project folder (DREAMS_DIR) unless already absolute --
         # keeps specs portable across machines the same way every other
         # path in this pipeline is project-relative.
         src_image = None
         image_path_str = spec.get("image_path")
         if image_path_str:
-            # Normalizes legacy backslash-separated values (written while
-            # this pipeline ran on Windows) -- see dream_step.rel_path_str's
+            # Normalizes backslash-separated path values -- see dream_step.rel_path_str's
             # docstring for the exact "does not exist" failure this
             # prevents on Linux, where '\\' is a normal filename character,
             # not a path separator.
@@ -1457,20 +1411,17 @@ def main():
             if not src_image.is_absolute():
                 src_image = DREAMS_DIR / src_image
             if not src_image.exists():
-                # Confirmed real, repeated failure (2026-08-13): a human
-                # manually replacing a keyframe image with a different file
-                # TYPE (e.g. swapping in a .jpg where the spec's stored
-                # path still says .png -- GUI upload/drag-drop keeps
-                # whatever extension the source file actually had) left
-                # the exact stored path pointing at nothing, even though
-                # the real, intended image is sitting right there under
-                # the same stem with a different suffix. find_reference_
-                # images already treats a slot as satisfied by matching
-                # the STEM alone (1/2/3), not the extension -- this now
-                # does the same fallback here instead of hard-failing, so
-                # a manually-swapped file actually gets used on the very
-                # next render instead of silently continuing to be
-                # ignored call after call.
+                # A human manually replacing a keyframe image with a
+                # different file TYPE (e.g. swapping in a .jpg where the
+                # spec's stored path still says .png -- GUI upload/drag-drop
+                # keeps whatever extension the source file actually had)
+                # leaves the exact stored path pointing at nothing, even
+                # though the real, intended image is sitting right there
+                # under the same stem with a different suffix.
+                # find_reference_images already treats a slot as satisfied
+                # by matching the STEM alone (1/2/3), not the extension --
+                # apply the same fallback here instead of hard-failing, so
+                # a manually-swapped file actually gets used.
                 fallback = None
                 for candidate in src_image.parent.glob(f"{src_image.stem}.*"):
                     if candidate.is_file():

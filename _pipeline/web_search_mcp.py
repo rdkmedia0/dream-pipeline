@@ -4,19 +4,18 @@ Exposes `web_search` and `wikipedia_search`, in two forms:
 1. As plain Python functions (web_search(), wikipedia_search() below) --
    this is the form dream_step.py's _ollama_tool_completion actually
    uses, calling them directly, no MCP protocol involved. This is the
-   real, load-bearing use as of 2026-08-07.
+   real, load-bearing use.
 2. As an MCP server (`if __name__ == "__main__": mcp.run()`) -- usable
    by an interactive Claude Code session for a schema-defined tool
    instead of shelling out to curl. Not currently registered in any
-   .mcp.json (removed 2026-08-07, nothing in the pipeline needed it);
+   .mcp.json, since nothing in the pipeline needs it that way;
    re-add a .mcp.json pointing `python _pipeline/web_search_mcp.py` at
    this file if an interactive session should have it again.
 
-REPLACES searxng_mcp.py -- that depended on a self-hosted SearXNG
-instance (real infrastructure to run/maintain/migrate), and its own
-engines were unreliable (bing was the only consistently working one
-through it). This version talks to sources directly, confirmed live
-2026-08-07:
+Talks to sources directly rather than through a self-hosted search
+proxy, since that kind of proxy is real infrastructure to run/
+maintain/migrate and tends to leave only one engine reliably working
+through it:
 - DuckDuckGo's html.duckduckgo.com/html/ endpoint: plain HTTP GET, no
   JS, no CAPTCHA, real results -- the primary/default engine.
 - Wikipedia's official MediaWiki API: plain HTTP GET, official and
@@ -24,14 +23,14 @@ through it). This version talks to sources directly, confirmed live
   reference lookups.
 - Bing, as a FALLBACK ONLY (used when DuckDuckGo returns nothing): a
   plain curl-style request gets CAPTCHA-challenged, but a real headless
-  Chromium (via Playwright) sails through -- confirmed live, real
+  Chromium (via Playwright) sails through with real
   results, no CAPTCHA. This is heavier (a real browser engine) and
   slower than the other two, which is exactly why it's fallback-only,
   not the default.
-- Google and Brave were tested and ruled out: Google serves a
+- Google and Brave are ruled out: Google serves a
   JS-required stub to any non-browser client regardless of the exact
-  request (confirmed even through headless Chromium's default
-  fingerprint -- not attempted further, since defeating a bot-detection
+  request, including through headless Chromium's default
+  fingerprint (not attempted further, since defeating a bot-detection
   challenge specifically is not something to build). Brave's search
   page is a client-side-rendered SPA with no useful server HTML to
   scrape at all.
@@ -48,8 +47,8 @@ DuckDuckGo has already failed -- the common case (DuckDuckGo working)
 never touches Playwright at all.
 
 Downloads into `_pipeline/browsers/`, not Playwright's OS-level default
-cache (e.g. ~/AppData/Local/ms-playwright on Windows) -- confirmed live
-2026-08-07 (a real ~400MB Chromium download landed there). Keeps the
+cache (e.g. ~/AppData/Local/ms-playwright on Windows) -- a real ~400MB
+Chromium download. Keeps the
 whole pipeline self-contained under one folder for migration, instead
 of scattering a real dependency into a per-user OS cache directory
 outside this package entirely.
@@ -98,8 +97,8 @@ def _duckduckgo_search(query, max_results):
     with urllib.request.urlopen(req, timeout=15) as resp:
         html = resp.read().decode("utf-8", "replace")
     # DuckDuckGo's HTML results wrap each hit in a result__a link (title)
-    # and a result__snippet (text) -- both plain, no JS, confirmed stable
-    # across repeated queries 2026-08-07.
+    # and a result__snippet (text) -- both plain, no JS, stable
+    # across repeated queries.
     titles = re.findall(r'class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', html, re.DOTALL)
     snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
     results = []
@@ -153,8 +152,7 @@ def _bing_search(query, max_results):
             # stylesheets -- innerText comes back empty until they've
             # applied, so this uses textContent (pure DOM text, no
             # layout/visibility dependency) instead, plus a short fixed
-            # wait rather than waiting on visibility, confirmed reliable
-            # live 2026-08-07.
+            # wait rather than waiting on visibility.
             page.wait_for_timeout(2500)
             raw = page.eval_on_selector_all(
                 "li.b_algo",

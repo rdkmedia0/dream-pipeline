@@ -1,6 +1,6 @@
 """Gemini image generation -- the sole "Online photo" reference-image
 source for animals the local Flux2 checkpoint tends to hallucinate
-(confirmed live 2026-08-09: a real gemini-3.1-flash-image generation of
+(a real gemini-3.1-flash-image generation of
 a flying squirrel showed a correct patagium/flattened tail, something
 neither the free CC0-photo lookup -- 5 of 6 wrong species matches --
 nor a same-class hosted diffusion model, Hugging Face's SD3-medium, got
@@ -8,8 +8,7 @@ right on the same species). A large foundation model has genuinely seen
 more of a rare species' real appearance than a diffusion checkpoint,
 local or hosted.
 
-PAID ONLY -- confirmed live across multiple models and a fresh key/
-project that the Gemini API's free tier is not usable for image
+PAID ONLY -- the Gemini API's free tier is not usable for image
 generation on this account (every image model returned a hard
 `limit: 0` quota error; billing must be linked to unlock ANY image
 generation, free-tier-priced or not). Settings' Gemini section states
@@ -224,9 +223,7 @@ def normalize_and_resize(path, target_size=(512, 896)):
     as a T2I/I2I seed: workflow_api_t2i_flux2.json derives its OWN
     output latent size from the size of whatever reference image gets
     loaded (GetImageSize -> EmptyFlux2LatentImage), normally always the
-    512x896 blank placeholder. Confirmed live (2026-08-09, originally
-    against reference_photo.py's CC0-photo fetches, same underlying
-    graph applies here): skipping this step let an arbitrarily-sized
+    512x896 blank placeholder. Skipping this step lets an arbitrarily-sized
     external image carry its own dimensions straight through, breaking
     the pipeline's portrait framing and compounding into fml2v's
     middle/last (each conditions on the PREVIOUS frame's actual pixel
@@ -278,8 +275,7 @@ def generate_reference_image(prompt, dest_path, api_key=None, model=None):
     uses instead (note: that check passing does NOT prove image
     generation itself will work -- listing models is a free metadata
     call available even without billing, but actually generating an
-    image requires a billing account linked to the project, confirmed
-    live 2026-08-09 across multiple models on a fresh key/project).
+    image requires a billing account linked to the project.
 
     Raises GeminiContentBlocked (a RuntimeError subclass) when the API
     call itself succeeded but no image came back -- see that class's own
@@ -327,7 +323,7 @@ def edit_image(prompt, source_image_paths, dest_path, api_key=None, model=None):
     images attached as inlineData parts alongside the text prompt,
     instead of text-only generation from scratch.
 
-    Added 2026-08-12 for kf_middle_last_backend="gemini": generating an
+    For kf_middle_last_backend="gemini": generates an
     fml2v Tale's middle/last keyframes as a REMOTE image-edit off the
     real first-frame image, conditioned the same "maintain everything,
     but X changes" way local I2I already is -- kept as its own function

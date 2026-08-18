@@ -95,7 +95,7 @@ Publishing a new image version (maintainers only — end users never build):
 ./docker-publish.sh v1.2.0   # pushes a versioned tag + updates :latest
 ```
 
-Project data (one directory per channel, e.g. `ChatAiMals/`) is **not**
+Project data (one directory per channel) is **not**
 part of this repo — it's runtime data mounted from outside (see the
 volumes table above). Each project directory holds one subfolder per
 rendered video, plus a `_data/` folder with that project's specs

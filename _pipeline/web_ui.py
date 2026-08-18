@@ -69,13 +69,12 @@ JOBS_LOCK = threading.Lock()
 # tested before.
 _YOUTUBE_TEST_CREDS = None
 
-# Guards against a real race confirmed live 2026-08-08: clicking "Test
-# connection" while a "Reauthorize" job is still mid-flight (before its
-# browser consent completes and a cached token exists) saw no cache yet
-# and started its OWN independent auth job -- two separate browser
-# windows fighting each other. Holds the in-flight job's id so a second
-# call while one is already running returns that SAME job_id instead of
-# starting a new one.
+# Guards against a real race: clicking "Test connection" while a
+# "Reauthorize" job is still mid-flight (before its browser consent
+# completes and a cached token exists) sees no cache yet and would start
+# its OWN independent auth job -- two separate browser windows fighting
+# each other. Holds the in-flight job's id so a second call while one is
+# already running returns that SAME job_id instead of starting a new one.
 _YOUTUBE_AUTH_JOB_ID = None
 
 # Pending redirect-based OAuth flows (see upload_dream.build_redirect_flow) --
@@ -110,9 +109,9 @@ class _LiveLog(io.TextIOBase):
         self._buf += s
         while "\n" in self._buf:
             line, self._buf = self._buf.split("\n", 1)
-            # Wall-clock prefix (2026-08-12) -- every line otherwise only
-            # carried whatever relative "done in N.Ns" timing an individual
-            # print() call happened to include (see _log_ai_call), with no
+            # Wall-clock prefix -- every line otherwise only carries
+            # whatever relative "done in N.Ns" timing an individual
+            # print() call happens to include (see _log_ai_call), with no
             # way to tell from the log itself WHEN a step actually
             # happened, or how stale the last few lines are versus right
             # now. Blank lines (pure spacing in a multi-paragraph print)
@@ -153,20 +152,18 @@ class _StdoutRouter(io.TextIOBase):
     for threads that never registered one (e.g. the main thread, or a
     request thread doing nothing log-captured).
 
-    Confirmed real bug (2026-08-12): "Render video" dispatches a
-    "generate" job AND a "rework" job as two separate background threads
-    for the same numbers (see h_generate_or_rework's two _start_job
-    calls). The OLD approach -- straight `sys.stdout = _LiveLog(job_id)`
-    -- reassigns one process-global attribute with no thread affinity:
-    whichever of those two threads finishes first resets sys.stdout back
-    to whatever IT captured as "old_stdout", which silently rips out the
-    OTHER (still-running) thread's redirect too -- its print() output
-    from then on goes to the real terminal, invisible to JOBS[...]["log"]
-    for the rest of that job's life. Looked like "the log just stopped
-    updating"; was actually "the log was never being written to during
-    that whole stretch." A thread-local target sidesteps this entirely:
-    each thread's redirect is independent, so one thread finishing can
-    never disturb another thread's in-flight capture."""
+    "Render video" dispatches a "generate" job AND a "rework" job as two
+    separate background threads for the same numbers (see
+    h_generate_or_rework's two _start_job calls). A straight
+    `sys.stdout = _LiveLog(job_id)` reassignment would touch one
+    process-global attribute with no thread affinity: whichever of those
+    two threads finishes first would reset sys.stdout back to whatever IT
+    captured as "old_stdout", silently ripping out the OTHER
+    (still-running) thread's redirect too -- its print() output would go
+    to the real terminal from then on, invisible to JOBS[...]["log"] for
+    the rest of that job's life. A thread-local target sidesteps this
+    entirely: each thread's redirect is independent, so one thread
+    finishing can never disturb another thread's in-flight capture."""
     def __init__(self, real_stdout):
         self._real = real_stdout
         self._local = threading.local()
@@ -200,15 +197,15 @@ def _run_job(job_id, fn, *args, **kwargs):
         JOBS[job_id]["started_at"] = time.time()
         kind = JOBS[job_id]["kind"]
     if kind in ("generate", "rework"):
-        # Confirmed real bug (2026-08-08): _COMFYUI_LAST_PROGRESS is only
-        # ever updated BY the listener when it hears a fresh progress_state
-        # event -- with nothing clearing it when a NEW render starts, the
-        # display kept showing the PREVIOUS render's near-100%-complete
-        # progress for the first several seconds of a brand new one (e.g.
-        # "97% -- 0m 8s elapsed" on a render that had barely begun), until
-        # the new job's own first event finally overwrote it. Reset it the
-        # instant a new render job actually starts, so there's a clean
-        # "no data yet" gap instead of misleadingly stale numbers.
+        # _COMFYUI_LAST_PROGRESS is only ever updated BY the listener when
+        # it hears a fresh progress_state event -- with nothing clearing
+        # it when a NEW render starts, the display would keep showing the
+        # PREVIOUS render's near-100%-complete progress for the first
+        # several seconds of a brand new one (e.g. "97% -- 0m 8s elapsed"
+        # on a render that had barely begun), until the new job's own
+        # first event finally overwrote it. Reset it the instant a new
+        # render job actually starts, so there's a clean "no data yet"
+        # gap instead of misleadingly stale numbers.
         with _COMFYUI_PROGRESS_LOCK:
             _COMFYUI_LAST_PROGRESS.update(
                 {"percent": None, "step": None, "total_steps": None, "updated_at": 0.0})
@@ -229,13 +226,12 @@ def _run_job(job_id, fn, *args, **kwargs):
                 JOBS[job_id]["status"] = "failed"
                 JOBS[job_id]["error"] = "Cancelled by user"
             elif result is False:
-                # Confirmed real bug (2026-08-09): do_generate/do_rework
-                # returning normally after a NON-cancellation failure (e.g.
-                # fml2v prerequisites not met) was indistinguishable from a
-                # real success here -- the job showed "done" even though
-                # nothing rendered and the log clearly said FAILED. They now
-                # return False on that path (see their own "render FAILED"
-                # branches) specifically so this can tell the two apart.
+                # do_generate/do_rework returning normally after a
+                # NON-cancellation failure (e.g. fml2v prerequisites not
+                # met) is indistinguishable from a real success here
+                # otherwise -- they return False on that path (see their
+                # own "render FAILED" branches) specifically so this can
+                # tell the two apart.
                 JOBS[job_id]["status"] = "failed"
                 JOBS[job_id]["error"] = "See log above for what failed."
             else:
@@ -261,14 +257,14 @@ def _start_job(project, kind, numbers, fn, *args, job_id=None, **kwargs):
 
 def h_cancel_job(qs, body, job_id):
     """Cancels purely through ComfyUI's own API -- no local process
-    killing. Tried killing our tracked render_dream.py subprocess first;
-    confirmed wrong (2026-08-08): it does a BLOCKING subprocess.run() for
-    generate_dream.py (the actual ComfyUI-polling worker) as a further
-    child, and terminating just the parent on Windows does NOT kill its
-    children -- the grandchild was left running orphaned, continuing to
-    poll ComfyUI and finish the render on its own. A process-tree kill
-    would fix that specific bug, but stays fundamentally local-machine-
-    only (relies on os-level PIDs this web server can see) -- this
+    killing. Killing the tracked render_dream.py subprocess doesn't work:
+    it does a BLOCKING subprocess.run() for generate_dream.py (the actual
+    ComfyUI-polling worker) as a further child, and terminating just the
+    parent on Windows does NOT kill its children -- the grandchild would
+    be left running orphaned, continuing to poll ComfyUI and finish the
+    render on its own. A process-tree kill would fix that specific
+    problem, but stays fundamentally local-machine-only (relies on
+    os-level PIDs this web server can see) -- this
     pipeline's ComfyUI/ Ollama/GPU can legitimately run on a different
     host than this web server (see session notes on the Linux/Cloudflare
     question), where no local PID for the render even exists to kill.
@@ -295,14 +291,13 @@ def h_cancel_job(qs, body, job_id):
     # Unload models / free cached VRAM too, same as a normal completed
     # render's own cleanup -- otherwise a cancelled render leaves
     # ComfyUI holding VRAM from the interrupted execution indefinitely.
-    # Confirmed real bug (2026-08-12): ds.load_config() (dream_step's
-    # plain config) has no "comfyui_ports" key -- only vram_guard's own
-    # load_config() derives and adds that from comfyui_url. Passing the
-    # wrong one crashed with KeyError('comfyui_ports') AFTER cancelled
-    # was already set and /interrupt already sent, so the cancel itself
-    # still worked -- but the crash meant this handler never sent a
-    # response, and the browser saw a bare connection-reset instead of
-    # {"ok": true}.
+    # ds.load_config() (dream_step's plain config) has no "comfyui_ports"
+    # key -- only vram_guard's own load_config() derives and adds that
+    # from comfyui_url. Passing the wrong one raises KeyError('comfyui_ports'),
+    # which -- happening AFTER cancelled is already set and /interrupt
+    # already sent -- would still leave the cancel itself working, but
+    # would keep this handler from ever sending a response, so the
+    # browser would see a bare connection-reset instead of {"ok": true}.
     ds.vram_guard.comfyui_free_vram(ds.vram_guard.load_config())
     return {"ok": True}
 
@@ -318,11 +313,9 @@ def _comfyui_progress_listener():
     arrives, instead of every /api/job poll opening its own short-lived
     connection and racing to catch the next event within a couple seconds.
 
-    Confirmed still flaky (2026-08-08) even after caching _comfyui_progress()
-    to stop concurrent polls from contending for the same event: a fresh
-    per-poll connection under query_comfyui_progress()'s 2-second wait can
-    legitimately miss the event even with ZERO contention, whenever a render
-    step takes longer than 2s between progress_state broadcasts (normal for
+    A fresh per-poll connection under a short wait can legitimately miss a
+    progress_state event even with zero contention, whenever a render
+    step takes longer than the wait window between broadcasts (normal for
     a real video render) -- the connection just times out with no percent,
     showing "ComfyUI: rendering" with no percentage even while the render is
     actively progressing. A single long-lived connection that's always
@@ -345,25 +338,25 @@ def _comfyui_progress_listener():
                             data = json.loads(msg.data)
                             if data.get("type") != "progress_state":
                                 continue
-                            # Tried computing a whole-graph fraction (nodes finished +
-                            # current node's fraction, over total nodes) -- confirmed
-                            # WRONG (2026-08-08, real render): the i2v graph has ~47
-                            # nodes total but only 2 of them (the two sampler stages)
-                            # take any real time -- the other ~45 (loaders, math
-                            # expressions, primitives) all finish within the first
-                            # second. That pushed finished/total to ~95%+ almost
-                            # immediately and left it sitting there for the entire
-                            # multi-minute render, while the 2 nodes actually doing the
-                            # work barely moved the number. Counting nodes as if they
-                            # took equal time was the flawed assumption. Reverted to
-                            # showing exactly what ComfyUI's own console reports for
-                            # whichever node is currently running (step/max, the same
-                            # "6/8" a human watching ComfyUI's terminal sees) -- resets
-                            # per stage, same as ComfyUI's own display does, but at
-                            # least it's never dishonest about overall completion. The
-                            # job's own elapsed-time counter (see h_job/started_at) is
-                            # what actually answers "how much has this taken so far,"
-                            # monotonically, without needing to fake a percentage.
+                            # A whole-graph fraction (nodes finished + current node's
+                            # fraction, over total nodes) would be misleading: the i2v
+                            # graph has ~47 nodes total but only 2 of them (the two
+                            # sampler stages) take any real time -- the other ~45
+                            # (loaders, math expressions, primitives) all finish within
+                            # the first second. That would push finished/total to
+                            # ~95%+ almost immediately and leave it sitting there for
+                            # the entire multi-minute render, while the 2 nodes
+                            # actually doing the work barely move the number, since
+                            # counting nodes as if they take equal time is a flawed
+                            # assumption. Shows exactly what ComfyUI's own console
+                            # reports for whichever node is currently running
+                            # (step/max, the same "6/8" a human watching ComfyUI's
+                            # terminal sees) -- resets per stage, same as ComfyUI's own
+                            # display does, but at least it's never dishonest about
+                            # overall completion. The job's own elapsed-time counter
+                            # (see h_job/started_at) is what actually answers "how much
+                            # has this taken so far," monotonically, without needing to
+                            # fake a percentage.
                             nodes = data.get("data", {}).get("nodes", {})
                             running = [n for n in nodes.values() if n.get("state") == "running"]
                             with _COMFYUI_PROGRESS_LOCK:
@@ -382,10 +375,9 @@ def _comfyui_progress_listener():
                                 # staleness check in _comfyui_progress() is what
                                 # actually decides when a value is too old to trust.
             except Exception as e:
-                # Confirmed real gap (2026-08-16): this used to swallow
-                # EVERY failure silently -- wrong URL, connection refused,
-                # a missing dependency, a protocol error, anything -- and
-                # just retried forever. That looked identical from the
+                # Swallowing every failure silently -- wrong URL, connection
+                # refused, a missing dependency, a protocol error, anything --
+                # and just retrying forever would look identical from the
                 # outside to "ComfyUI's progress_state events just aren't
                 # arriving yet," with zero way to tell them apart. Printed
                 # once per distinct error message (not every 2s retry) so
@@ -412,16 +404,16 @@ def _comfyui_progress():
     persistent background listener (_comfyui_progress_listener) instead of
     opened fresh on every call -- see that function's docstring for why.
 
-    No staleness cutoff on the cached percent/step here anymore (removed
-    2026-08-08): confirmed it was making the display flicker between
-    "-- N% (step X/Y)" and bare "rendering" every time the gap between two
-    progress_state events (e.g. a slower step, or the pause between
-    finishing one sampler stage and the next one starting) happened to
-    exceed the cutoff -- the render was still genuinely progressing the
-    whole time, so blanking the last known value was actively misleading,
-    not honest. The real staleness case (data left over from a PREVIOUS,
-    already-finished render) is handled at the source instead: _run_job
-    resets _COMFYUI_LAST_PROGRESS the instant a NEW render job starts, so
+    No staleness cutoff on the cached percent/step: a time-based cutoff
+    would make the display flicker between "-- N% (step X/Y)" and bare
+    "rendering" every time the gap between two progress_state events
+    (e.g. a slower step, or the pause between finishing one sampler stage
+    and the next one starting) happens to exceed the cutoff -- the render
+    is still genuinely progressing the whole time, so blanking the last
+    known value would be actively misleading, not honest. The real
+    staleness case (data left over from a PREVIOUS, already-finished
+    render) is handled at the source instead: _run_job resets
+    _COMFYUI_LAST_PROGRESS the instant a NEW render job starts, so
     there's no "old render's numbers bleeding into a new one" scenario
     left for a time-based cutoff to guard against here."""
     comfyui_url = ds.load_config()["comfyui_url"]
@@ -479,13 +471,12 @@ def h_status(qs, body):
     project = _project_from_qs(qs)
     status = ds.compute_status(project)
     # Gates the Analytics tab's visibility -- deliberately NOT tied to
-    # this project's own upload history (confirmed real problem
-    # 2026-08-16: a fresh install/lost local data would hide the tab even
-    # though the real YouTube channel and its videos still exist). Instead
-    # checks for an actual AUTHORIZED session (a real token from a
-    # completed OAuth consent), per explicit direction 2026-08-16 -- not
-    # just a client_secret.json having been pasted in, which proves
-    # nothing actually connected yet. Checks both the shared test token
+    # this project's own upload history, since a fresh install/lost local
+    # data would then hide the tab even though the real YouTube channel
+    # and its videos still exist. Instead checks for an actual AUTHORIZED
+    # session (a real token from a completed OAuth consent) -- not just a
+    # client_secret.json having been pasted in, which proves nothing
+    # actually connected yet. Checks both the shared test token
     # (from Settings' "Test connection"/"Reauthorize", any project) and
     # this project's own token -- either one means a working session
     # exists somewhere.
@@ -590,7 +581,7 @@ def h_config_ollama_models(qs, body):
     # Hard-bounds the wait the same way check_dependencies' probe does --
     # list_ollama_models' own urlopen(timeout=10) doesn't reliably bound
     # DNS resolution on a garbage/unreachable host (getaddrinfo can hang
-    # well past it, especially on Windows), which previously left
+    # well past it, especially on Windows), which would otherwise leave
     # Settings' "Refresh models" button looking frozen for however long
     # that took instead of a predictable ~6s.
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -613,7 +604,7 @@ def h_local_addresses(qs, body):
 
 
 def h_test_all_connections(qs, body):
-    """Settings' "Test all connections" button (added 2026-08-15) --
+    """Settings' "Test all connections" button --
     runs every real connectivity check this pipeline has (Ollama,
     ComfyUI, Gemini, YouTube) in one call instead of clicking each
     service's own Test button individually. Gemini/YouTube are skipped
@@ -668,24 +659,21 @@ def h_models_missing(qs, body):
     comfyui_url, local or remote) -- used by Settings to show a count/
     list and a direct download link per file, without duplicating the
     missing-file logic that check_dependencies() already computes for
-    the summary badge. Always a live check now (no cache -- see
-    setup_installer.check_models_status()'s docstring, 2026-08-15);
-    `force` is accepted for the "Re-check" button's call-site
-    compatibility but has nothing left to force. No local-path-based
-    auto-download of any kind (removed 2026-08-16, per explicit
-    direction: "all checks should be done via api... we also need the
-    download buttons") -- every missing file with a known source gets a
-    direct download link instead, same pattern as Ollama/ComfyUI's own
-    Download buttons: open the browser, the human places the file
-    themselves, no local disk write from this process."""
+    the summary badge. Always a live check (no cache -- see
+    setup_installer.check_models_status()'s docstring); `force` is
+    accepted for the "Re-check" button's call-site compatibility but has
+    nothing left to force. No local-path-based auto-download of any
+    kind -- every missing file with a known source gets a direct
+    download link instead, same pattern as Ollama/ComfyUI's own Download
+    buttons: open the browser, the human places the file themselves, no
+    local disk write from this process."""
     import setup_installer
     config = ds.load_config()
     # Model-file completeness is ALWAYS a real, checked dependency, local
-    # or remote ComfyUI alike -- per explicit direction 2026-08-15: a
-    # workflow fails identically either way if a model is genuinely
-    # missing wherever ComfyUI actually runs. check_models_status()
-    # answers this purely from ComfyUI's own live /object_info API, not
-    # a local directory scan.
+    # or remote ComfyUI alike: a workflow fails identically either way if
+    # a model is genuinely missing wherever ComfyUI actually runs.
+    # check_models_status() answers this purely from ComfyUI's own live
+    # /object_info API, not a local directory scan.
     force = qs.get("force", ["0"])[0] == "1"
     total, missing, meta = setup_installer.check_models_status(None, force=force)
     reason = meta.get("reason")
@@ -747,8 +735,7 @@ def h_generate_or_rework(qs, body, is_rework):
     # cancel_check -- it reads the SAME JOBS entry h_cancel_job flips
     # "cancelled" on, letting a mid-batch Cancel stop the batch between
     # numbers instead of only interrupting whichever render happened to
-    # be in flight (see do_generate's own docstring for the bug this
-    # fixes, 2026-08-12).
+    # be in flight (see do_generate's own docstring for why).
     job_id = uuid.uuid4().hex[:12]
     cancel_check = lambda: JOBS.get(job_id, {}).get("cancelled", False)
     if is_rework:
@@ -817,11 +804,11 @@ def _capture(fn, *args, **kwargs):
         fn(*args, **kwargs)
         return True, log.getvalue()
     except SystemExit as e:
-        # Bug fix (2026-08-08): this used to return str(e) alone, discarding
-        # everything already printed to `log` (e.g. verbose's per-attempt
-        # raw model responses) -- the browser's Verbose checkbox appeared to
-        # do nothing on failure because the very output it asked for was
-        # captured then thrown away right before the response was built.
+        # Returning str(e) alone would discard everything already printed
+        # to `log` (e.g. verbose's per-attempt raw model responses) -- the
+        # browser's Verbose checkbox would appear to do nothing on failure
+        # because the very output it asked for was captured then thrown
+        # away right before the response was built.
         captured = log.getvalue()
         return False, (captured + str(e)) if captured else str(e)
     finally:
@@ -1125,10 +1112,9 @@ def h_gemini_key_save(qs, body):
     this one request.
 
     Validated with a real (free, unbilled) API call BEFORE persisting --
-    per explicit direction 2026-08-16: "a key should not save if it
-    cannot validate" (confirmed real gap: a garbage/typo'd key used to
-    save successfully and only show as broken later, via the separately-
-    optional Test button). Tries both the image-models and text-models
+    a key should not save if it cannot validate, since a garbage/typo'd
+    key saving successfully would only show as broken later, via the
+    separately-optional Test button. Tries both the image-models and text-models
     listing endpoints and accepts either succeeding as real proof --
     image generation specifically needs billing linked on the project
     (see h_gemini_key_test's own docstring), so a text-only-billed key
@@ -1153,10 +1139,9 @@ def h_gemini_key_save(qs, body):
             verified = False
     if not verified:
         # A short, human message, not the raw ~500-char JSON error body
-        # (image_error/text_error) -- per explicit direction 2026-08-16:
-        # "the user doesnt need to see the json result from gemini, a
-        # simple couldnt validate is fine". Full detail is still one
-        # click away via the Test button.
+        # (image_error/text_error) -- the user doesn't need to see the raw
+        # JSON result from Gemini. Full detail is still one click away via
+        # the Test button.
         raise ValueError("Key could not be validated -- click Test for the specific error.")
     path = _gemini_key_enc_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1275,9 +1260,9 @@ def _current_client_id_and_secret():
     """The (client_id, client_secret) pair from the currently-saved
     client_secret.json.enc, or (None, None) if none is saved -- used to
     filter _find_any_stored_youtube_token() so a stored token is only
-    trusted when BOTH match what's active right now. Confirmed live
-    2026-08-08 that client_id alone isn't enough: Google Cloud Console
-    lets you reset just the secret string for an EXISTING client_id
+    trusted when BOTH match what's active right now. client_id alone
+    isn't enough: Google Cloud Console lets you reset just the secret
+    string for an EXISTING client_id
     (keeping the same id) -- a stored token's embedded secret (baked in
     at the time it was issued, not re-read from the current file on
     refresh) goes stale the moment that happens even though its
@@ -1345,21 +1330,18 @@ def h_youtube_client_secret_test(qs, body):
     (_find_any_stored_youtube_token()) -- promoted into the same
     persisted cache once found, so it's not re-derived every call. If
     NEITHER exists, this returns an immediate "not verified" result --
-    it does NOT fall through to starting a browser consent flow
-    (confirmed live 2026-08-08 as a real bug: opening Settings with no
-    cached session silently started a real OAuth flow server-side,
-    since this used to fall through unconditionally -- the auto-check
-    must never have that side effect, only an explicit Reauthorize
-    click should). force=True (the "Reauthorize" button) is the only
-    path that ever starts one, always demanding a fresh consent and
-    skipping the cache entirely.
+    it does NOT fall through to starting a browser consent flow, since
+    opening Settings with no cached session must never silently start a
+    real OAuth flow server-side -- the auto-check must never have that
+    side effect, only an explicit Reauthorize click should. force=True
+    (the "Reauthorize" button) is the only path that ever starts one,
+    always demanding a fresh consent and skipping the cache entirely.
 
     Any browser consent flow that does start only ever runs as ONE job
-    at a time: concurrent calls while one is already in flight
-    (confirmed live 2026-08-08 as a separate real bug -- clicking Test
-    connection while Reauthorize's job hadn't finished yet independently
-    started a SECOND browser window) reuse that same job_id instead of
-    starting another."""
+    at a time: concurrent calls while one is already in flight (clicking
+    Test connection while Reauthorize's job hadn't finished yet would
+    otherwise independently start a SECOND browser window) reuse that
+    same job_id instead of starting another."""
     global _YOUTUBE_AUTH_JOB_ID
     import upload_dream
     force = bool(body.get("force"))
@@ -1380,12 +1362,12 @@ def h_youtube_client_secret_test(qs, body):
         # fresh consent -- report "not verified" without ever touching
         # run_local_server()/opening a browser.
         return {"ok": False, "immediate": True, "error": "no working session yet -- click Reauthorize"}
-    # Reserve the job slot ATOMICALLY inside the lock -- confirmed live
-    # 2026-08-08 that checking-then-setting _YOUTUBE_AUTH_JOB_ID as two
-    # separate steps (even both individually lock-guarded) still races:
-    # two near-simultaneous requests can both see "nothing in flight"
-    # before either has actually recorded its own job_id, so both start
-    # a job anyway. Registering the JOBS entry and _YOUTUBE_AUTH_JOB_ID
+    # Reserve the job slot ATOMICALLY inside the lock -- checking-then-
+    # setting _YOUTUBE_AUTH_JOB_ID as two separate steps (even both
+    # individually lock-guarded) still races: two near-simultaneous
+    # requests can both see "nothing in flight" before either has
+    # actually recorded its own job_id, so both would start a job
+    # anyway. Registering the JOBS entry and _YOUTUBE_AUTH_JOB_ID
     # together in one locked block, before the thread even starts,
     # closes that window.
     with JOBS_LOCK:
@@ -1786,10 +1768,10 @@ def _run_workflow_test_render(test_id, graph_path, wiring, test_image_paths):
     import generate_dream
     config = ds.load_config()
     comfyui_path = config.get("comfyui_path")
-    # Only used for the OUTPUT side now (a same-machine fast path that skips
+    # Only used for the OUTPUT side (a same-machine fast path that skips
     # an HTTP download when it happens to exist) -- images are uploaded
     # to ComfyUI over HTTP (see upload_image_to_comfyui), no local input
-    # dir needed at all anymore. None (no comfyui_path configured) is fine:
+    # dir needed at all. None (no comfyui_path configured) is fine:
     # download_or_locate() already falls back to HTTP when there's no local
     # path to check, so no machine-specific default is needed here.
     output_dir = Path(comfyui_path) / "output" if comfyui_path else None
@@ -1804,10 +1786,10 @@ def _run_workflow_test_render(test_id, graph_path, wiring, test_image_paths):
         _TEST_RENDER_RESULTS[test_id] = {"ok": False, "error": str(e)}
         raise
     finally:
-        # Confirmed real gap (2026-08-18): download_or_locate()'s temp file
-        # was never cleaned up here on ANY path (success included) --
-        # unlike generate_dream.py's own callers of run_once/
-        # generate_one_attempt, which already delete it after copying.
+        # download_or_locate()'s temp file needs explicit cleanup here on
+        # every path (success included) -- unlike generate_dream.py's own
+        # callers of run_once/generate_one_attempt, which already delete
+        # it after copying.
         if tmp_path is not None and tmp_path.parent == generate_dream.PIPELINE_DIR:
             tmp_path.unlink(missing_ok=True)
         if test_image_paths is not None:
@@ -1921,13 +1903,13 @@ def h_job(qs, body, job_id):
 def h_active_jobs(qs, body):
     """Any job (queued/running) for this project, so the frontend can
     resume showing a live render's progress after a page reload instead of
-    just losing track of it. Confirmed real gap (2026-08-08): a render
-    keeps going server-side regardless of the browser tab (it's a
-    subprocess of the WEB SERVER process, not the tab), but reloading the
-    page reset all the JS-side job-tracking state with no way to find that
-    job again -- looked to a human like refreshing had killed the render,
-    when it hadn't; there was just no UI for "a job is already running,
-    reconnect to it." kind is included so the frontend only auto-resumes
+    just losing track of it. A render keeps going server-side regardless
+    of the browser tab (it's a subprocess of the WEB SERVER process, not
+    the tab), but reloading the page resets all the JS-side job-tracking
+    state with no way to find that job again -- otherwise it would look
+    to a human like refreshing had killed the render, when it hadn't;
+    there was just no UI for "a job is already running, reconnect to
+    it." kind is included so the frontend only auto-resumes
     the ones it knows how to render a progress panel for (video-gen jobs
     -- "generate"/"rework"), not e.g. a spec-write job."""
     project = _project_from_qs(qs)
@@ -2144,8 +2126,8 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _scrub_secret_text(text):
-        # Confirmed real gap (2026-08-18): unlike the explicit HTTPError branch
-        # below, this catch-all stringifies whatever exception object it gets,
+        # Unlike the explicit HTTPError branch below, this catch-all
+        # stringifies whatever exception object it gets,
         # and some of those (URLError wrapping a failed Gemini/YouTube request,
         # an AttributeError from a malformed API response) can carry the
         # original request URL -- which may still contain a key=/token=
@@ -2300,12 +2282,12 @@ INDEX_HTML = r"""<!doctype html>
   body {
     font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
     font-size: 15px; line-height: 1.5; color: var(--fg); background: var(--bg);
-    /* Widened from 1800px (2026-08-09): the manage table's own columns
-       easily exceed that on a wide monitor, so a wider browser window
-       used to make zero difference to how many columns fit before
-       needing to scroll -- confirmed real complaint. Still capped, not
-       unbounded, so ultra-wide monitors don't stretch single-column text
-       content (video list, chat, etc.) uncomfortably wide. */
+    /* The manage table's own columns easily exceed a narrower cap on a
+       wide monitor, so a narrower cap would make a wider browser window
+       give zero benefit to how many columns fit before needing to
+       scroll. Still capped, not unbounded, so ultra-wide monitors don't
+       stretch single-column text content (video list, chat, etc.)
+       uncomfortably wide. */
     max-width: 2400px; margin: 0 auto; padding: 0 1.25rem 3rem;
   }
   h1, h2, h3, h4 { line-height: 1.25; font-weight: 650; }
@@ -2318,8 +2300,8 @@ INDEX_HTML = r"""<!doctype html>
   /* color-scheme:light dark alone lets native form controls pick their OWN
      background/text color from the OS theme, independently of whatever
      the page's own background happens to be -- on a light page with a
-     dark-mode OS this renders white text on a white input (confirmed:
-     looked empty but had a spellcheck squiggle under invisible text).
+     dark-mode OS this renders white text on a white input (looks empty
+     but has a spellcheck squiggle under invisible text).
      Setting background/color explicitly here removes that ambiguity. */
   input, select, textarea {
     width: 100%; box-sizing: border-box; padding: 0.45rem 0.6rem; margin: 0.25rem 0;
@@ -2381,8 +2363,8 @@ INDEX_HTML = r"""<!doctype html>
   .sidebar-resize-handle:hover { background: var(--accent-soft); }
   @media (max-width: 900px) {
     .layout { flex-direction: column; }
-    /* Confirmed real bug (2026-08-16): .layout's align-items:flex-start
-       only matters on the CROSS axis, which becomes WIDTH once
+    /* .layout's align-items:flex-start only matters on the CROSS axis,
+       which becomes WIDTH once
        flex-direction switches to column here -- without an explicit
        width, #app sizes to its own intrinsic content width instead of
        filling the column (min-width:0 alone, correct for the desktop
@@ -2530,12 +2512,11 @@ INDEX_HTML = r"""<!doctype html>
   .field-ok { border-color: var(--success) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 35%, transparent); }
   .field-error { border-color: var(--danger) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent); }
   /* Matches badge-warn's amber, for a field whose sibling pill is
-     non-critical NOK (amber, not red) -- confirmed real mismatch
-     2026-08-16: the field used to always glow red on any failure,
-     disagreeing with an amber "not critical right now" pill next to it. */
+     non-critical NOK (amber, not red) -- glowing red on any failure would
+     disagree with an amber "not critical right now" pill next to it. */
   .field-warn { border-color: var(--warning) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 35%, transparent); }
   /* Secondary detail/action line for a field whose primary pass/fail
-     pill now lives in the section title instead (see h4's own comment)
+     pill lives in the section title instead (see h4's own comment)
      -- a plain wrapping line, since content here can be a genuine
      sentence or grow multi-line (missing-file lists, buttons), not a
      single fixed-width row. */
@@ -2646,7 +2627,7 @@ INDEX_HTML = r"""<!doctype html>
   .badge-danger { background: var(--danger); color: #fff; }
   .badge-warn { background: var(--warning); color: #fff; }
 
-  /* Failure callout (2026-08-12) -- the human-readable "what happened /
+  /* Failure callout -- the human-readable "what happened /
      what to do" summary shown above the raw log on a failed render, see
      renderFailureCallout. Warning-tinted, not danger-red -- most of what
      lands here is a normal "needs an answer" refusal, not catastrophic. */
@@ -2675,46 +2656,45 @@ INDEX_HTML = r"""<!doctype html>
      mode, so the table reads like a spreadsheet, not a stack of unevenly
      sized text boxes. */
   /* Bounded height (not just overflow-x) so the horizontal scrollbar sits
-     at a fixed, always-reachable spot on screen -- confirmed real
-     complaint (2026-08-09): with only overflow-x, this div grows as tall
-     as ALL the rows combined, so its horizontal scrollbar ends up
-     wherever that total height happens to end, often far below the
-     visible viewport on a table with many rows, forcing a scroll-down-
-     then-scroll-right-then-scroll-back-up cycle just to see another
-     column. Capping height and adding overflow-y here instead turns this
-     into its own self-contained scrolling viewport (the thead's existing
-     position:sticky keeps the header pinned to ITS top, same visual
-     effect as before, just relative to this box instead of the page).*/
-  /* max-width:100% (not just overflow:auto) is load-bearing -- confirmed
-     real bug (2026-08-16): without an explicit cap, this div's own box
-     grew to match its ~2000px-wide table (table-layout:fixed's column
-     widths force that intrinsic size) instead of staying capped to its
-     container, so overflow:auto never had anything to actually scroll --
-     the whole PAGE stretched horizontally on mobile instead of just this
-     one element getting its own internal scrollbar. min-width:0 undoes
-     the default min-width:auto that lets a block child's intrinsic
-     content width push a flex/grid ancestor wider than intended, the
-     same class of bug at the container level. */
+     at a fixed, always-reachable spot on screen -- with only overflow-x,
+     this div grows as tall as ALL the rows combined, so its horizontal
+     scrollbar would end up wherever that total height happens to end,
+     often far below the visible viewport on a table with many rows,
+     forcing a scroll-down-then-scroll-right-then-scroll-back-up cycle
+     just to see another column. Capping height and adding overflow-y
+     here instead turns this into its own self-contained scrolling
+     viewport (the thead's existing position:sticky keeps the header
+     pinned to ITS top, same visual effect, just relative to this box
+     instead of the page).*/
+  /* max-width:100% (not just overflow:auto) is load-bearing -- without an
+     explicit cap, this div's own box grows to match its ~2000px-wide
+     table (table-layout:fixed's column widths force that intrinsic
+     size) instead of staying capped to its container, so overflow:auto
+     never has anything to actually scroll -- the whole PAGE stretches
+     horizontally on mobile instead of just this one element getting its
+     own internal scrollbar. min-width:0 undoes the default
+     min-width:auto that lets a block child's intrinsic content width
+     push a flex/grid ancestor wider than intended, the same class of bug
+     at the container level. */
   .manage-table-scroll { overflow: auto; max-height: 70vh; max-width: 100%; min-width: 0; }
-  /* border-collapse:separate (+ spacing:0), not collapse -- confirmed
-     real bug (2026-08-16): position:sticky on a <td>/<th> is silently
-     ignored by Chromium-based browsers when the table uses
-     border-collapse:collapse (a long-standing, well-documented
-     limitation), which broke the new sticky checkbox/row-number columns
-     below -- their computed position read "sticky" but they scrolled
-     off-screen like any normal cell. Each cell already draws its own
-     1px border, so cells still look bordered as before; the only visible
-     difference is adjacent cells no longer share a single collapsed
-     border line between them. Also drops the table's own overflow:hidden
-     (previously there to clip content to the table's rounded corners) --
-     an ancestor with overflow != visible becomes its own scroll
-     container for position:sticky purposes even when nothing inside it
-     actually scrolls, which silently redirected the sticky columns'
-     containing block away from the REAL scrolling ancestor
-     (.manage-table-scroll) and made them track the horizontal scroll
-     like any other cell instead of staying pinned. Corner-rounding is
-     cosmetic and border-radius on a <table> was never reliably clipped
-     by real browsers anyway -- not a meaningful loss. */
+  /* border-collapse:separate (+ spacing:0), not collapse -- position:sticky
+     on a <td>/<th> is silently ignored by Chromium-based browsers when
+     the table uses border-collapse:collapse (a long-standing,
+     well-documented limitation), which would break the sticky
+     checkbox/row-number columns below -- their computed position would
+     read "sticky" but they'd scroll off-screen like any normal cell.
+     Each cell already draws its own 1px border, so cells still look
+     bordered as before; the only visible difference is adjacent cells no
+     longer share a single collapsed border line between them. Also
+     drops the table's own overflow:hidden (there to clip content to the
+     table's rounded corners) -- an ancestor with overflow != visible
+     becomes its own scroll container for position:sticky purposes even
+     when nothing inside it actually scrolls, which would silently
+     redirect the sticky columns' containing block away from the REAL
+     scrolling ancestor (.manage-table-scroll) and make them track the
+     horizontal scroll like any other cell instead of staying pinned.
+     Corner-rounding is cosmetic and border-radius on a <table> is never
+     reliably clipped by real browsers anyway -- not a meaningful loss. */
   .manage-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 0.85em; table-layout: fixed; background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); }
   .manage-table th, .manage-table td { border: 1px solid var(--border-soft); padding: 0.4rem 0.5rem; vertical-align: top; text-align: left; overflow: hidden; }
   .manage-table thead th {
@@ -2723,11 +2703,10 @@ INDEX_HTML = r"""<!doctype html>
   }
   .manage-table tbody tr:hover { background: var(--accent-soft); }
   /* Freezes the checkbox + row-number columns while scrolling
-     horizontally -- confirmed real complaint (2026-08-16): on a narrow
-     screen this table is ~2000px wide (12 columns, mostly 13rem text
-     fields), and without a fixed reference column, scrolling right to
-     reach a later field loses all track of which row you're even
-     editing. left offsets match mf-col-select's own 2.2rem width exactly
+     horizontally -- on a narrow screen this table is ~2000px wide (12
+     columns, mostly 13rem text fields), and without a fixed reference
+     column, scrolling right to reach a later field loses all track of
+     which row you're even editing. left offsets match mf-col-select's own 2.2rem width exactly
      so the second sticky column starts right where the first ends, no
      gap or overlap. z-index:3 (above both the plain top-sticky header at
      2 and these same two columns' own body cells at 1) is only needed on
@@ -2828,10 +2807,10 @@ INDEX_HTML = r"""<!doctype html>
     padding: 0.3rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
     background: var(--field-bg); cursor: text; max-width: 100%; box-sizing: border-box;
   }
-  /* Confirmed real bug (2026-08-17): negative_prompt terms can be whole
-     phrases, not just short tags -- white-space:nowrap kept a long one on
-     a single line with no wrap point, so it just overflowed straight out
-     of the cell/table instead of wrapping ("leaks"). flex-wrap on the
+  /* negative_prompt terms can be whole phrases, not just short tags --
+     white-space:nowrap on a long one has no wrap point, so it would
+     overflow straight out of the cell/table instead of wrapping
+     ("leaks"). flex-wrap on the
      container only wraps whole PILLS onto new lines; it never helps a
      single pill that's itself wider than the row. max-width caps an
      individual pill to the container's own width (flex items don't
@@ -2961,12 +2940,10 @@ async function loadSettingsForm() {
     updateVisionBackendUI();
     loadWorkflowFilesSection();
     // Populate the Creative/Vision model dropdowns with the live Ollama
-    // list right away -- previously this needed a manual "Refresh
-    // models" click every time Settings opened, even though nothing
-    // else in this form needs a click to show current data. The button
-    // stays for after editing the Ollama URL field, which this
-    // auto-run (fired against the URL already saved in config.json)
-    // can't know about yet.
+    // list right away, since nothing else in this form needs a click to
+    // show current data. The button stays for after editing the Ollama
+    // URL field, which this auto-run (fired against the URL already
+    // saved in config.json) can't know about yet.
     refreshOllamaModels();
   } catch (e) {
     body.innerHTML = `<pre>ERROR: ${e.message}</pre>`;
@@ -3038,7 +3015,7 @@ function updateGeminiOptionsVisibility() {
     const sel = document.getElementById(id);
     const opt = sel && sel.querySelector('option[value="gemini"]');
     if (opt) opt.style.display = authed ? '' : 'none';
-    // A previously-saved "gemini" choice that's now unauthenticated
+    // A saved "gemini" choice that's currently unauthenticated
     // (key removed/disabled) would otherwise leave the select showing
     // a hidden option with nothing else selected -- fall back to the
     // one remaining visible choice so the UI never shows a blank/
@@ -3054,11 +3031,10 @@ function updateGeminiOptionsVisibility() {
     if (!authed && kfSel.value !== 'all_local') kfSel.value = 'all_local';
   }
   // Gemini image model only makes sense if kf_backend actually USES
-  // Gemini for at least one frame -- confirmed real bug 2026-08-16: this
-  // used to show whenever a Gemini key was merely authenticated,
-  // regardless of the selected backend, so it stayed visible even with
-  // "All local" picked (where it's entirely irrelevant -- no frame ever
-  // goes through Gemini in that mode).
+  // Gemini for at least one frame -- showing it whenever a Gemini key is
+  // merely authenticated, regardless of the selected backend, would keep
+  // it visible even with "All local" picked, where it's entirely
+  // irrelevant since no frame ever goes through Gemini in that mode.
   const kfModelWrap = document.getElementById('kf-gemini-model-wrap');
   if (kfModelWrap) kfModelWrap.style.display = (authed && kfSel && kfSel.value !== 'all_local') ? '' : 'none';
   // Re-sync each section's own ollama/gemini sub-panel visibility now
@@ -3089,12 +3065,11 @@ async function loadLocalAddresses() {
 // reach/manage the service directly (an executable path, an install
 // path) -- none of those apply to a service running on a genuinely
 // different machine, since this process has no way to launch or locate
-// it locally. Confirmed real gap (2026-08-16): a setup pointing
+// it locally. A literal-string-only check would treat a setup pointing
 // ollama_url/comfyui_url at the machine's own LAN IP (common for a
-// config meant to be portable/shared) was being treated as "remote"
-// under the old literal-string-only check, hiding the "appears to be
-// installed -- start it?" offer even when it genuinely was installed
-// right here.
+// config meant to be portable/shared) as "remote", hiding the "appears
+// to be installed -- start it?" offer even when it's genuinely
+// installed right here -- so localMachineAddresses is checked too.
 function _isLocalHost(url) {
   try {
     const h = new URL(url).hostname.toLowerCase();
@@ -3138,13 +3113,12 @@ async function loadGeminiKeyStatus() {
     state.geminiEnabled = data.present && data.enabled;
     updateGeminiOptionsVisibility();
     // A present-but-undecryptable key (see secret_store.decrypt_status --
-    // confirmed live 2026-08-15, this is exactly what happens post a
-    // Windows->Linux port: the .enc file survives the copy, the
-    // machine-local encryption key it needs does not) must show the
-    // input field so the user can actually fix it by re-entering the
-    // key -- hiding it (the old !data.present-only condition) trapped
-    // the user behind a green "ENABLED" badge with no visible way to
-    // re-add anything short of first clicking Remove.
+    // this is exactly what happens post a Windows->Linux port: the .enc
+    // file survives the copy, the machine-local encryption key it needs
+    // does not) must show the input field so the user can actually fix
+    // it by re-entering the key -- a !data.present-only condition would
+    // trap the user behind a green "ENABLED" badge with no visible way
+    // to re-add anything short of first clicking Remove.
     setGeminiKeyInputVisible(!data.present || data.decryptable === false);
     const h4Badge = document.getElementById('gemini-h4-badge');
     // Ollama and Gemini substitute for each other (see
@@ -3179,11 +3153,11 @@ async function loadGeminiKeyStatus() {
       state.geminiVerified = false;
     } else {
       // Present AND enabled -- looks usable, but "saved" is not the same
-      // claim as "actually works" (confirmed real bug 2026-08-16: a
-      // garbage/fake key landed here and showed green). Neither the pill
-      // nor the field glows green until refreshAllGeminiModels() below
-      // actually proves it with a real API call -- this is a genuine
-      // "checking" state, not yet a verdict.
+      // claim as "actually works" (a garbage/fake key can land here and
+      // still show green if unchecked). Neither the pill nor the field
+      // glows green until refreshAllGeminiModels() below actually proves
+      // it with a real API call -- this is a genuine "checking" state,
+      // not yet a verdict.
       el.innerHTML = `a key is saved (encrypted) -- verifying...` +
         ` <button type="button" style="font-size:0.85em;margin-left:0.4rem" onclick="toggleGeminiEnabled(false)">Disable</button>`;
       if (h4Badge) h4Badge.innerHTML = checkingPillHtml();
@@ -3275,10 +3249,9 @@ async function clearGeminiKey() {
 // in the result text below: this passing does NOT prove image
 // generation itself will work -- listing models is free even without
 // billing, but actually generating an image requires a billing account
-// linked to the project (confirmed live 2026-08-09 across multiple
-// models on a fresh key/project that had no billing linked -- listing
-// worked fine, every actual generateContent call returned a hard
-// 0-quota error).
+// linked to the project: a fresh key/project with no billing linked
+// lists models fine, but every actual generateContent call returns a
+// hard 0-quota error.
 async function testGeminiKey() {
   const input = document.getElementById('gemini-key-input');
   const content = input.value.trim();
@@ -3308,17 +3281,17 @@ function updateCreativeBackendUI() {
   if (note) note.style.display = (backend === 'gemini') ? '' : 'none';
 }
 
-// Vision QC has its own independent backend picker (2026-08-12) but no
-// dedicated key/model UI of its own -- picking Gemini just reuses
-// whatever key Creative writing's own section already has saved (see
+// Vision QC has its own independent backend picker but no dedicated
+// key/model UI of its own -- picking Gemini just reuses whatever key
+// Creative writing's own section already has saved (see
 // dream_step._vision_query's own docstring), so this toggle only needs
 // to show/hide the right sub-section, not refresh any model list itself
 // -- the Gemini section's own single "Refresh models" button already
 // populates every Gemini dropdown across all roles at once. Concept
 // research has no backend/model UI of its own at all -- it always
-// follows Creative model's own backend and model directly (2026-08-16,
-// aligned: research feeds straight into writing, so letting them
-// diverge just added a decision with no real payoff).
+// follows Creative model's own backend and model directly, since
+// research feeds straight into writing and letting them diverge would
+// just add a decision with no real payoff.
 function updateVisionBackendUI() {
   const sel = document.getElementById('cfg-vision-backend');
   if (!sel) return;
@@ -3338,7 +3311,7 @@ function updateVisionBackendUI() {
 // underlying API/key, just two different endpoints (image models vs.
 // everything else), so this fires both once and fans the results out to
 // every <select>, instead of a separate "Refresh models" click needed
-// per section (confirmed real friction: four buttons for one shared key).
+// per section (four buttons for one shared key is real friction).
 async function refreshAllGeminiModels() {
   const status = document.getElementById('gemini-models-status');
   if (status) status.textContent = 'checking...';
@@ -3361,24 +3334,23 @@ async function refreshAllGeminiModels() {
     applyTo('cfg-gemini-text-model', textData);
     applyTo('cfg-gemini-vision-model', textData);
     // Either endpoint actually returning a real model list IS the proof
-    // the key genuinely works (not just "something is saved") -- per
-    // explicit direction 2026-08-16: "it shouldnt go green when a fake
-    // unusable key is provided. the status should be based on the
-    // actual connection." image-models specifically needs billing
-    // linked (see testGeminiKey's own docstring) so it can legitimately
-    // fail on an otherwise-valid key -- text succeeding alone is still
-    // real proof, and vice versa.
+    // the key genuinely works (not just "something is saved") -- the
+    // status must be based on the actual connection, not go green for a
+    // fake/unusable key. image-models specifically needs billing linked
+    // (see testGeminiKey's own docstring) so it can legitimately fail on
+    // an otherwise-valid key -- text succeeding alone is still real
+    // proof, and vice versa.
     applyGeminiVerifiedStatus(imageData.ok || textData.ok);
     if (!status) return;
     if (!imageData.ok && !textData.ok) {
       status.textContent = `Could not list models: ${imageData.error || textData.error}`;
       return;
     }
-    // Confirmed real gap: the two calls can fail independently (e.g. the
-    // image endpoint specifically needs billing linked -- see
-    // testGeminiKey's own docstring), and silently only reporting the
-    // half that succeeded left the Keyframe section's Image model
-    // dropdown stuck on "(none set)" with no visible explanation why.
+    // The two calls can fail independently (e.g. the image endpoint
+    // specifically needs billing linked -- see testGeminiKey's own
+    // docstring), so silently only reporting the half that succeeded
+    // would leave the Keyframe section's Image model dropdown stuck on
+    // "(none set)" with no visible explanation why.
     const parts = [];
     if (imageData.ok) parts.push(`${imageData.models.length} image model(s)`);
     else parts.push(`image models failed: ${imageData.error}`);
@@ -3407,10 +3379,10 @@ function applyGeminiVerifiedStatus(verified) {
       : 'Key saved and enabled, but the last real connectivity check failed -- click Test for the specific error.';
     h4Badge.innerHTML = settingsPill(verified, state.geminiBadgeDetail, !state.ollamaReachable);
   }
-  // Confirmed real bug (2026-08-16): loadGeminiKeyStatus sets this line to
-  // "...verifying..." while refreshAllGeminiModels() is in flight, but
-  // nothing ever replaced it once verification actually finished -- the
-  // pill/field updated correctly above, but the text line stayed stuck on
+  // loadGeminiKeyStatus sets this line to "...verifying..." while
+  // refreshAllGeminiModels() is in flight, so it must be explicitly
+  // replaced once verification finishes -- otherwise the pill/field
+  // update correctly above but the text line stays stuck on
   // "verifying..." forever, looking hung even on a fully successful check.
   const statusEl = document.getElementById('gemini-key-status');
   if (statusEl && statusEl.innerHTML.includes('verifying...')) {
@@ -3484,22 +3456,21 @@ async function autoTestYoutubeConnection(statusEl) {
     youtubeAutoTestResult = !!data.immediate && !!data.ok;
     if (statusEl) {
       // One pill for this whole section -- the h4 badge below -- not a
-      // second one embedded in this text line too (confirmed real
-      // duplication 2026-08-16: every other Settings section shows plain
-      // text here, e.g. Gemini's "a key is saved -- connected").
+      // second one embedded in this text line too: every other Settings
+      // section shows plain text here, e.g. Gemini's "a key is saved --
+      // connected".
       statusEl.innerHTML = data.immediate
         ? (data.ok
             ? `client_secret.json is saved (encrypted) -- connected as channel: ${esc(data.channel_title)}`
             : `client_secret.json is saved (encrypted) -- connection failed: ${esc(data.error)}`)
         : `client_secret.json is saved (encrypted) -- no working session yet, click Reauthorize`;
     }
-    // The h4 badge now follows this SAME real result (previously it
-    // stayed on a premature green "saved" verdict set before this test
-    // even ran, disagreeing with a FAILED result shown right below it).
+    // The h4 badge follows this SAME real result, rather than a
+    // premature green "saved" verdict set before this test even ran,
+    // which would disagree with a FAILED result shown right below it.
     // "Not verified" is still a real NOK state (amber, not a confirmed
     // red failure) -- the field matches it exactly like every other
-    // state, per explicit direction 2026-08-16: "at all times it is
-    // visible".
+    // state, visible at all times.
     if (data.immediate) {
       if (h4Badge) h4Badge.innerHTML = settingsPill(data.ok,
         data.ok ? undefined : `Connection test failed: ${data.error}`, false);
@@ -3592,9 +3563,9 @@ async function clearYoutubeClientSecret() {
   if (!await confirmModal('Remove the saved client_secret.json? Every project will need the one-time browser re-authorization again on its next upload.')) return;
   try {
     await api('POST', '/api/youtube/client-secret/clear', {});
-    // A stale "Loaded x.json -- click Save..." message survived a
-    // Remove click (confirmed real gap 2026-08-16) -- clear the pending
-    // upload too, since it no longer describes anything actually true.
+    // A stale "Loaded x.json -- click Save..." message would survive a
+    // Remove click otherwise -- clear the pending upload too, since it
+    // no longer describes anything actually true.
     pendingClientSecretContent = null;
     const loadedEl = document.getElementById('yt-client-secret-loaded');
     if (loadedEl) loadedEl.textContent = '';
@@ -3754,10 +3725,9 @@ function setInputFieldStatus(elId, ok, critical) {
 }
 
 // A plain Download link/button for whichever service isn't reachable --
-// the dependency-check popup used to be the only place this showed
-// (removed 2026-08-16, folded into Settings instead), so it needs to
-// live here now or the option to fix an unreachable service by
-// installing it just vanishes entirely.
+// this lives in Settings (not the dependency-check popup) so the option
+// to fix an unreachable service by installing it doesn't vanish
+// entirely.
 function downloadWrapHtml(r) {
   if (!r || !r.install_url) return '';
   return `<div class="row" style="margin:0.3rem 0">
@@ -3799,12 +3769,10 @@ function updateOllamaGeminiCriticality() {
 }
 
 // Ollama and ComfyUI each check independently (separate /api/dependencies
-// ?service=... calls, see ds.check_dependencies' own services param) --
-// per explicit direction 2026-08-16: "comfyui and ollama url checks
-// should run independently so its not so heavy each refresh of a url".
-// Editing/refreshing just one URL used to always re-probe BOTH services
-// and re-run ComfyUI's own (much heavier) model-file check even when
-// only Ollama's URL changed.
+// ?service=... calls, see ds.check_dependencies' own services param), so
+// editing/refreshing just one URL doesn't re-probe BOTH services and
+// re-run ComfyUI's own (much heavier) model-file check when only
+// Ollama's URL changed.
 async function checkOllamaStatus() {
   const badge = document.getElementById('ollama-h4-badge');
   const countdownId = badge ? startCheckingCountdown(badge, 6) : null;
@@ -4000,10 +3968,10 @@ function settingsFormHtml(config) {
            status TEXT in its own <span class="muted">, matching
            Ollama's row above exactly (button outside any muted
            ancestor, text inside one). Putting class="muted" on this
-           outer container too used to also fade/shrink the button
-           nested inside it -- opacity and em-based font-size both
-           cascade to descendants, so the button ended up visibly
-           smaller and lighter than Ollama's otherwise-identical one. -->
+           outer container too would also fade/shrink the button nested
+           inside it -- opacity and em-based font-size both cascade to
+           descendants, making the button visibly smaller and lighter
+           than Ollama's otherwise-identical one. -->
       <div id="cfg-models-status" class="row" style="margin:0.3rem 0"></div>
     </div>
 
@@ -4541,13 +4509,12 @@ async function autoSaveField(el, cfgKey, kind) {
     // checkOllamaStatus/checkComfyuiStatus below (a live connectivity
     // check) -- the generic "flash field-ok for 900ms then blindly
     // remove it" feedback used for every other field is not just
-    // redundant here, it's actively harmful: confirmed real bug
-    // (2026-08-16) where the real check resolved and set field-ok BEFORE
-    // the blind 900ms timeout fired, and that timeout then stripped the
-    // class it never added, silently reverting a correctly-green field
-    // back to no color at all while the pill right next to it still said
-    // OK. Skip the flash entirely for these two; let the real check be
-    // the only thing that ever touches their color.
+    // redundant here, it's actively harmful: if the real check resolves
+    // and sets field-ok BEFORE the blind 900ms timeout fires, that
+    // timeout then strips the class it never added, silently reverting a
+    // correctly-green field back to no color at all while the pill right
+    // next to it still says OK. Skip the flash entirely for these two;
+    // let the real check be the only thing that ever touches their color.
     if (cfgKey === 'ollama_url') {
       checkOllamaStatus();
     } else if (cfgKey === 'comfyui_url') {
@@ -4577,13 +4544,13 @@ function esc(s) {
 }
 
 // Replaces native confirm() for every destructive/impactful action in this
-// app (video-gen overwrite, permanent delete, clearing saved credentials).
-// Confirmed real bug (2026-08-08): this app is regularly driven through an
-// automated browser tool that silently auto-rejects native confirm()/
-// alert() dialogs (returns false immediately, no visible prompt at all) --
-// every one of those buttons looked completely dead ("nothing happens")
-// with no error, no dialog, nothing to click through, because the click
-// handler's own confirm() call was the thing silently failing before the
+// app (video-gen overwrite, permanent delete, clearing saved credentials),
+// since this app is regularly driven through an automated browser tool
+// that silently auto-rejects native confirm()/alert() dialogs (returns
+// false immediately, no visible prompt at all) -- with a native confirm(),
+// every one of those buttons would look completely dead ("nothing
+// happens") with no error, no dialog, nothing to click through, because
+// the click handler's own confirm() call would silently fail before the
 // real action ever ran. A custom in-page modal isn't a native dialog, so
 // it isn't affected by that at all, and reads better in a normal browser
 // too. Returns a Promise<boolean> -- callers do `if (!await confirmModal(...)) return;`.
@@ -4608,11 +4575,11 @@ function confirmModal(message) {
 }
 
 // Used where a destructive action (deleteSlotImage) is about to reload
-// a row from disk, which would silently discard any unsaved edits
-// still sitting in that row's form -- confirmed real gap (2026-08-12):
-// typing a reworded keyframe prompt then deleting that slot's image
-// (the normal "reword + regenerate" flow) reloaded the row and threw
-// the just-typed text away with no warning, forcing a re-type. Returns
+// a row from disk, which would silently discard any unsaved edits still
+// sitting in that row's form -- e.g. typing a reworded keyframe prompt
+// then deleting that slot's image (the normal "reword + regenerate"
+// flow) would reload the row and throw the just-typed text away with no
+// warning, forcing a re-type. Returns
 // 'save' (save the row first, then proceed), 'discard' (proceed
 // without saving), or null (cancelled, do nothing).
 function confirmModalSaveOrDiscard(message) {
@@ -4638,10 +4605,9 @@ function confirmModalSaveOrDiscard(message) {
 }
 
 // A configured model name (e.g. "gemma4") and Ollama's actual tag for it
-// (e.g. "gemma4:12b") can differ by tag suffix alone -- confirmed live
-// 2026-08-07: an exact-string match against the
-// live /api/tags list silently failed for this reason, so nothing got
-// marked `selected` and the browser defaulted to the first option
+// (e.g. "gemma4:12b") can differ by tag suffix alone, so an exact-string
+// match against the live /api/tags list would silently fail: nothing
+// gets marked `selected` and the browser defaults to the first option
 // alphabetically instead of the actually-configured model. Matches
 // exact first, then by base name (before any ':') so a bare tag in
 // config still finds its live-list entry.
@@ -4793,15 +4759,15 @@ async function deleteProjectFlow(name) {
 function goToProjectList() {
   localStorage.removeItem('lastProject');
   state.project = null;
-  // Confirmed real bug (2026-08-12): renderProjectList() re-reads
-  // location.search's own ?project= on EVERY call (so a bookmark/link can
-  // target a project directly) -- but this is a single-page app, nothing
-  // ever navigates the browser URL itself, so ?project=X stays in the
-  // address bar for the rest of the session. That made clicking
-  // "Projects" (this function) immediately re-select the same project
-  // right back, with no way to ever actually land on the picker. Clear
-  // it from the URL here (no page reload, just the address bar) so the
-  // next renderProjectList() call has nothing left to auto-select from.
+  // renderProjectList() re-reads location.search's own ?project= on
+  // EVERY call (so a bookmark/link can target a project directly) --
+  // but this is a single-page app, nothing ever navigates the browser
+  // URL itself, so ?project=X would otherwise stay in the address bar
+  // for the rest of the session, making clicking "Projects" (this
+  // function) immediately re-select the same project right back, with
+  // no way to ever actually land on the picker. Clear it from the URL
+  // here (no page reload, just the address bar) so the next
+  // renderProjectList() call has nothing left to auto-select from.
   history.replaceState(null, '', location.pathname);
   renderProjectList();
 }
@@ -5249,9 +5215,9 @@ const VIEWS = [
   // own uploads playlist, not local index.json records) once Refresh is
   // clicked, so this works even on a fresh install/new machine with zero
   // local render history, as long as SOME working YouTube session exists.
-  // Gating on s.uploaded.length (confirmed real problem 2026-08-16) meant
-  // losing local project data made the tab vanish even though the real
-  // channel/videos still existed on YouTube.
+  // Gating on s.uploaded.length instead would make the tab vanish
+  // whenever local project data is lost, even though the real
+  // channel/videos still exist on YouTube.
   { key: 'analytics', label: 'Analytics', when: s => s.youtube_authorized, title: 'YouTube Analytics', body: () => analyticsForm() },
 ];
 // Help is NOT a VIEWS entry -- it's reachable only via the header's "Help"
@@ -5566,13 +5532,13 @@ async function loadManageTable() {
   localStorage.setItem(manageNumbersKey(), numbersStr);
   const wrap = document.getElementById('manage-table-wrap');
   if (!numbersStr.trim()) { wrap.innerHTML = ''; return; }
-  // Confirmed real bug (2026-08-17): the "loading..." placeholder below
-  // collapses this (often very tall) table down to one line WHILE the
-  // fetch is in flight -- the page's total scroll height shrinks along
-  // with it, and the browser clamps the current scroll position down to
-  // fit that shorter page. It doesn't un-clamp on its own once the real
-  // content grows the page back out, which read as "saving snaps me back
-  // to the top of the page" (runManageSave calls this after every save).
+  // The "loading..." placeholder below collapses this (often very tall)
+  // table down to one line WHILE the fetch is in flight -- the page's
+  // total scroll height shrinks along with it, and the browser clamps
+  // the current scroll position down to fit that shorter page. It
+  // doesn't un-clamp on its own once the real content grows the page
+  // back out, which reads as "saving snaps me back to the top of the
+  // page" (runManageSave calls this after every save).
   // Restoring the pre-collapse position once the real content is back
   // undoes that clamp; a no-op on the very first load, since scrollY is
   // already 0 then.
@@ -5912,13 +5878,12 @@ function renderManageTable() {
 
 // Tracks which row numbers the user has explicitly DESELECTED (rather
 // than which are selected) so a brand-new number that shows up after a
-// reload defaults to selected, same as it always has. Confirmed real
-// bug (2026-08-12): loadManageTable() rebuilds the whole table's HTML
-// from scratch after every Save/Render/etc, and manageRowHtml used to
-// hardcode `checked` unconditionally on every row's checkbox -- so
-// deselecting all but one row, then saving, silently re-selected
-// everything the instant the post-save reload ran, discarding the
-// user's actual selection with no way to tell it had happened.
+// reload defaults to selected. loadManageTable() rebuilds the whole
+// table's HTML from scratch after every Save/Render/etc, so if
+// manageRowHtml hardcoded `checked` unconditionally on every row's
+// checkbox, deselecting all but one row and then saving would silently
+// re-select everything the instant the post-save reload ran, discarding
+// the user's actual selection with no way to tell it had happened.
 function manageIsDeselected(number) {
   return !!(state.manageDeselected && state.manageDeselected.has(number));
 }
@@ -6113,15 +6078,15 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
        <img src="/slot-image/${encodeURIComponent(state.project)}/${number}/${workflow}/${slot}?t=${Date.now()}" style="width:48px;height:48px;object-fit:cover;border-radius:4px;display:block;cursor:zoom-in" onclick="enlargeSlotImage(this.src)" title="Click to enlarge">
        ${reassign}`
     : '';
-  // The prompt textarea now ALWAYS exists in the DOM, even when an
-  // image already satisfies this slot -- confirmed real bug
-  // (2026-08-09): when it only rendered in the "no image yet" case,
-  // ticking K on a row that already had an image had nowhere to put the
-  // freshly-composed text (setSlotPromptValue silently no-ops if the
-  // textarea isn't there), AND "Online photo"'s own scene-prompt lookup
-  // found nothing to send. Collapsed behind a <details> disclosure when
-  // an image is already showing, so the thumbnail stays the visual
-  // default without permanently eating column space.
+  // The prompt textarea ALWAYS exists in the DOM, even when an image
+  // already satisfies this slot -- if it only rendered in the "no image
+  // yet" case, ticking K on a row that already had an image would have
+  // nowhere to put the freshly-composed text (setSlotPromptValue
+  // silently no-ops if the textarea isn't there), and "Online photo"'s
+  // own scene-prompt lookup would find nothing to send. Collapsed behind
+  // a <details> disclosure when an image is already showing, so the
+  // thumbnail stays the visual default without permanently eating
+  // column space.
   const promptField_html = `<textarea class="mf-slot-prompt" data-field="${promptField}" rows="2" placeholder="${slot} prompt">${esc(promptValue)}</textarea>`;
   const promptSection = hasImage
     ? `<details style="margin-top:0.2rem"><summary style="font-size:0.7em;cursor:pointer">Edit prompt</summary>${promptField_html}</details>`
@@ -6283,9 +6248,9 @@ function getCheckedSlotBulkItems() {
 
 // Bulk sibling of deleteSlotImage -- deletes many (number, slot) image
 // slots across possibly-different rows behind a SINGLE confirmation,
-// instead of one popup per slot (confirmed real friction 2026-08-14:
-// clearing stale keyframes across a 10-row batch meant clicking through
-// 20+ near-identical "delete this image?" dialogs one at a time). Any
+// instead of one popup per slot -- without this, clearing stale
+// keyframes across a 10-row batch means clicking through 20+
+// near-identical "delete this image?" dialogs one at a time. Any
 // row with unsaved edits is called out by number in the one dialog, and
 // choosing "Save first" saves ALL such rows before any deletion runs
 // (never partial -- a row's edits are either saved before its images
@@ -6404,10 +6369,10 @@ async function fetchSlotReferencePhoto(number, slot) {
   const tr = document.querySelector(`tr[data-number="${number}"]`);
   const title = getCellValue(tr, 'title');
   // Prefer the row's actual still-image scene description over a
-  // generic species-only prompt (confirmed live: generic prompts gave
-  // Gemini no framing guidance and came back with the subject cut off)
-  // -- the live textarea (an unsaved edit) if the slot has no image yet
-  // and it's visible, otherwise whatever's already stored for this slot.
+  // generic species-only prompt, since a generic prompt gives Gemini no
+  // framing guidance and can come back with the subject cut off -- the
+  // live textarea (an unsaved edit) if the slot has no image yet and
+  // it's visible, otherwise whatever's already stored for this slot.
   const liveTextarea = tr.querySelector(`.mf-slot[data-slot="${slot}"] .mf-slot-prompt`);
   const scenePrompt = liveTextarea ? liveTextarea.value.trim()
     : (slot === 'image' ? (row.i2v_prompt || '') : (row.fml_prompts[slot] || ''));
@@ -6601,14 +6566,13 @@ async function runManageGenerate(rows) {
         } catch (e) { results.push(`#${current.number} spec: ERROR - ${e.message}`); }
       }
       if (current.useAiKf && current.type !== 't2v') {
-        // No longer gated on "does an image already satisfy this row" --
-        // confirmed real bug (2026-08-09): that gate made ticking K on a
-        // row with an existing image silently skip the API call
-        // entirely, producing a bare "Nothing to generate." with no
-        // explanation. Composing a fresh prompt to then regenerate/
-        // replace an existing image (via "Online photo") is a normal,
-        // legitimate thing to want -- see generate_row_keyframes_content's
-        // own matching fix.
+        // Not gated on "does an image already satisfy this row" -- that
+        // gate would make ticking K on a row with an existing image
+        // silently skip the API call entirely, producing a bare "Nothing
+        // to generate." with no explanation. Composing a fresh prompt to
+        // then regenerate/replace an existing image (via "Online photo")
+        // is a normal, legitimate thing to want -- see
+        // generate_row_keyframes_content's own matching logic.
         try {
           const r = await api('POST', '/api/manage/keyframes/generate', {
             project: state.project, number: current.number, type: current.type,
@@ -6658,16 +6622,15 @@ async function saveManageRowContent(row, tr, verbose) {
     } catch (e) { results.push(`#${current.number} spec: ERROR - ${e.message}`); }
   }
   if (current.type !== 't2v') {
-    // Used to also require !imageSatisfied here (skip the write whenever
-    // real images already existed) -- confirmed real bug (2026-08-13):
-    // that meant freshly composed/typed keyframe text for a row whose
-    // story had just been rewritten never even reached the server, no
-    // matter how many times write_row_keyframes itself got fixed to
-    // handle stale images once fields arrived -- the request was never
-    // sent in the first place. kfFieldsDirty alone (text actually
-    // changed from what's on disk) is the right gate; the server now
-    // deletes stale images itself when real new prompt text shows up
-    // for a slot that already had one (see write_row_keyframes).
+    // Requiring !imageSatisfied here too (skip the write whenever real
+    // images already existed) would mean freshly composed/typed keyframe
+    // text for a row whose story had just been rewritten never even
+    // reaches the server, no matter how write_row_keyframes itself
+    // handles stale images once fields arrive -- the request would never
+    // be sent in the first place. kfFieldsDirty alone (text actually
+    // changed from what's on disk) is the right gate; the server deletes
+    // stale images itself when real new prompt text shows up for a slot
+    // that already had one (see write_row_keyframes).
     if (kfFieldsDirty(row, current)) {
       try {
         const r = await api('POST', '/api/manage/keyframes', {
@@ -6771,14 +6734,14 @@ async function runManageVideoGen() {
   pollManageJobs(jobIds, btn, originalLabel);
 }
 
-// 2026-08-12: a failed render used to just dump the whole raw log into a
-// <pre> with "ERROR: See log above for what failed." -- readable only by
-// scrolling through everything to find the one line that mattered.
-// dream_step.py's own "[dream_step] >>> ..." lines are ALREADY written
-// to be human-readable explanations (many end with "ASK THE USER: ...
-// would you like to...", originally meant for an agent driving this CLI
-// but just as useful read directly by a human at this GUI) -- pull those
-// out and put them front and center instead of leaving them buried.
+// Dumping the whole raw log into a <pre> with "ERROR: See log above for
+// what failed." would be readable only by scrolling through everything
+// to find the one line that mattered. dream_step.py's own
+// "[dream_step] >>> ..." lines are ALREADY written to be human-readable
+// explanations (many end with "ASK THE USER: ... would you like to...",
+// meant for an agent driving this CLI but just as useful read directly
+// by a human at this GUI) -- pull those out and put them front and
+// center instead of leaving them buried.
 // Where the fix is something this GUI can actually just DO (the most
 // common real case: fml2v keyframe images/prompts missing), offer a real
 // button instead of only telling the human where to click -- otherwise
@@ -6858,15 +6821,14 @@ async function pollManageJobs(jobIds, btn, originalLabel) {
   const failed = jobs.filter(j => j.status === 'failed');
   const overallStatus = active.length ? (active.some(j => j.status === 'running') ? 'running' : 'queued')
     : failed.length ? 'failed' : 'done';
-  // Button text used to be set once ("Starting...") and never touched again
-  // until the whole job finished -- misleading for renders that run
-  // minutes, since it kept saying "Starting..." long after ComfyUI was
-  // actually rendering. Now it tracks overallStatus every poll.
+  // Button text tracks overallStatus every poll -- setting it once
+  // ("Starting...") and never touching it again would be misleading for
+  // renders that run minutes, since it would keep saying "Starting..."
+  // long after ComfyUI is actually rendering.
   //
-  // While active, the button becomes a real Cancel button (2026-08-08) --
-  // it used to just stay disabled showing "Running...", with no way to
-  // stop a render short of killing processes by hand outside the tool.
-  // Enabled (not disabled) and the active job ids are stashed on the
+  // While active, the button is a real Cancel button, so there's a way
+  // to stop a render short of killing processes by hand outside the
+  // tool. Enabled (not disabled) and the active job ids are stashed on the
   // button itself (data-active-job-ids) for handleRunVideoGenClick to
   // find; cleared once the job leaves the active set below.
   if (btn && active.length) {
@@ -6978,20 +6940,18 @@ async function pollManageJobs(jobIds, btn, originalLabel) {
 
 function applyResultsHtmlFollowingLogTail(container, html) {
   if (!container) return;
-  // Confirmed real bug (2026-08-12): the global `pre { max-height: 24rem;
-  // overflow-y: auto; }` rule (see its own definition) makes this log's
-  // <pre> independently scrollable INSIDE its own small box -- the
-  // previous fix here assumed it wasn't (a stale assumption from before
-  // that rule existed, or from a different pre without it) and tracked
-  // the PAGE's window scroll instead. Since the log fits its own bounded
-  // box, the page itself often never needs to scroll at all, so that
-  // tracked "wasAtBottom" as true forever while the human's real
-  // scrolling happened inside the <pre> -- every 2s poll rebuilt the
-  // <pre> as a brand new element, silently resetting ITS scrollTop to 0
-  // regardless, which reads as "the log keeps snapping back to the top
-  // while I'm reading down through it." Track the <pre>'s own scrollTop
-  // instead, same tail-following logic, just against the element that
-  // actually scrolls.
+  // The global `pre { max-height: 24rem; overflow-y: auto; }` rule (see
+  // its own definition) makes this log's <pre> independently scrollable
+  // INSIDE its own small box, so tracking the PAGE's window scroll
+  // instead doesn't work: since the log fits its own bounded box, the
+  // page itself often never needs to scroll at all, so "wasAtBottom"
+  // would read as true forever while the human's real scrolling happens
+  // inside the <pre> -- every 2s poll rebuilds the <pre> as a brand new
+  // element, silently resetting ITS scrollTop to 0 regardless, which
+  // reads as "the log keeps snapping back to the top while I'm reading
+  // down through it." Track the <pre>'s own scrollTop instead, same
+  // tail-following logic, just against the element that actually
+  // scrolls.
   const prevPre = container.querySelector('pre');
   const wasAtBottom = !prevPre ||
     (prevPre.scrollHeight - prevPre.scrollTop - prevPre.clientHeight < 40);
@@ -7052,15 +7012,15 @@ async function submitNewProject() {
 // agent, this web UI included, ever writes it directly) -- these only
 // ever write to CREATIVE.draft.md until the human explicitly clicks Save
 // with whatever text is currently in the textarea, edits included.
-// 2026-08-12: replaced the old free-text "paste/edit raw CREATIVE.md
-// markdown" editor with a real FORM -- genre/style/duration/resolution as
-// dropdown-plus-custom fields (a <datalist> lets a native <input> offer
-// suggestions while still accepting anything typed), concept-source as
-// plain text, and the prompt template as its own textarea (the only
-// field that's still free-form code-like text). A human no longer needs
-// to know or preserve CREATIVE.md's exact marker-line/fence syntax by
-// hand -- ds.creative_fields()/ds.compose_creative_md() are the only
-// things that need to agree on that shape now.
+// A real FORM instead of free-text "paste/edit raw CREATIVE.md markdown"
+// -- genre/style/duration/resolution as dropdown-plus-custom fields (a
+// <datalist> lets a native <input> offer suggestions while still
+// accepting anything typed), concept-source as plain text, and the
+// prompt template as its own textarea (the only field that's still
+// free-form code-like text). A human doesn't need to know or preserve
+// CREATIVE.md's exact marker-line/fence syntax by hand -- ds.creative_fields()/
+// ds.compose_creative_md() are the only things that need to agree on
+// that shape.
 // Shared by two entry points: right after a brand-new project is created
 // (isOnboarding=true, state.pendingNewProject set), and the standing
 // "Creative" tab for an already-selected project (isOnboarding=false) --
@@ -7080,11 +7040,10 @@ function creativeFieldsBody(f, isOnboarding) {
         here. Nothing changes until you click Save.</p>`;
   const styleDatalist = `<datalist id="cf-style-options">${(f.style_options || []).map(s => `<option value="${esc(s)}">`).join('')}</datalist>`;
   // Real <select> + explicit "Custom..." option instead of an <input
-  // list=...> datalist -- confirmed real complaint (2026-08-12): a plain
-  // input's datalist suggestions have no visible dropdown arrow in most
-  // browsers, so it didn't read as a dropdown at all. A <select> is
-  // unambiguous; picking "Custom..." reveals a plain input underneath
-  // for anything not in the preset list.
+  // list=...> datalist -- a plain input's datalist suggestions have no
+  // visible dropdown arrow in most browsers, so it wouldn't read as a
+  // dropdown at all. A <select> is unambiguous; picking "Custom..."
+  // reveals a plain input underneath for anything not in the preset list.
   const formatDurationLabel = s => s >= 60 ? `${s / 60} min` : `${s}s`;
   const selectField = (id, label, options, current, formatLabel) => {
     const isPreset = options.some(o => String(o) === String(current));
@@ -7291,9 +7250,9 @@ function analyticsPublishStatusSummary(videos) {
   const published = videos.length - scheduledVideos.length;
   if (!scheduledVideos.length) return `${published} published`;
   // Sorted ascending -- dates[0] is the SOONEST upcoming (the real "next
-  // scheduled"), dates[last] is the furthest-out one. Confirmed real bug
-  // 2026-08-16: this used to grab the last (latest) date and label it
-  // "next", backwards from what that word means.
+  // scheduled"), dates[last] is the furthest-out one. Grabbing the last
+  // (latest) date and labeling it "next" would be backwards from what
+  // that word means.
   const dates = scheduledVideos.map(v => v.scheduled_publish_at).filter(Boolean).sort();
   let range = '';
   if (dates.length) {
@@ -7407,13 +7366,13 @@ function _prevWeek(year, num) {
 // human's own picks.
 //
 // Period A defaults to the last FULLY cached week/month, not whatever
-// calendar period today happens to fall in -- confirmed real gap
-// 2026-08-16: "today"'s own calendar week/month is very often mostly
-// uncached (YouTube's Analytics API has its own ~1-3 day processing lag
-// for recent days on top of whatever's simply in the future relative to
-// the last Refresh), so defaulting to it landed on a NO DATA view most
-// of the time. Stepping back to the last window that's fully <= maxDate
-// means the chart actually has something to show on first load.
+// calendar period today happens to fall in -- "today"'s own calendar
+// week/month is very often mostly uncached (YouTube's Analytics API has
+// its own ~1-3 day processing lag for recent days on top of whatever's
+// simply in the future relative to the last Refresh), so defaulting to
+// it would land on a NO DATA view most of the time. Stepping back to the
+// last window that's fully <= maxDate means the chart actually has
+// something to show on first load.
 function seedAnalyticsPeriodDefaults(dailyTrend) {
   const maxDate = dailyTrend[dailyTrend.length - 1].date;
   const type = state.analyticsPeriodType;
@@ -7648,9 +7607,9 @@ function analyticsTrendChartSvg(dailyTrend) {
   const lineB = valuesB
     ? `<polyline points="${toCoords(valuesB)}" fill="none" stroke="var(--muted-fg, #999)" stroke-width="2" stroke-dasharray="4 3"></polyline>`
     : '';
-  // Explicit color-key legend -- confirmed real gap: the solid vs. dashed
-  // lines had no on-chart explanation of which date range each one was,
-  // only a small parenthetical buried in the caption text below.
+  // Explicit color-key legend -- without it, the solid vs. dashed lines
+  // have no on-chart explanation of which date range each one is, only a
+  // small parenthetical buried in the caption text below.
   const legend = state.analyticsCompareEnabled
     ? (valuesB
         ? `<div class="row" style="gap:1rem; width:auto; margin-bottom:0.3rem; font-size:0.85em">
@@ -7886,9 +7845,9 @@ async function checkDependenciesOnBoot() {
 
 // A spinner + counting-down seconds figure, not just static "Checking..."
 // text -- a button that LOOKS the same for 10 straight seconds reads as
-// frozen even with accurate wording next to it (confirmed real
-// complaint). The number counting down is itself the proof the page is
-// still alive and doing something, independent of the words.
+// frozen even with accurate wording next to it. The number counting down
+// is itself the proof the page is still alive and doing something,
+// independent of the words.
 function startCheckingCountdown(btn, seconds) {
   let remaining = seconds;
   const render = () => { btn.innerHTML = `<span class="mf-spinner"></span>Checking (up to ${remaining}s)...`; };

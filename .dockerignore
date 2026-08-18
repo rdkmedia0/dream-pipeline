@@ -1,7 +1,6 @@
 # Excluded from both the build context AND the image itself (Dockerfile
-# now COPYs _pipeline/ in full) -- machine-specific, huge, or private/
-# non-transferable items, same exclusion list established for sharing
-# this folder over SMB (see CLAUDE.md). Secrets specifically must never
+# COPYs _pipeline/ in full) -- machine-specific, huge, or private/
+# non-transferable items (see CLAUDE.md). Secrets specifically must never
 # ship baked into a redistributed image -- they belong in the /state
 # volume only (see entrypoint.sh / secret_store.py's
 # DREAM_PIPELINE_CONFIG_DIR handling), never the image layer.
@@ -23,10 +22,11 @@ _pipeline/gemini/usage.json
 # Project data (rendered videos, keyframes) -- not needed to BUILD the
 # image at all (it's runtime data, mounted via the /data volume), and
 # can be large enough to slow down sending the build context otherwise.
-ChatAiMals
-dreams
-guitest
+# Lives entirely outside this repo in a real deployment, but excluded here
+# too in case docker-compose.yml's default ./data lands next to this file
+# during local testing.
 .claude
 data
+state
 
 .git

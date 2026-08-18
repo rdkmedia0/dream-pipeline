@@ -1,10 +1,10 @@
 """
 Known download sources for Dream Pipeline's ComfyUI model files
-(researched 2026-08-07 directly against HuggingFace's/Civitai's own
-APIs, not guessed from filenames) -- a lookup table, NOT the definitive
+(sourced directly against HuggingFace's/Civitai's own APIs, not
+guessed from filenames) -- a lookup table, NOT the definitive
 list of what's actually required.
 
-That list is no longer hand-maintained here (a fixed list drifts the
+This list is not hand-maintained here (a fixed list would drift the
 moment a workflow_api_*.json graph changes -- a swapped checkpoint, an
 added/removed LoRA -- with nothing forcing this file to be updated to
 match). required_models_from_workflows() below derives the real,
@@ -30,19 +30,19 @@ PIPELINE_DIR = Path(__file__).resolve().parent
 # models/ subfolder" inputs (ckpt_name, vae_name, unet_name, lora_name,
 # clip_name/clip_name1/clip_name2, model_name, control_net_name, ...).
 # The trailing \d* handles multi-slot loaders like DualCLIPLoader's
-# clip_name1/clip_name2 -- confirmed live 2026-08-08 that a plain
-# endswith("_name") silently misses those entirely (a real, dangerous
-# gap: it means DualCLIPLoader's text-encoder files never got flagged
-# as required at all, not even reported missing).
+# clip_name1/clip_name2 -- a plain endswith("_name") would silently
+# miss those entirely (a real, dangerous gap: it would mean
+# DualCLIPLoader's text-encoder files never get flagged as required
+# at all, not even reported missing).
 #
 # This is a NAMING CONVENTION, not a list of specific node types or
 # files -- it covers any loader node that follows it, including ones
 # this codebase has never seen (a new custom node, a future workflow),
 # with no new entry needed here every time. The convention alone isn't
-# proof by itself (confirmed live 2026-08-08: KSamplerSelect's
-# sampler_name field matches this pattern and IS COMBO-typed, but lists
-# sampler algorithm names, not files -- neither the naming convention
-# nor COMBO-type alone is sufficient; setup_installer.py's
+# proof by itself: KSamplerSelect's sampler_name field matches this
+# pattern and IS COMBO-typed, but lists sampler algorithm names, not
+# files -- neither the naming convention nor COMBO-type alone is
+# sufficient; setup_installer.py's
 # check_models_status() adds a third check, that the live option list
 # actually looks like filenames, before trusting a candidate).
 MODEL_FIELD_PATTERN = re.compile(r"_name\d*$")

@@ -88,13 +88,13 @@ SCOPES = [
     # Google's own API discovery doc (videos.update's declared scopes are
     # youtube / youtube.force-ssl / youtubepartner, NOT youtube.upload).
     "https://www.googleapis.com/auth/youtube.force-ssl",
-    # Added 2026-08-16 for the Analytics tab (youtube_analytics.py). Scope
+    # Used by the Analytics tab (youtube_analytics.py). Scope
     # lists are baked into a stored token's validity check
     # (Credentials.from_authorized_user_info(info, SCOPES)) -- adding this
     # invalidates every already-connected project's token.json.enc, forcing
     # a one-time browser re-consent the next time any of them authenticate.
     "https://www.googleapis.com/auth/yt-analytics.readonly",
-    # Also added 2026-08-16, unused for now (no revenue reporting is built
+    # Unused for now (no revenue reporting is built
     # yet) -- included so a future monetary-stats feature doesn't need a
     # second re-consent round. Fine to request unused on an unpublished/
     # testing-mode OAuth app with only this account as a test user; would
@@ -107,17 +107,14 @@ PIPELINE_DIR = Path(__file__).resolve().parent
 def _secrets_base_dir():
     """Where this module's own top-level secret folders (youtube/,
     gemini/) live -- MUST match web_ui.py's own _secrets_base_dir() and
-    gemini_image.py's key-path helper exactly, or
-    Settings can save something (via web_ui.py, which already respects
-    this override) that this module then can't find (still hardcoded to
-    PIPELINE_DIR), which is exactly what happened live: a Docker
-    deployment's DREAM_PIPELINE_CONFIG_DIR points secrets at /state, but
-    every function below used to read PIPELINE_DIR directly, so a
-    client_secret.json / test session saved through the GUI was
-    invisible to get_authenticated_service/_find_reusable_credentials/
-    connect_project_channel/check_project_channel -- each project's
-    Upload tab demanded its own fresh consent even for a channel that
-    should have reused an already-authorized session."""
+    gemini_image.py's key-path helper exactly, or a Docker deployment's
+    DREAM_PIPELINE_CONFIG_DIR override (pointing secrets at e.g. /state)
+    would cause a client_secret.json / test session saved through the GUI
+    via web_ui.py to be invisible to get_authenticated_service/
+    _find_reusable_credentials/connect_project_channel/
+    check_project_channel, forcing each project's Upload tab to demand
+    its own fresh consent even for a channel that should reuse an
+    already-authorized session."""
     override = os.environ.get("DREAM_PIPELINE_CONFIG_DIR")
     return Path(override) if override else PIPELINE_DIR
 
@@ -270,16 +267,16 @@ def get_authenticated_service(youtube_dir, expected_channel_handle=None, return_
     # secret_store.py and this module's own CREDENTIALS docstring.
     #
     # expected_channel_handle: this project's own upload_template.json
-    # channel_handle. Confirmed necessary (2026-08-08): videos.insert has
+    # channel_handle. Needed because videos.insert has
     # no per-request "upload to channel X" parameter -- the authenticated
     # token ALONE decides the destination channel. Silently reusing
-    # another project's token (the old behavior below) meant a project
-    # with no token of its own could get permanently wired to a
+    # another project's token could get a project
+    # with no token of its own permanently wired to a
     # different, wrong real channel with no error anywhere in the call
     # chain. Whenever a token is newly ADOPTED here (reused from
-    # elsewhere, or freshly consented), it's now verified with a real API
+    # elsewhere, or freshly consented), it's verified with a real API
     # call against expected_channel_handle before being trusted -- an
-    # already-established, previously-verified token for THIS project
+    # already-established, already-verified token for THIS project
     # isn't re-checked on every call, only at the moment of adoption.
     token_path = youtube_dir / "token.json.enc"
     client_secret_path = _secrets_base_dir() / "youtube" / "client_secret.json.enc"
@@ -406,7 +403,7 @@ def query_channel(creds):
     secret() so it can run on its own against already-authorized
     credentials (Settings' "Test connection" button reusing the session
     from the last Save, no new browser popup) as well as right after a
-    fresh OAuth consent -- confirmed live 2026-08-08 that completing
+    fresh OAuth consent -- completing
     OAuth alone is not a real test: Google will happily issue a token
     for a client whose Cloud Console project doesn't have the YouTube
     Data API v3 enabled at all, or is over quota, or is missing the

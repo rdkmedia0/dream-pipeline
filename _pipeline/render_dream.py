@@ -50,8 +50,7 @@ def main():
         print("[render_dream] ABORTING -- Ollama still reports something loaded after "
               "the timeout. Running the render anyway would let ComfyUI and the "
               "still-unloading local model fight over the same GPU, which can hang "
-              "both (confirmed live: this caused an unrecoverable stall that needed "
-              "a manual kill). Check Ollama's own status -- something else may still "
+              "both and require a manual kill. Check Ollama's own status -- something else may still "
               "be loaded, or the model just needs more time. Try again once it's "
               "confirmed clear.", flush=True)
         print(json.dumps({"ok": False, "error": "Ollama model not unloaded before render", "path": None}), flush=True)

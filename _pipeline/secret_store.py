@@ -93,14 +93,13 @@ def encrypt_text(text):
 def write_encrypted(path, text):
     """The ONLY way a `.enc` secret file should ever be written -- encrypts
     and chmods 0600 (POSIX, best-effort, same no-op-on-Windows reasoning as
-    _get_or_create_key's own chmod) in one place. Confirmed real gap
-    (2026-08-18): every call site used to do
-    `path.write_bytes(secret_store.encrypt_text(text))` directly, which
-    writes the encrypted payload with the OS/filesystem's default
-    permissions -- only the Fernet KEY file itself ever got tightened to
-    owner-only, leaving every actual secret payload (client_secret.json.enc,
-    token.json.enc, gemini_api_key.enc) relying purely on directory-level
-    ACLs. Centralizing the write here means a future secret can't be added
+    _get_or_create_key's own chmod) in one place. Writing
+    `path.write_bytes(secret_store.encrypt_text(text))` directly at a call
+    site instead would write the encrypted payload with the OS/filesystem's
+    default permissions -- leaving every actual secret payload
+    (client_secret.json.enc, token.json.enc, gemini_api_key.enc) relying
+    purely on directory-level ACLs instead of owner-only file permissions.
+    Centralizing the write here means a future secret can't be added
     without this protection by accident."""
     path = Path(path)
     path.write_bytes(encrypt_text(text))
@@ -127,16 +126,15 @@ def decrypt_text(data):
 def decrypt_status(path):
     """(present, decryptable, reason) for an .enc file -- a cheap, local,
     no-network check proving the file can ACTUALLY be used, not just
-    that it exists. Every *_key_status/*_token_status endpoint in
-    web_ui.py used to report "present": path.is_file() alone, which is
-    a false-green: confirmed live 2026-08-15, post Windows->Linux port,
-    that a Gemini key .enc file survives copying the project folder over
-    but the Fernet key at _KEY_PATH does NOT (it deliberately lives
-    OUTSIDE the project folder, precisely so it's never swept up in a
-    copy/backup -- see this file's own module docstring), so the ported
-    copy's .enc is present on disk yet permanently undecryptable there.
-    The GUI showed a green "ENABLED" badge for a key that failed on the
-    very first real use. present=False when the file doesn't exist at
+    that it exists. Reporting "present": path.is_file() alone would be
+    a false-green: a Gemini key .enc file can survive copying the project
+    folder to a new machine while the Fernet key at _KEY_PATH does NOT
+    (it deliberately lives OUTSIDE the project folder, precisely so it's
+    never swept up in a copy/backup -- see this file's own module
+    docstring), so the copied .enc is present on disk yet permanently
+    undecryptable there -- which would otherwise show a green "ENABLED"
+    badge for a key that fails on the very first real use.
+    present=False when the file doesn't exist at
     all (a different, unrelated case -- "never configured", not "broken
     copy"); decryptable/reason are None in that case."""
     p = Path(path)

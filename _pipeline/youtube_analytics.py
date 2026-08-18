@@ -1,15 +1,15 @@
 """
 youtube_analytics.py -- pull per-video performance stats from the YouTube
 Analytics API for the WHOLE channel (not just videos this project's own
-index.json happens to have a recorded id for -- confirmed real gap:
-index.json only started recording youtube_video_id partway through this
-channel's history, so early uploads have no local join key at all), cache
+index.json happens to have a recorded id for -- some early uploads have
+no local join key at all, since not every index.json entry records a
+youtube_video_id), cache
 the result locally, and correlate performance against this pipeline's own
 per-video style data.
 
 Style correlation is sourced entirely from index.json's own "workflow"
-field -- NOT from spec_NNN.json (confirmed those don't persist after a
-video is rendered/uploaded in real project data, so reading them here
+field -- NOT from spec_NNN.json (those don't persist after a
+video is rendered/uploaded, so reading them here
 would silently produce empty correlation). index.json also never records
 "tags", so there is no tag-based correlation, only workflow.
 
@@ -21,7 +21,7 @@ load_cache()/save_cache().
 
 Uses the same OAuth token as upload_dream.py (get_authenticated_service),
 just with the additional yt-analytics.readonly scope added to that module's
-SCOPES list. The very first call after that scope was added forces a
+SCOPES list. Adding a scope to that list forces a
 one-time browser re-consent for each project -- expected, not a bug (see
 upload_dream.SCOPES's own comment).
 """
@@ -171,7 +171,7 @@ def _fetch_video_snippets(v3_client, video_ids):
     video, via the Data API -- the Analytics API's own rows are just
     numbers keyed by video id, nothing human-readable or status-aware.
     "status" is what distinguishes a genuinely published video from one
-    still scheduled/private -- confirmed worth surfacing (2026-08-16):
+    still scheduled/private -- worth surfacing since
     a scheduled video sitting at 0 views looks identical to a published
     one still waiting on YouTube's own reporting lag otherwise."""
     snippets = {}
@@ -189,9 +189,8 @@ def _fetch_video_snippets(v3_client, video_ids):
 def list_all_channel_video_ids(v3_client):
     """Every public/unlisted/private video on the authenticated channel --
     NOT limited to whatever this project's own index.json happens to have a
-    recorded youtube_video_id for (confirmed real gap: index.json only
-    started recording that field partway through this channel's upload
-    history, so early uploads have no local join key). Goes straight to
+    recorded youtube_video_id for (not every index.json entry
+    records that field, so early uploads have no local join key). Goes straight to
     the channel's own "uploads" playlist (every channel has exactly one,
     auto-created by YouTube) and pages through it -- this is the standard
     way to enumerate a channel's own uploads via the Data API, there's no
@@ -222,8 +221,8 @@ def fetch_daily_trend(youtube_dir, existing_trend, expected_channel_handle=None)
     points on days the human happened to click Refresh).
 
     Incremental: with no existing_trend (first-ever pull, or an older
-    cache from before this was added), fetches this CALENDAR YEAR to date
-    (Jan 1 through today) -- explicit direction 2026-08-16: a plain
+    cache that predates this feature), fetches this CALENDAR YEAR to date
+    (Jan 1 through today) -- a plain
     Refresh with no explicit date range "will pull missing data for the
     current year", not an arbitrary trailing-365-day window. Anything
     further back is the explicit date-range picker's job (see
@@ -408,8 +407,7 @@ def build_trend_highlights(daily_trend):
     single best day, the best rolling 7-day window, the best calendar
     month, and simple recent momentum (last 7 cached days vs the 7 before
     that). Built specifically so run_ai_review can answer "best performing
-    period" questions -- previously it only ever saw per-video/style data,
-    never the trend series at all."""
+    period" questions using the trend series, not just per-video/style data."""
     daily_trend = sorted(daily_trend or [], key=lambda r: r["date"])
     if not daily_trend:
         return {}
@@ -469,9 +467,9 @@ def run_ai_review(cache_data, project_name):
 
     channel_baseline (avg/median across THIS channel's own videos) exists
     to stop the model from making an absolute, unearned "is this good"
-    judgment call (confirmed real: it called ~1,000 views "high performing"
-    with no reference point at all, an outside-benchmark claim it has no
-    actual data to back). This tool has no outside-channel comparison data
+    judgment call -- without it, the model has been known to call ~1,000 views
+    "high performing" with no reference point at all, an outside-benchmark
+    claim it has no actual data to back. This tool has no outside-channel comparison data
     (a real cross-channel benchmark feature would need its own search/
     quota/design work) -- the fix here is scoping the model to what it can
     honestly say: how a video did relative to THIS channel's own history,
