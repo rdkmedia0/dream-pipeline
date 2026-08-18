@@ -922,6 +922,17 @@ def h_manage_rows(qs, body):
     if numbers is ds.ALL_NUMBERS:
         s = ds.compute_status(project)
         numbers = ds.resolve_all(numbers, s["specced"], "all existing specs")
+        # "all" means "everything I might still have work to do on" -- a
+        # row whose video has already been moved to Reviewed is done, and
+        # reloading it just re-fetches a spec with no useful next action
+        # (see the human's own report: it comes back "without the
+        # images", since nothing here re-renders a finished video). Only
+        # applies to the ALL_NUMBERS sentinel -- an explicit number/range
+        # (e.g. "83" or "1-5") always loads exactly what was asked for,
+        # reviewed or not, since that's a deliberate request.
+        reviewed = {e["number"] for e in ds.list_media_folders(project)
+                    if e["location"] == "reviewed" and e["number"] is not None}
+        numbers = [n for n in numbers if n not in reviewed]
     return {"rows": [ds.get_manage_row(n) for n in numbers]}
 
 
@@ -2933,7 +2944,7 @@ INDEX_HTML = r"""<!doctype html>
 </style></head>
 <body>
 <div class="app-header">
-  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">build 10</span></h1>
+  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">build 11</span></h1>
   <div class="row" style="width:auto">
     <button onclick="openHelp()">&#128214; Help</button>
     <button onclick="openSettings()">&#9881; Settings</button>
@@ -5782,7 +5793,7 @@ function manageForm() {
   const savedNumbers = localStorage.getItem(manageNumbersKey()) || '';
   return `
     <div class="row">
-      <label style="flex:1">Number(s) <input id="manage-numbers" placeholder="e.g. 83 or 1-5 or all" value="${esc(savedNumbers)}" onkeydown="if (event.key === 'Enter') loadManageTable()"></label>
+      <label style="flex:1">Number(s) <span class="mf-help" title="'all' loads every row with a spec EXCEPT ones already moved to Reviewed -- those are done, and reloading them just brings back an old spec with nothing left to act on. A specific number or range (e.g. 83 or 1-5) always loads exactly what you typed, reviewed or not.">?</span> <input id="manage-numbers" placeholder="e.g. 83 or 1-5 or all" value="${esc(savedNumbers)}" onkeydown="if (event.key === 'Enter') loadManageTable()"></label>
       <button onclick="loadManageTable()" style="margin-top:0.9rem">Load</button>
     </div>
     <div id="manage-table-wrap"></div>
