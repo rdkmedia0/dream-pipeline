@@ -1,11 +1,27 @@
 # Dream Pipeline
 
-Local, single-user AI video pipeline. Generates short-form videos on
-whatever subject you give it (script → keyframes → video clip → optional
-YouTube upload) using local Ollama + ComfyUI plus the Gemini API, driven
-through a local web GUI. No auth — the trust model is "one user, reached
-only from `127.0.0.1` or a private Docker network," never exposed to the
-open internet.
+A batch automation layer for turning ideas into published videos at
+scale, driven through a local web GUI. Dream Pipeline itself does no
+rendering — it strictly orchestrates **ComfyUI** (running elsewhere,
+local or remote) to do the actual video generation, and adds everything
+around that:
+
+- **Script/idea generation** — Ollama or Gemini drafts titles, premises,
+  and full scripts (with a "research what performs well and suggest
+  more ideas" mode), so a batch doesn't require hand-writing every concept.
+- **Bulk video generation** — manage dozens of videos as rows in one
+  table: edit content, queue keyframe + video renders, and track status
+  across a whole batch instead of one video at a time.
+- **YouTube uploads** — connect a channel, set a publish template, and
+  schedule a batch to go out on a defined cadence instead of manually
+  uploading each one.
+- **Performance trend analysis** — pull real YouTube Analytics data back
+  in (views, engagement, per-workflow/per-tag correlation) and get an
+  AI-written review of what's actually working, so the next batch can
+  build on it.
+
+No auth — the trust model is "one user, reached only from `127.0.0.1`
+or a private Docker network," never exposed to the open internet.
 
 ## Features
 
@@ -125,13 +141,18 @@ ground truth.
 
 ## Requirements
 
-- A reachable Ollama instance and/or a Gemini API key (either covers
-  Creative writing, Vision QC, and Concept research — see Settings)
-- A reachable ComfyUI instance with the required model files (checked
-  live from Settings; no local GPU needed for `dream-pipeline` itself,
-  it only ever talks to ComfyUI over HTTP)
-- Optional: a Google Cloud OAuth client + the YouTube Data/Analytics
-  APIs enabled, for the Upload and Analytics tabs
+- **A reachable ComfyUI instance, with model files installed for
+  whatever workflow(s) you use — required.** Dream Pipeline does not
+  render video itself; it's strictly an orchestration layer on top of
+  ComfyUI's own API (checked live from Settings; no local GPU is needed
+  for Dream Pipeline itself, it only ever talks to ComfyUI over HTTP).
+- **Ollama and/or a Gemini API key — required for script/idea
+  generation, vision QC, and concept research** (either one covers all
+  three; a Gemini key also unlocks reference-image generation for
+  keyframes that would otherwise need a local image model).
+- **A Google Cloud OAuth client with the YouTube Data + Analytics APIs
+  enabled — optional**, only needed for the Upload and Analytics tabs.
+  Everything else works fully without it.
 
 None of the above are hardcoded — `ollama_url`/`comfyui_url` are plain
 config values, local or remote, set from Settings.
