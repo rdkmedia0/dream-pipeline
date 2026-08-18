@@ -365,10 +365,18 @@ def h_submit_feedback(qs, body):
 
 
 def h_feedback_queue_status(qs, body):
-    """Polled by the player's status banner while a feedback rework is
-    queued/running -- pure read, no side effects."""
+    """Polled by the player's status overlay while a feedback rework is
+    queued/running -- pure read, no side effects. queued_numbers (in
+    submission order) lets the frontend show a status scoped to whatever
+    video is CURRENTLY on screen -- "rendering" if it's status["current"],
+    "queued, position N" if it's in this list, or nothing at all if it's
+    neither -- rather than one global banner that keeps talking about
+    some other video's status after the human navigates away from it."""
     with FEEDBACK_STATUS_LOCK:
-        return dict(FEEDBACK_STATUS)
+        status = dict(FEEDBACK_STATUS)
+    with FEEDBACK_QUEUE_LOCK:
+        status["queued_numbers"] = [item["number"] for item in FEEDBACK_QUEUE]
+    return status
 
 
 def h_cancel_job(qs, body, job_id):
@@ -2014,9 +2022,9 @@ def h_active_jobs(qs, body):
     state with no way to find that job again -- otherwise it would look
     to a human like refreshing had killed the render, when it hadn't;
     there was just no UI for "a job is already running, reconnect to
-    it." kind is included so the frontend only auto-resumes
-    the ones it knows how to render a progress panel for (video-gen jobs
-    -- "generate"/"rework"), not e.g. a spec-write job."""
+    it." kind is included so the frontend only auto-resumes the ones it
+    knows how to render a progress panel for (video-gen jobs --
+    "generate"/"rework"/"feedback-rework"), not e.g. a spec-write job."""
     project = _project_from_qs(qs)
     with JOBS_LOCK:
         jobs = [{"job_id": jid, "kind": j["kind"], "numbers": j["numbers"]}
@@ -2578,6 +2586,22 @@ INDEX_HTML = r"""<!doctype html>
     background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
   }
   .player-fs-feedback button:hover { background: rgba(0,0,0,0.85); }
+  /* Feedback-rework status, as a small corner overlay ON the video --
+     NOT gated by :fullscreen (unlike the two rules above) since this
+     needs to show in the small player card too, not just true
+     fullscreen. Scoped per-video by pollFeedbackQueueOnce (only ever
+     describes whatever's CURRENTLY on screen), so unlike the old plain
+     block-level banner it replaced -- which was a flex sibling of the
+     centered <video> in fullscreen and landed to its right, and kept
+     showing stale text about a different video after navigating away --
+     this hides itself via display:none/flex per-poll instead of always
+     occupying flow space. */
+  .player-status-overlay {
+    display: none; position: absolute; top: 0.6rem; right: 0.6rem; z-index: 6;
+    background: rgba(0,0,0,0.65); color: #fff; padding: 0.25rem 0.7rem;
+    border-radius: 999px; font-size: 0.78em; max-width: 80%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .sidebar-list-card { flex: 1 1 auto; min-height: 220px; display: flex; flex-direction: column; overflow: hidden; }
   .video-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: 0.5rem; }
   @media (max-width: 900px) { .sidebar-list-card { flex: 1 1 auto; overflow: visible; min-height: 0; } .video-list { max-height: 55vh; } }
@@ -5153,10 +5177,14 @@ function buildFsOverlayHtml() {
                 placeholder="What didn't work about this video? The AI will revise the current story/prompt and re-render it."></textarea>
       <button data-action="fs-feedback-submit" title="Submit and queue a rework of this video -- starts right away if nothing else is rendering, otherwise queues.">Submit</button>
     </div>` : '';
-  // Empty placeholder, filled in by pollFeedbackQueueOnce() -- kept
-  // inside player-fs-wrap (not the manage row below) so it's visible
-  // during fullscreen too, same reasoning as fsControls itself.
-  const feedbackBanner = '<div id="feedback-queue-banner" class="muted" style="font-size:0.85em;margin-top:0.3rem"></div>';
+  // Empty/hidden placeholder, filled in and shown/hidden by
+  // pollFeedbackQueueOnce() -- a corner overlay ON the video (see
+  // .player-status-overlay's own CSS comment), kept inside
+  // player-fs-wrap (not the manage row below) so it's visible during
+  // fullscreen too, same reasoning as fsControls itself, and NOT gated
+  // to Review mode like feedbackInline above -- render status is worth
+  // showing even with Review mode off.
+  const feedbackBanner = '<div id="feedback-queue-banner" class="player-status-overlay"></div>';
   return { fsControls, feedbackInline, feedbackBanner };
 }
 
@@ -5207,6 +5235,13 @@ function renderPlayerCard() {
     document.getElementById('player').innerHTML =
       state.playerHtml || '<div class="muted">select a video below to play</div>';
     updateFsOverlay();
+    // Navigating Prev/Next while actually fullscreen goes through THIS
+    // branch, not the full-render one below (which already calls this)
+    // -- without it, the status overlay would keep showing the PREVIOUS
+    // video's status for up to 3s (or never start polling at all, if it
+    // had gone idle) instead of immediately reflecting whatever's now
+    // on screen.
+    pollFeedbackQueueOnce();
     return;
   }
 
@@ -5543,12 +5578,23 @@ async function submitInlineFeedback() {
 async function postVideoFeedback(number, note) {
   try {
     const result = await api('POST', '/api/manage/submit-feedback', { project: state.project, number, note });
-    const banner = document.getElementById('feedback-queue-banner');
-    if (banner) banner.textContent = result.queued_position <= 1
-      ? `Feedback for #${number}: starting now...`
-      : `Feedback for #${number}: queued (${result.queued_position - 1} ahead)...`;
+    setFeedbackStatusOverlay(result.queued_position <= 1
+      ? `Reworking this video from feedback...`
+      : `Queued for rework (${result.queued_position - 1} ahead)...`);
     startFeedbackPolling();
   } catch (e) { alert(e.message); }
+}
+
+// Shows/hides the corner status overlay (see .player-status-overlay's
+// CSS comment) -- a null/empty text hides it, anything else shows it.
+// A tiny helper mainly so postVideoFeedback's immediate optimistic
+// update (before the first poll lands) and pollFeedbackQueueOnce's own
+// per-poll update share the exact same show/hide behavior.
+function setFeedbackStatusOverlay(text) {
+  const el = document.getElementById('feedback-queue-banner');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? 'block' : 'none';
 }
 
 let feedbackPollTimer = null;
@@ -5559,28 +5605,42 @@ function startFeedbackPolling() {
   feedbackPollTimer = setInterval(pollFeedbackQueueOnce, 3000);
 }
 
+// Resolves state.selected to its video-list entry's number, the same
+// lookup deleteVideo/submitVideoFeedback use -- pollFeedbackQueueOnce's
+// own "is the currently-viewed video involved in the feedback queue"
+// check needs this same number.
+function selectedVideoNumber() {
+  const sel = state.selected;
+  if (!sel) return null;
+  const v = (state.videos || []).find(x => x.folder === sel.folder && x.location === sel.location);
+  return v ? v.number : null;
+}
+
 // Polls the feedback queue's status (see h_feedback_queue_status) and
-// keeps the player card's banner current -- this is what lets a human
-// keep reviewing OTHER videos while a feedback rework runs in the
-// background, instead of the review flow blocking on it. When a queued
-// item finishes, refreshes the video list (a completed rework changes
-// the file on disk either way), and if the human is still looking at
-// the video that just finished, reloads the player so they see the new
-// render without a manual reload.
+// keeps the player card's corner overlay current -- this is what lets a
+// human keep reviewing OTHER videos while a feedback rework runs in the
+// background, instead of the review flow blocking on it. Scoped to
+// whatever video is CURRENTLY on screen: shows "rendering" only if
+// that's status.current, "queued, position N" only if it's somewhere in
+// status.queued_numbers, and nothing at all otherwise -- switching to a
+// different video mid-rework shows THAT video's own status (if any), not
+// a banner still talking about the one you navigated away from. When a
+// queued item finishes, refreshes the video list (a completed rework
+// changes the file on disk either way), and if the human is still
+// looking at the video that just finished, reloads the player so they
+// see the new render without a manual reload.
 async function pollFeedbackQueueOnce() {
   let status;
   try { status = await api('GET', '/api/manage/feedback-queue-status'); }
   catch (e) { return; }
-  const banner = document.getElementById('feedback-queue-banner');
-  if (banner) {
-    if (status.current) {
-      banner.textContent = `Reworking #${status.current.number} from feedback` +
-        (status.queue_length ? ` (${status.queue_length} more queued)...` : '...');
-    } else if (status.queue_length) {
-      banner.textContent = `${status.queue_length} feedback item(s) queued...`;
-    } else {
-      banner.textContent = '';
-    }
+  const myNumber = selectedVideoNumber();
+  if (myNumber == null) {
+    setFeedbackStatusOverlay(null);
+  } else if (status.current && status.current.number === myNumber) {
+    setFeedbackStatusOverlay(`Reworking this video from feedback...`);
+  } else {
+    const queuePos = (status.queued_numbers || []).indexOf(myNumber);
+    setFeedbackStatusOverlay(queuePos === -1 ? null : `Queued for rework (position ${queuePos + 1})...`);
   }
   const resultChanged = status.last_result &&
     JSON.stringify(status.last_result) !== JSON.stringify(feedbackLastResultSeen);
@@ -6053,7 +6113,13 @@ async function resumeActiveVideoGenJob() {
   try {
     active = (await api('GET', `/api/active-jobs?project=${encodeURIComponent(state.project)}`)).jobs;
   } catch (e) { return; }
-  const videoGenJobs = active.filter(j => j.kind === 'generate' || j.kind === 'rework');
+  // 'feedback-rework' included alongside the two ordinary render kinds --
+  // a feedback-triggered rework (see _run_feedback_queue, web_ui.py)
+  // uses the exact same _start_job/JOBS machinery, just under its own
+  // kind, so without this it was invisible to the Manage tab's normal
+  // render-progress panel: only the video player's own corner overlay
+  // showed it, nothing did once you left fullscreen or switched tabs.
+  const videoGenJobs = active.filter(j => j.kind === 'generate' || j.kind === 'rework' || j.kind === 'feedback-rework');
   if (!videoGenJobs.length) return;
   const btn = document.getElementById('manage-run-video-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Running...'; }
