@@ -2782,21 +2782,20 @@ INDEX_HTML = r"""<!doctype html>
      horizontal scroll like any other cell instead of staying pinned.
      Corner-rounding is cosmetic and border-radius on a <table> is never
      reliably clipped by real browsers anyway -- not a meaningful loss. */
-  /* An explicit literal width (NOT width:100%, NOT width:max-content) is
-     deliberate -- table-layout:fixed only treats <col> widths as LITERAL
-     pixel/rem values when the table's own width is a definite length. A
-     forced width:100% makes every <col> width just a relative PROPORTION
-     instead, so when the columns' combined width (137rem below -- keep
-     this in sync with the sum of every col.mf-col-* width further down)
-     exceeds the container, the fixed algorithm scales ALL of them down
-     together to fit, silently defeating any single column's width no
-     matter how large that column's own value is. width:max-content would
-     express the same intent without hand-summing the columns, but isn't
-     reliably honored together with table-layout:fixed across engines --
-     a literal length is the one form every engine treats consistently.
-     manage-table-scroll's overflow:auto (below) is what actually handles
-     the resulting horizontal scroll once the table exceeds its container. */
-  .manage-table { border-collapse: separate; border-spacing: 0; width: 137rem; min-width: 100%; font-size: 0.85em; table-layout: fixed; background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); }
+  /* width:100% -- table-layout:fixed's <col> widths become PROPORTIONS
+     (not literal values) once the table's own width is a definite length
+     like this, so most columns flex to fit the container dynamically
+     instead of forcing a permanent giant table + horizontal scroll for
+     everyone regardless of window size. The one column that must never
+     get scaled down into unusability -- Image(s), which holds real
+     controls (thumbnail, dropdown, buttons) -- gets its own min-width
+     floor below (.mf-images / thead th:last-child), which browsers still
+     honor even under table-layout:fixed: if the container's too narrow
+     to give every column its proportional share AND that floor at once,
+     the table overflows past 100% and manage-table-scroll's overflow:auto
+     kicks in for just that column's sake, instead of the whole table
+     being oversized all the time. */
+  .manage-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 0.85em; table-layout: fixed; background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); }
   .manage-table th, .manage-table td { border: 1px solid var(--border-soft); padding: 0.4rem 0.5rem; vertical-align: top; text-align: left; overflow: hidden; }
   .manage-table thead th {
     position: sticky; top: 0; z-index: 2; background: var(--border-soft);
@@ -2851,7 +2850,6 @@ INDEX_HTML = r"""<!doctype html>
   .manage-table col.mf-col-narrow { width: 8rem; }
   .manage-table col.mf-col-wide { width: 13rem; }
   .manage-table col.mf-col-type { width: 12rem; }
-  .manage-table col.mf-col-ai { width: 4.2rem; }
   .mf-spinner {
     display: inline-block; width: 0.9em; height: 0.9em; border: 2px solid var(--border);
     border-top-color: var(--accent); border-radius: 50%; animation: mf-spin 0.7s linear infinite;
@@ -2876,6 +2874,14 @@ INDEX_HTML = r"""<!doctype html>
     100% { left: 100%; }
   }
   .manage-table col.mf-col-images { width: 22rem; }
+  /* The floor promised in .manage-table's own comment above -- this
+     column holds real controls (thumbnail, reassign dropdown, weight
+     input, buttons), unlike the plain text columns, so it's the one
+     that must never get proportionally scaled down to the point those
+     controls become unusable. thead th:last-child mirrors it on the
+     header so the column heading doesn't drift out of alignment with
+     its own body cells. */
+  .manage-table td.mf-images, .manage-table thead th:last-child { min-width: 14rem; }
 
   .mf-cell-row { display: flex; align-items: center; gap: 0.15rem; }
   .mf-cell-preview {
@@ -2939,7 +2945,7 @@ INDEX_HTML = r"""<!doctype html>
 </style></head>
 <body>
 <div class="app-header">
-  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">build 7</span></h1>
+  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Bump this by hand in web_ui.py whenever the UI changes -- it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">build 8</span></h1>
   <div class="row" style="width:auto">
     <button onclick="openHelp()">&#128214; Help</button>
     <button onclick="openSettings()">&#9881; Settings</button>
