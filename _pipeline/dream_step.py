@@ -105,6 +105,7 @@ import string
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -1555,7 +1556,7 @@ def build_spec_request_payload(number, note=None, workflow=None):
         "human_direction": note,
         "existing_spec": existing_spec_for_prompt,
         "master_list_entry": concept_entry,
-        "recent_titles_for_dedup": recent_titles_for_dedup(),
+        "recent_titles_for_dedup": None if is_revision else recent_titles_for_dedup(),
         "reviewed_examples": reviewed_examples or None,
         "trend_context": trend_context,
         "schema_hint": schema_hint,
@@ -1692,18 +1693,31 @@ def build_row_spec_payload(number, locked_fields, note, workflow, show_existing_
     if not schema_hint:
         return None
 
-    concept_entry = master_list_concept_entry(number) if "title" not in locked_fields else None
-    reviewed_examples = reviewed_spec_examples()
-    strong_backend = using_strong_creative_backend()
-    trend_context = _quiet_spec_trend_context()
-    trend_clause = _spec_trend_clause(trend_context)
-
     existing_content = None
     if show_existing_for_note and note:
         spec_path = DATA_DIR / f"spec_{number:03d}.json"
         if spec_path.exists():
             existing = json.loads(spec_path.read_text(encoding="utf-8"))
             existing_content = {k: existing.get(k) for k in schema_hint if existing.get(k)} or None
+    # A genuine revision (existing_content is set -- there's real
+    # on-disk content to fix) needs none of the fresh-CONCEPT context
+    # below: recent_titles_for_dedup and master_list_entry only matter
+    # when INVENTING a new title (a revision never touches the row's
+    # identity), and reviewed_examples is a "what does approved-quality
+    # writing look like" reference for composing something new, not
+    # relevant to a targeted edit of something that already exists.
+    # Measured (2026-08-18): these three together were ~10,650 of a
+    # ~30,000-character feedback-revision prompt, roughly a third of it,
+    # for zero benefit to that specific task -- skipped entirely here.
+    # Still computed normally for every OTHER caller (Manage table's own
+    # note field, fresh generation), where they're genuinely relevant.
+    is_revision = existing_content is not None
+    concept_entry = None if is_revision or "title" in locked_fields else master_list_concept_entry(number)
+    reviewed_examples = None if is_revision else reviewed_spec_examples()
+    strong_backend = using_strong_creative_backend()
+    trend_context = _quiet_spec_trend_context()
+    trend_clause = _spec_trend_clause(trend_context)
+
     revision_clause = (
         f" existing_content shows what this row currently has for the fields you're "
         f"being asked to write. The human's note above is FEEDBACK on that content -- "
@@ -1719,7 +1733,7 @@ def build_row_spec_payload(number, locked_fields, note, workflow, show_existing_
         "human_direction": note,
         "locked_fields": locked_fields or None,
         "master_list_entry": concept_entry,
-        "recent_titles_for_dedup": recent_titles_for_dedup(),
+        "recent_titles_for_dedup": None if is_revision else recent_titles_for_dedup(),
         "reviewed_examples": reviewed_examples or None,
         "trend_context": trend_context,
         "existing_content": existing_content,
@@ -1730,7 +1744,13 @@ def build_row_spec_payload(number, locked_fields, note, workflow, show_existing_
             note, concept_entry, reviewed_examples, locked_fields=locked_fields) + trend_clause + revision_clause
         return payload
 
-    payload["creative_guidance"] = creative_guidance_pointer()
+    # Skipped for a revision -- the EXISTING content (already in
+    # existing_content, already shown to the model via revision_clause)
+    # already embodies this project's style; a targeted adjustment
+    # doesn't need the style guide re-explained from scratch the way
+    # composing something brand new does.
+    if not is_revision:
+        payload["creative_guidance"] = creative_guidance_pointer()
     payload["instructions"] = (
         (f"THE HUMAN GAVE THIS EXACT CREATIVE DIRECTION -- YOUR ANSWER MUST BE "
          f"BUILT FROM IT: {note!r}\n\n" if note else "") +
@@ -2330,16 +2350,22 @@ you only ever produce chat text and a list of field proposals. A human reviews a
 and clicks Apply, then still has to click Run updates for anything to actually be saved."""
 
 
-def build_chat_payload(project_name, message, history, numbers_context):
-    """One turn of the manage table's help chat. numbers_context is the
-    comma-separated list of numbers CURRENTLY loaded in the human's table
-    -- field proposals are only meaningful for those (a number that isn't
-    loaded has no row for the UI to drop a proposal into), so the model is
-    told to stick to that set rather than guess at ones it can't see."""
+def build_chat_payload(project_name, message, history, numbers):
+    """One turn of the manage table's help chat. numbers is the list of
+    numbers CURRENTLY loaded in the human's table -- field proposals are
+    only meaningful for those (a number that isn't loaded has no row for
+    the UI to drop a proposal into), so the model is told to stick to
+    that set rather than guess at ones it can't see. Reading an existing
+    row's actual content (to discuss/critique it, not just draft blank
+    fields) goes through the get_spec_content TOOL (see
+    _CHAT_GET_SPEC_TOOL/chat_with_agent) instead of being force-fed into
+    every payload regardless of relevance -- a chat about #122 doesn't
+    need #5 through #140's full positive_prompt text along for the ride
+    just because they happen to also be loaded."""
     return {
         "project": project_name,
         "tool_briefing": CHAT_TOOL_BRIEFING,
-        "numbers_currently_loaded_in_table": numbers_context or None,
+        "numbers_currently_loaded_in_table": numbers or None,
         "conversation_history": history,
         "user_message": message,
         "schema_hint": {
@@ -2352,27 +2378,76 @@ def build_chat_payload(project_name, message, history, numbers_context):
         },
         "instructions": (
             "Answer the user_message, using tool_briefing and conversation_history for "
-            "context. If they're just asking a question, reply and leave proposals empty. "
-            "If they ask you to draft/compose content for a specific number, only do so if "
-            "that number is in numbers_currently_loaded_in_table -- otherwise tell them to "
-            "load it into the table first (Number(s) field, Load button), don't invent "
-            "content for a row that doesn't exist in their view. Reply with ONLY the JSON "
-            "object matching schema_hint, nothing else."
+            "context. To discuss, critique, or answer questions about a SPECIFIC existing "
+            "row's actual content: FIRST make a real tool call to get_spec_content for that "
+            "number (an actual tool call, not JSON text in your reply) -- never claim you "
+            "can't see a row's content, never invent placeholder text standing in for it, "
+            "and never ask the human to paste it in when you could just call the tool. Only "
+            "AFTER you have whatever tool result(s) you need (or have decided none are "
+            "needed) do you produce your final answer, which is the ONLY point at which you "
+            "reply with the JSON object matching schema_hint, nothing else -- the tool call "
+            "itself is a separate step before that, not part of the JSON answer. If they're "
+            "just asking a general question needing no row content, skip the tool call and "
+            "leave proposals empty. If they ask you to draft/compose NEW content for a "
+            "specific number, only do so if that number is in "
+            "numbers_currently_loaded_in_table -- otherwise tell them to load it into the "
+            "table first (Number(s) field, Load button), don't invent content for a row "
+            "that doesn't exist in their view."
         ),
     }
 
 
-def chat_with_agent(project_name, message, history, numbers_context, model, model_name=None):
+def _chat_get_spec_content(number=None, **_ignored):
+    """Tool implementation for the help chat's get_spec_content tool --
+    reads one row's actual spec content ON DEMAND, only when the model
+    itself decides it's actually needed to answer, rather than every
+    currently-loaded row's full content being force-fed into every chat
+    turn regardless of relevance. Read-only, scoped to this project's
+    own DATA_DIR (already set by resolve_project_globals before chat
+    ever runs) -- can't reach outside it."""
+    try:
+        n = int(number)
+    except (TypeError, ValueError):
+        return f"ERROR: {number!r} is not a valid row number."
+    spec_path = DATA_DIR / f"spec_{n:03d}.json"
+    if not spec_path.exists():
+        return f"#{n}: no spec exists yet -- nothing to show."
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    return json.dumps({k: spec.get(k) for k in
+                        ("title", "premise", "positive_prompt", "negative_prompt",
+                         "description", "tags", "workflow")})
+
+
+_CHAT_GET_SPEC_TOOL = {"type": "function", "function": {
+    "name": "get_spec_content",
+    "description": "Fetch the actual saved content (title, premise, positive_prompt, "
+                    "negative_prompt, description, tags, workflow) for one row number in "
+                    "the current project, so you can read/discuss/critique what's really "
+                    "there instead of guessing or claiming you can't see it.",
+    "parameters": {"type": "object", "properties": {
+        "number": {"type": "integer", "description": "the row number to look up"},
+    }, "required": ["number"]},
+}}
+
+
+def chat_with_agent(project_name, message, history, numbers, model, model_name=None):
     """Dispatches one chat turn to the local Ollama model -- fast,
     offline, no account/CLI dependency beyond Ollama itself, with real
     web_search/wikipedia_search access via _ollama_tool_completion's
-    local tool-calling loop. Never given file-write or code-execution
-    tools -- the tool set is hardcoded to just web_search/wikipedia_search
-    (see _OLLAMA_SEARCH_TOOLS), a structural guarantee, not just an
-    instruction."""
-    payload = build_chat_payload(project_name, message, history, numbers_context)
+    local tool-calling loop, PLUS get_spec_content (see
+    _CHAT_GET_SPEC_TOOL above), passed as this call's own extra tool
+    rather than added to the shared _OLLAMA_SEARCH_TOOLS -- that set is
+    also used by tool_completion (concept generation), which has no
+    business reading arbitrary existing specs, so the extra tool is
+    scoped to just this one call site instead of widening what every
+    tool-calling caller can do. Never given file-write or code-execution
+    tools -- the tool set is hardcoded, a structural guarantee, not just
+    an instruction."""
+    payload = build_chat_payload(project_name, message, history, numbers)
     prompt = _render_creative_prompt(payload)
-    response, _history = _ollama_tool_completion(prompt, model=model_name)
+    response, _history = _ollama_tool_completion(
+        prompt, model=model_name,
+        extra_tools=[_CHAT_GET_SPEC_TOOL], extra_tool_fns={"get_spec_content": _chat_get_spec_content})
     proposals = response.get("proposals")
     return {
         "reply": response.get("reply", ""),
@@ -2933,7 +3008,17 @@ def _vision_query(prompt, b64_images):
     return _log_ai_call("vision query", "ollama", config.get("vision_model"), _ollama_call)
 
 
-CREATIVE_OPTIONS = {"num_predict": 12288, "num_ctx": 49152}
+# num_ctx was 49152 -- measured (2026-08-18) against a real feedback-
+# revision prompt: ~30,000 characters, ~7,500 tokens actual usage,
+# nowhere near that. Ollama reserves KV-cache memory sized to the
+# CONFIGURED num_ctx, not the actual prompt length, so the old value
+# was allocating VRAM/RAM for roughly 6x more context than any real
+# call here needs, confirmed maxing out VRAM+RAM on at least one
+# machine. 16384 matches VISION_OPTIONS' own setting below -- ~2x
+# headroom over measured real usage, same margin already proven to
+# work for vision's own "thinking model" reasoning-trace overhead (see
+# that option's own comment on why it isn't set to the bare minimum).
+CREATIVE_OPTIONS = {"num_predict": 12288, "num_ctx": 16384}
 
 
 def _creative_completion(prompt, retries=3, model=None):
@@ -3072,7 +3157,8 @@ def tool_completion(prompt, retries=3, model=None):
                          lambda: _ollama_tool_completion(prompt, retries=retries, model=resolved_model))
 
 
-def _ollama_tool_completion(prompt, retries=3, max_tool_rounds=4, model=None):
+def _ollama_tool_completion(prompt, retries=3, max_tool_rounds=4, model=None,
+                             extra_tools=None, extra_tool_fns=None):
     """Local tool-calling loop against Ollama's OWN /api/chat 'tools'
     parameter -- gives a fully local model real web_search/
     wikipedia_search access with no external API and no Ollama account
@@ -3086,11 +3172,30 @@ def _ollama_tool_completion(prompt, retries=3, max_tool_rounds=4, model=None):
     then feed the result back as a 'tool' message and let the model
     continue, same request/response shape as any OpenAI-style
     tool-calling loop. Bounded to max_tool_rounds so a model that keeps
-    calling tools instead of answering can't loop forever."""
+    calling tools instead of answering can't loop forever.
+
+    extra_tools/extra_tool_fns: per-CALL additions to the base web_search/
+    wikipedia_search set (see chat_with_agent's get_spec_content) --
+    deliberately not just appended to the shared _OLLAMA_SEARCH_TOOLS
+    module constant, since every OTHER caller of this function
+    (tool_completion, for concept generation) would silently inherit
+    whatever gets added there too. Scoping per-call keeps each caller's
+    tool set exactly as narrow as that caller actually needs."""
     import web_search_mcp
     tool_fns = {"web_search": web_search_mcp.web_search, "wikipedia_search": web_search_mcp.wikipedia_search}
+    tool_fns.update(extra_tool_fns or {})
+    tools = _OLLAMA_SEARCH_TOOLS + (extra_tools or [])
     config = load_config()
     history = []
+    # Not every model Settings lets you pick actually supports Ollama's
+    # tool-calling API -- confirmed (2026-08-18): minicpm and others
+    # return a plain HTTP 400 the instant "tools" is in the request body
+    # at all, which without this just hard-failed the whole
+    # conversation for a model that's otherwise perfectly usable for
+    # plain chat. Sticks false for the rest of this call once tripped
+    # (a model's capability doesn't change mid-conversation), so it
+    # costs at most one wasted round, not one per round.
+    tools_supported = True
     for attempt in range(1, retries + 1):
         messages = [{"role": "user", "content": prompt}]
         final_content = None
@@ -3100,12 +3205,22 @@ def _ollama_tool_completion(prompt, retries=3, max_tool_rounds=4, model=None):
                 f"{config['ollama_url']}/api/chat",
                 data=json.dumps({
                     "model": model or config["creative_model"], "messages": messages,
-                    "stream": False, "tools": _OLLAMA_SEARCH_TOOLS, "think": False,
+                    "stream": False, "think": False,
+                    **({"tools": tools} if tools_supported else {}),
                 }).encode("utf-8"),
                 headers={"Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=180) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                if e.code == 400 and tools_supported:
+                    tools_supported = False
+                    history.append(f"attempt {attempt}: model rejected tool-calling (400) -- "
+                                    f"retrying without tools")
+                    continue
+                history.append(f"attempt {attempt}: request failed ({e})")
+                request_failed = True
+                break
             except Exception as e:
                 history.append(f"attempt {attempt}: request failed ({e})")
                 request_failed = True

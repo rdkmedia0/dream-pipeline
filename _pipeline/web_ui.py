@@ -2602,17 +2602,28 @@ INDEX_HTML = r"""<!doctype html>
      outside :fullscreen for the same reason as .player-fs-controls: it
      only makes sense as an overlay ON the fullscreen video, not as a
      plain white row wedged into the small player card. */
-  /* color:#fff so the review step's plain <div>/<span> text
-     (feedbackReviewSummaryHtml) reads white-on-dark by inheritance --
-     it has no styling of its own beyond what this container sets.
-     align-items:flex-start (not center) since that text can wrap to
-     2-3 lines while the Retry/Accept buttons stay single-line. */
+  /* color:#fff is the fallback for any plain text in here that isn't a
+     .chat-msg bubble (which gets its own override below); align-items:
+     flex-start (not center) since the chat log can be much taller than
+     a single button row. */
   .player-fs-feedback {
     display: none; position: absolute; left: 0; right: 0; bottom: 0;
     padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff; align-items: flex-start;
     background: linear-gradient(transparent, rgba(0,0,0,0.75));
   }
   .player-fs-feedback .muted { color: rgba(255,255,255,0.7); }
+  /* .chat-msg bubbles (chat-user/chat-assistant) use theme-derived
+     LIGHT background colors (--accent-soft/--border-soft), meant for a
+     normal light card -- inheriting this container's color:#fff for
+     plain text left the bubbles themselves nearly illegible (white
+     text on a light bubble). Forcing dark bubble text here specifically
+     is safe regardless of the app's current light/dark theme, since
+     both bubble backgrounds stay light-toned either way. Capped
+     max-height (vs chat-log's own 260px default) so a several-turn
+     conversation doesn't grow to cover most of the video -- it scrolls
+     within its own bounds instead. */
+  .player-fs-feedback .chat-log { max-height: 9rem; }
+  .player-fs-feedback .chat-msg { color: #111; }
   .player-fs-wrap:fullscreen .player-fs-feedback { display: flex; }
   .player-fs-feedback textarea {
     background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
@@ -5220,12 +5231,17 @@ function buildFsOverlayHtml() {
   // textarea (the starting point); set shows the SAME propose/accept/
   // retry/refine loop feedbackReviewModal gives the small player, just
   // inline instead of in a modal -- see runInlineFeedbackPreview/
-  // acceptInlineFeedback. feedbackReviewSummaryHtml renders the actual
-  // summary/model/generating/error text, shared with the modal version
-  // so the two can't drift out of sync with each other.
+  // acceptInlineFeedback. feedbackChatLogHtml renders the actual
+  // scrollable conversation (summary/model per attempt, or a spinner
+  // while generating), shared with the modal version so the two can't
+  // drift out of sync with each other. A single-line overlay strip
+  // wasn't enough room once there's a multi-sentence summary AND
+  // buttons AND a refine box all at once -- this is a proper (if
+  // compact) chat panel instead, scrolling within its own bounded
+  // height rather than fighting the video/controls for space.
   const feedbackReviewBody = state.fsFeedbackReview ? `
-      <div style="flex:1;display:flex;flex-direction:column;gap:0.4rem">
-        <div>${feedbackReviewSummaryHtml(state.fsFeedbackReview)}</div>
+      <div style="flex:1;display:flex;flex-direction:column;gap:0.4rem;min-width:0">
+        <div class="chat-log" id="fs-review-chat-log">${feedbackChatLogHtml(state.fsFeedbackReview)}</div>
         ${!state.fsFeedbackReview.generating ? `
           <div class="row" style="gap:0.3rem">
             <button data-action="fs-review-retry" type="button">Try again</button>
@@ -5530,11 +5546,13 @@ sidebar.addEventListener('click', (ev) => {
     // changing, so don't touch #player and force a reload/rebuffer of it.
     else if (action === 'fs-review-toggle') { state.reviewMode = !state.reviewMode; updateFsOverlay(); }
     else if (action === 'fs-feedback-submit') submitInlineFeedback();
-    else if (action === 'fs-review-retry') runInlineFeedbackPreview(state.fsFeedbackReview.note);
+    else if (action === 'fs-review-retry') runInlineFeedbackPreview(state.fsFeedbackReview.note, null);
     else if (action === 'fs-review-refine') {
-      const extra = (document.getElementById('fs-review-refine-input')?.value || '').trim();
+      const refineInput = document.getElementById('fs-review-refine-input');
+      const extra = (refineInput?.value || '').trim();
       if (!extra) return;
-      runInlineFeedbackPreview(`${state.fsFeedbackReview.note}\n\nAdditional direction: ${extra}`);
+      if (refineInput) refineInput.value = '';
+      runInlineFeedbackPreview(`${state.fsFeedbackReview.note}\n\nAdditional direction: ${extra}`, extra);
     }
     else if (action === 'fs-review-accept') acceptInlineFeedback();
     else if (action === 'fullscreen') {
@@ -5614,15 +5632,22 @@ async function deleteVideo(folder, location) {
 // since both show the exact same review STATE shape
 // ({generating}/{error}/{content, summary, model}), just wrapped in
 // different surrounding markup (a modal card vs an overlay bar).
-function feedbackReviewSummaryHtml(review) {
-  if (review.generating) {
-    return `<span class="muted"><span class="mf-spinner"></span>Asking the AI to revise this...</span>`;
-  }
-  if (review.error) {
-    return `<span style="color:var(--danger, #c0392b)">${esc(review.error)}</span>`;
-  }
-  return `<span>${esc(review.summary || 'The AI proposed a revision.')}</span> ` +
-    `<span class="muted" style="font-size:0.85em">via ${esc(review.model || 'unknown model')}</span>`;
+function feedbackChatLogHtml(review) {
+  const bubbles = (review.history || []).map(msg => `
+    <div class="chat-msg ${msg.role === 'user' ? 'chat-user' : 'chat-assistant'}"${msg.isError ? ' style="color:var(--danger, #c0392b)"' : ''}>${esc(msg.text)}${msg.model ? `<div class="muted" style="font-size:0.8em;margin-top:0.2rem">via ${esc(msg.model)}</div>` : ''}</div>`).join('');
+  const generatingBubble = review.generating
+    ? `<div class="chat-msg chat-assistant"><span class="mf-spinner"></span>Asking the AI to revise this...</div>` : '';
+  return bubbles + generatingBubble;
+}
+
+// Keeps a chat-log panel scrolled to its latest message -- called after
+// every render of either the modal's or fullscreen's chat log, since a
+// fresh innerHTML replace resets scrollTop to 0 otherwise, and the
+// whole point of a chat-style history is reading top-to-bottom with the
+// newest turn visible without having to scroll down for it every time.
+function scrollFeedbackChatToBottom(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollTop = el.scrollHeight;
 }
 
 // Shared tail of both the small-player and fullscreen "accept" paths --
@@ -5676,12 +5701,12 @@ function feedbackReviewModal(number, initialNote) {
     const overlay = document.createElement('div');
     overlay.className = 'mf-confirm-overlay';
     document.body.appendChild(overlay);
-    let review = { generating: true, note: initialNote };
+    let review = { generating: true, note: initialNote, history: [{ role: 'user', text: initialNote }] };
     const render = () => {
       overlay.innerHTML = `
         <div class="card mf-confirm-card">
           <p class="mf-confirm-message">Feedback for #${number}</p>
-          <p>${feedbackReviewSummaryHtml(review)}</p>
+          <div class="chat-log" id="fr-modal-chat-log">${feedbackChatLogHtml(review)}</div>
           ${!review.generating ? `
             <div class="row row-end" style="margin-top:0.5rem">
               <button type="button" id="fr-modal-cancel">Cancel</button>
@@ -5693,24 +5718,33 @@ function feedbackReviewModal(number, initialNote) {
               <button type="button" id="fr-modal-refine-btn">Refine</button>
             </div>` : ''}
         </div>`;
+      scrollFeedbackChatToBottom('fr-modal-chat-log');
       if (review.generating) return;
       overlay.querySelector('#fr-modal-cancel').onclick = () => { overlay.remove(); resolve(false); };
-      overlay.querySelector('#fr-modal-retry').onclick = () => generate(review.note);
+      overlay.querySelector('#fr-modal-retry').onclick = () => generate(review.note, null);
       overlay.querySelector('#fr-modal-accept').onclick = accept;
       overlay.querySelector('#fr-modal-refine-btn').onclick = () => {
-        const extra = overlay.querySelector('#fr-modal-refine').value.trim();
+        const refineInput = overlay.querySelector('#fr-modal-refine');
+        const extra = refineInput.value.trim();
         if (!extra) return;
-        generate(`${review.note}\n\nAdditional direction: ${extra}`);
+        generate(`${review.note}\n\nAdditional direction: ${extra}`, extra);
       };
     };
-    const generate = async (note) => {
-      review = { generating: true, note };
+    // apiNote is what actually gets sent (the full accumulated note);
+    // displayNote is what shows as a new chat bubble -- null for Try
+    // again (same note resent, nothing new to show a bubble for).
+    const generate = async (apiNote, displayNote) => {
+      const history = review.history || [];
+      if (displayNote) history.push({ role: 'user', text: displayNote });
+      review = { generating: true, note: apiNote, history };
       render();
       try {
-        const result = await api('POST', '/api/manage/preview-feedback', { project: state.project, number, note });
-        review = { note, content: result.content, summary: result.change_summary, model: result.model };
+        const result = await api('POST', '/api/manage/preview-feedback', { project: state.project, number, note: apiNote });
+        history.push({ role: 'assistant', text: result.change_summary || 'The AI proposed a revision.', model: result.model });
+        review = { note: apiNote, content: result.content, model: result.model, history };
       } catch (e) {
-        review = { note, error: e.message };
+        history.push({ role: 'assistant', text: e.message, isError: true });
+        review = { note: apiNote, error: e.message, history };
       }
       render();
     };
@@ -5723,7 +5757,7 @@ function feedbackReviewModal(number, initialNote) {
       } catch (e) { alert(e.message); }
     };
     overlay.onclick = (ev) => { if (ev.target === overlay && !review.generating) { overlay.remove(); resolve(false); } };
-    generate(initialNote);
+    generate(initialNote, null);
   });
 }
 
@@ -5746,27 +5780,39 @@ async function submitInlineFeedback() {
   const input = document.getElementById('fs-feedback-input');
   const note = input ? input.value.trim() : '';
   if (!note) { if (input) input.focus(); return; }
-  await runInlineFeedbackPreview(note, v.number);
+  await runInlineFeedbackPreview(note, note, v.number);
 }
 
 // Generates (or regenerates, for Try again/Refine) a proposal into
 // state.fsFeedbackReview and re-renders JUST the overlay elements
 // (updateFsOverlay, not renderPlayerCard -- see that function's own
-// comment on why #player must stay untouched here). number is only
-// passed on the FIRST call (from submitInlineFeedback); retry/refine
-// reuse whatever's already in state.fsFeedbackReview.number.
-async function runInlineFeedbackPreview(note, number) {
+// comment on why #player must stay untouched here).
+//
+// apiNote is the full text actually sent to preview-feedback (for a
+// refine, the ORIGINAL note plus the new direction folded in -- the
+// model needs the whole picture every time, not just the latest
+// addition). displayNote is what shows up as a new chat bubble --
+// null skips adding one (Try again: same note, nothing new to show).
+// number is only passed on the FIRST call (from submitInlineFeedback);
+// retry/refine reuse whatever's already in state.fsFeedbackReview.number.
+async function runInlineFeedbackPreview(apiNote, displayNote, number) {
   const num = number != null ? number : (state.fsFeedbackReview && state.fsFeedbackReview.number);
   if (num == null) return;
-  state.fsFeedbackReview = { generating: true, note, number: num };
+  const history = (state.fsFeedbackReview && state.fsFeedbackReview.history) || [];
+  if (displayNote) history.push({ role: 'user', text: displayNote });
+  state.fsFeedbackReview = { generating: true, note: apiNote, number: num, history };
   updateFsOverlay();
+  scrollFeedbackChatToBottom('fs-review-chat-log');
   try {
-    const result = await api('POST', '/api/manage/preview-feedback', { project: state.project, number: num, note });
-    state.fsFeedbackReview = { note, number: num, content: result.content, summary: result.change_summary, model: result.model };
+    const result = await api('POST', '/api/manage/preview-feedback', { project: state.project, number: num, note: apiNote });
+    history.push({ role: 'assistant', text: result.change_summary || 'The AI proposed a revision.', model: result.model });
+    state.fsFeedbackReview = { note: apiNote, number: num, content: result.content, model: result.model, history };
   } catch (e) {
-    state.fsFeedbackReview = { note, number: num, error: e.message };
+    history.push({ role: 'assistant', text: e.message, isError: true });
+    state.fsFeedbackReview = { note: apiNote, number: num, error: e.message, history };
   }
   updateFsOverlay();
+  scrollFeedbackChatToBottom('fs-review-chat-log');
 }
 
 async function acceptInlineFeedback() {
