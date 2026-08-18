@@ -17,8 +17,9 @@ around that:
   uploading each one.
 - **Performance trend analysis** — pull real YouTube Analytics data back
   in (views, engagement, per-workflow/per-tag correlation) and get an
-  AI-written review of what's actually working, so the next batch can
-  build on it.
+  AI-written review of what's actually working. Optionally feed that
+  same performance data back into idea and script generation (see
+  Performance trend mode below), so the next batch can build on it.
 
 No auth — the trust model is "one user, reached only from `127.0.0.1`
 or a private Docker network," never exposed to the open internet.
@@ -42,6 +43,21 @@ template (privacy, tags, schedule cadence), and let the pipeline handle
 timed releases.
 
 ![Upload to YouTube](docs/screenshots/upload-youtube.png)
+
+**Performance trend mode (optional)** — feed real YouTube Analytics
+data back into content generation, in two separate places:
+- **Idea generation** — an explicit checkbox on the "Need new ideas?"
+  card. Requires at least one project's Analytics to have been refreshed;
+  optionally pull in top performers from other projects too, and the AI
+  is explicitly encouraged to creatively merge two well-performing
+  concepts into one new idea when it genuinely fits.
+- **Spec/script generation** — a separate, off-by-default toggle in
+  Settings that applies quietly to every AI-composed row. Framed
+  strictly as style/tag signal that can never override a row's own
+  locked concept, with a second sub-toggle for whether it goes as deep
+  as pulling real script excerpts from still-local past renders.
+
+![Performance trend mode](docs/screenshots/trend-mode.png)
 
 **Settings** — live connection status for Ollama, ComfyUI, and Gemini,
 with inline diagnostics for whatever's misconfigured.

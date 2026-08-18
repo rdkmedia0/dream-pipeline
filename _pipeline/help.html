@@ -296,6 +296,27 @@
         <p>Every cell with content has a small <strong>×</strong> button to clear just that
            field — useful when you want the AI to redo one specific field without touching the rest.</p>
       </div>
+
+      <h3>Need new ideas?</h3>
+      <p>Dispatches a real web-search-capable agent to research what performs well in this genre,
+         follow this project's own <code>CREATIVE.md</code> for tone and format, and append new
+         entries to the master concept list.</p>
+      <p>Check <strong>Use performance trends</strong> to also feed in real YouTube Analytics data
+         (top-performing titles/tags, and each top video's real premise/script excerpt when it's
+         still local) — requires this project's Analytics to have been refreshed at least once.
+         You can optionally include top performers from other projects too, and the AI is
+         explicitly encouraged to creatively merge two well-performing concepts into one new idea
+         when it genuinely fits.</p>
+
+      <h3>Performance trends in spec/script generation</h3>
+      <p>Separate from the idea-generation checkbox above: <strong>Settings → Creative writing →
+         "Use performance trends when writing content"</strong> quietly applies the same kind of
+         trend data to every AI-composed row (the S chip, and the CLI's own generation), off by
+         default. It's deliberately framed as style/word-choice signal only — it can never change
+         or override a row's own locked title/premise — and safely no-ops with no error if this
+         project has no analytics data yet. A second Settings sub-toggle controls whether it goes
+         as deep as pulling real script excerpts from past renders still on disk, or stays at
+         title/tags only.</p>
     </section>
 
     <section id="render-types">
