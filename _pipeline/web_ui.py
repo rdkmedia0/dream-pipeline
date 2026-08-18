@@ -6118,7 +6118,6 @@ function renderManageTable() {
       <span class="mf-help" title="Writes exactly what's in the form for every selected row whose fields changed, verbatim -- except any field still blank, which is composed by AI automatically. Never triggers a render.">?</span>
       <button id="manage-run-video-btn" class="btn-primary" onclick="handleRunVideoGenClick()">Render video</button>
       <span class="mf-help" title="For every SELECTED row: renders it for the first time if it has no video yet, or RE-RENDERS and overwrites the existing one if it does. Uses whatever is currently saved on disk -- click 'Save content' first if you just edited fields. Asks for confirmation before it starts.">?</span>
-      <button type="button" onclick="deleteSlotImagesBulk(getCheckedSlotBulkItems())" title="Deletes every image slot checked above (the small checkbox next to each thumbnail's &times; button), behind a single confirmation instead of one per slot.">Delete checked images</button>
       <label class="row" style="width:auto;gap:0.3rem;margin-left:auto" title="Also show the exact prompt sent to the AI and its raw response, for every attempt.">
         <input type="checkbox" id="manage-verbose" style="width:auto">Verbose
       </label>
@@ -6240,10 +6239,8 @@ function applyBulkGraphType() {
 }
 
 // Every currently-populated image slot for one row, in the shape
-// deleteSlotImagesBulk already expects -- shared by the per-row "Delete
-// all images" button and (indirectly) nothing else, but kept separate
-// from the cross-row getCheckedSlotBulkItems since the two collect
-// items from different sources (one row's real state vs. checkboxes).
+// deleteSlotImagesBulk expects -- feeds the per-row "Delete all images"
+// button.
 function getRowImageItems(row, type) {
   if (type === 'i2v') return row.image_status.single ? [{ number: row.number, slot: 'image' }] : [];
   const slotHas = row.slot_has_image || {};
@@ -6324,7 +6321,6 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
     : '';
   const thumb = hasImage
     ? `<div class="muted" style="font-size:0.7em">${showStaged ? 'Current' : ''}
-         <input type="checkbox" class="mf-slot-bulk-check" data-number="${number}" data-slot="${slot}" title="Select for bulk delete" style="width:auto;vertical-align:middle">
          <button type="button" style="font-size:0.9em;padding:0 0.3em" title="Delete this rendered image permanently -- it'll need to be regenerated (locally, or via Gemini if 'online' sourcing is set) before the next render can use this slot again."
                  onclick="deleteSlotImage(${number}, '${slot}')">&times;</button>
        </div>
@@ -6504,26 +6500,14 @@ async function deleteSlotImage(number, slot) {
   } catch (e) { alert(e.message); }
 }
 
-// Reads every checked .mf-slot-bulk-check box across the whole manage
-// table (not just the current row) into the {number, slot} list
-// deleteSlotImagesBulk expects -- the toolbar's "Delete checked images"
-// button's only job is collecting these and handing them off.
-function getCheckedSlotBulkItems() {
-  return [...document.querySelectorAll('.mf-slot-bulk-check:checked')]
-    .map(cb => ({ number: parseInt(cb.dataset.number, 10), slot: cb.dataset.slot }));
-}
-
 // Bulk sibling of deleteSlotImage -- deletes many (number, slot) image
-// slots across possibly-different rows behind a SINGLE confirmation,
-// instead of one popup per slot -- without this, clearing stale
-// keyframes across a 10-row batch means clicking through 20+
-// near-identical "delete this image?" dialogs one at a time. Any
-// row with unsaved edits is called out by number in the one dialog, and
-// choosing "Save first" saves ALL such rows before any deletion runs
-// (never partial -- a row's edits are either saved before its images
-// are touched, or the whole bulk op is cancelled).
+// slots for a row behind a SINGLE confirmation, instead of one popup per
+// slot -- used by the per-row "Delete all images" button. Any row with
+// unsaved edits is called out in the dialog, and choosing "Save first"
+// saves it before any deletion runs (never partial -- a row's edits are
+// either saved before its images are touched, or the op is cancelled).
 async function deleteSlotImagesBulk(items) {
-  if (!items.length) { alert('No image slots checked -- tick the checkbox next to a thumbnail first.'); return; }
+  if (!items.length) { alert('No image slots to delete.'); return; }
   const unsavedNumbers = [...new Set(items
     .map(it => it.number)
     .filter(number => {
