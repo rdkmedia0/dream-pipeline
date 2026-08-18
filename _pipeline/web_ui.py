@@ -6021,6 +6021,16 @@ async function loadManageTable() {
         state.geminiEnabled = !!keyStatus.present && !!keyStatus.enabled;
       } catch (e) { state.geminiEnabled = false; }
     }
+    // Not cached like geminiEnabled above -- Settings' kf_backend can be
+    // changed at any time and there's no cheap invalidation hook for it
+    // here, so just re-fetch fresh on every table load (cheap, and this
+    // isn't a hot path). Used by manageSlotHtml to decide whether
+    // "Online photo" still adds anything beyond what "Generate new"
+    // already does for the first frame -- see its own comment.
+    try {
+      const cfg = await api('GET', '/api/config');
+      state.kfBackend = cfg.kf_backend || 'all_local';
+    } catch (e) { state.kfBackend = 'all_local'; }
     const data = await api('GET', `/api/manage-rows?project=${encodeURIComponent(state.project)}&numbers=${encodeURIComponent(numbersStr)}`);
     state.manageRows = data.rows;
     renderManageTable();
@@ -6273,7 +6283,7 @@ function renderManageTable() {
             </div>
           </th>
           ${th('AI direction', 'Optional creative direction for the AI, used whenever a blank field on this row is auto-composed.', textFilter('note'))}
-          ${th('Image(s)', 'Reference image(s) for i2v/fml. Upload to replace, type a still-image description for the AI to generate one from, or (first frame only) click "Online photo..." to generate one via Gemini instead -- useful for animals the local model tends to draw wrong. Requires a Gemini key in Settings (paid, no free tier); the button is hidden if none is configured.')}
+          ${th('Image(s)', 'Reference image(s) for i2v/fml. Upload to replace, type a still-image description for the AI to generate one from, or (first frame only) click "Online photo..." to generate one via Gemini instead -- useful for animals the local model tends to draw wrong. Requires a Gemini key in Settings (paid, no free tier); the button is hidden if none is configured, or if Settings\' kf_backend already sends the first frame through Gemini (Generate new already gets that same accuracy there).')}
         </tr>
       </thead>
       <tbody>${state.manageRows.map(manageRowHtml).join('')}</tbody>
@@ -6521,8 +6531,19 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
   // configured -- there's no free fallback source anymore (see
   // gemini_image.py's docstring on why the CC0-photo lookup and
   // Hugging Face were both removed), so offering a button that would
-  // just error on click is worse than not showing it.
-  const onlineBtn = (ONLINE_PHOTO_ELIGIBLE_SLOTS.has(slot) && state.geminiEnabled)
+  // just error on click is worse than not showing it. ALSO hidden when
+  // Settings' kf_backend already sends this slot's own "Generate new"
+  // through Gemini (kf_backend in all_gemini/first_gemini_rest_local --
+  // see generate_dream.py's force_first_gemini) -- Online photo's whole
+  // point is giving the LOCAL checkpoint a correct real-world reference
+  // it can't otherwise produce (see gemini_image.py's module docstring:
+  // a flying squirrel's patagium came out right straight from Gemini,
+  // wrong from every local/CC0 source tried). If Gemini is already
+  // generating this slot directly, "Generate new" already gets that same
+  // accuracy without a separate reference-photo step first -- offering
+  // both here would just be two buttons doing overlapping work.
+  const firstFrameIsGemini = ['all_gemini', 'first_gemini_rest_local'].includes(state.kfBackend);
+  const onlineBtn = (ONLINE_PHOTO_ELIGIBLE_SLOTS.has(slot) && state.geminiEnabled && !firstFrameIsGemini)
     ? `<button type="button" class="mf-online-photo-btn" style="font-size:0.7em;width:100%;margin-top:0.2rem"
          onclick="fetchSlotReferencePhoto(${number}, '${slot}')"
          title="Generate a reference image via Gemini (a real, billed API call) as a seed instead of a blank placeholder -- for animals the local model tends to draw wrong. Only replaces the STAGED image; the active render is untouched until you render/rework.">
