@@ -5776,15 +5776,34 @@ async function onConceptsTrendToggle(cb) {
     }
     const currentNote = data.current_has_data ? '' :
       '<p class="muted">This project has no analytics data of its own yet -- only the other project(s) selected below will be used.</p>';
-    const others = data.other_projects_with_data.map(p => `
+    // <details>/<summary> (same collapsed-by-default pattern manageSlotHtml
+    // already uses for "Edit prompt") instead of a <select multiple> --
+    // that stays permanently open showing several rows, which gets
+    // unwieldy fast as the project count grows. Collapsed here shows just
+    // a one-line summary; expanding reveals a scrollable checkbox list
+    // capped at a fixed height so it never grows unbounded either.
+    const checkboxes = data.other_projects_with_data.map(p => `
       <label class="row" style="width:auto;gap:0.3rem">
-        <input type="checkbox" class="concepts-trend-project" value="${esc(p)}" style="width:auto">${esc(p)}
+        <input type="checkbox" class="concepts-trend-project" value="${esc(p)}" style="width:auto" onchange="updateConceptsTrendSummary()">${esc(p)}
       </label>`).join('');
-    panel.innerHTML = `${currentNote}${others ? `<p class="muted" style="margin-bottom:0.2rem">Also include best performers from:</p><div class="row" style="flex-wrap:wrap;gap:0.6rem">${others}</div>` : ''}`;
+    panel.innerHTML = `${currentNote}${checkboxes ? `
+      <details style="margin-top:0.3rem">
+        <summary id="concepts-trend-summary" style="cursor:pointer">Also include best performers from... (none selected)</summary>
+        <div style="display:flex;flex-direction:column;gap:0.3rem;margin-top:0.4rem;max-height:10rem;overflow-y:auto">${checkboxes}</div>
+      </details>` : ''}`;
   } catch (e) {
     panel.innerHTML = `<p class="muted">Could not check performance data: ${esc(e.message)}</p>`;
     cb.checked = false;
   }
+}
+
+function updateConceptsTrendSummary() {
+  const summary = document.getElementById('concepts-trend-summary');
+  if (!summary) return;
+  const checked = [...document.querySelectorAll('.concepts-trend-project:checked')].map(cb => cb.value);
+  summary.textContent = checked.length
+    ? `Also include best performers from... (${checked.length} selected)`
+    : 'Also include best performers from... (none selected)';
 }
 
 async function requestMoreConcepts() {
