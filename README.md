@@ -138,8 +138,11 @@ config values, local or remote, set from Settings.
 
 - Never commit `_pipeline/config.json`, anything under
   `_pipeline/gemini/` or `_pipeline/youtube/`, or any `*.enc` file — see
-  `.gitignore`. These hold real credentials/local topology and are
-  regenerated per-deployment, never shared.
+  `.gitignore`. `*.enc` files hold real credentials (Gemini API key,
+  YouTube OAuth token) but Fernet-encrypted at rest, not plaintext;
+  `config.json` holds local topology (URLs, model choices), which isn't
+  secret but is still machine-specific. Both are regenerated per
+  deployment, never shared.
 - `secret_store.py`'s own docstring documents exactly what its
   encryption-at-rest does and doesn't protect against — read it before
   assuming a stronger threat model than intended.
