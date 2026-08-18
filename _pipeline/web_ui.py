@@ -831,88 +831,32 @@ def _capture(fn, *args, **kwargs):
         _STDOUT_ROUTER.clear_target()
 
 
-def _capture_result(fn, *args, **kwargs):
-    """Same log-capture as _capture, but for a fn whose RETURN VALUE the
-    caller actually needs (the 'Generate content' preview endpoints --
-    generate_row_spec_content / generate_row_keyframes_content -- hand
-    back composed field values, not just a log). Returns
-    (ok, result_or_None, log_or_error)."""
-    log = io.StringIO()
-    _STDOUT_ROUTER.set_target(log)
-    try:
-        result = fn(*args, **kwargs)
-        return True, result, log.getvalue()
-    except SystemExit as e:
-        captured = log.getvalue()
-        return False, None, (captured + str(e)) if captured else str(e)
-    finally:
-        _STDOUT_ROUTER.clear_target()
-
-
 def h_spec_row_save(qs, body):
+    """Writes this row's spec -- non-blank fields save verbatim, any
+    blank required field is composed by AI automatically (see
+    write_row_spec). No separate 'enable AI' flag."""
     project = _project_from_body(body)
     number = int(body["number"])
     workflow = ds.TYPE_TO_WORKFLOW.get((body.get("type") or "t2v").strip().lower(), "fp8_t2v")
     fields = body.get("fields") or {}
-    use_ai = bool(body.get("use_ai"))
     note = (body.get("note") or "").strip() or None
     verbose = bool(body.get("verbose"))
-    ok, log = _capture(ds.write_row_spec, number, workflow, fields, use_ai, note, verbose=verbose)
+    ok, log = _capture(ds.write_row_spec, number, workflow, fields, note, verbose=verbose)
     return {"ok": ok, "log": log}
-
-
-def h_spec_row_generate(qs, body):
-    """The manage table's 'Generate content' action -- composes AI
-    content for blank fields and validates it, but never touches
-    spec_{number}.json (see generate_row_spec_content). The browser
-    populates the form fields from the response; nothing is saved until
-    a separate 'Save content' call."""
-    project = _project_from_body(body)
-    number = int(body["number"])
-    workflow = ds.TYPE_TO_WORKFLOW.get((body.get("type") or "t2v").strip().lower(), "fp8_t2v")
-    fields = body.get("fields") or {}
-    note = (body.get("note") or "").strip() or None
-    verbose = bool(body.get("verbose"))
-    ok, content, log = _capture_result(ds.generate_row_spec_content, number, workflow, fields, note, verbose=verbose)
-    return {"ok": ok, "content": content, "log": log}
 
 
 def h_keyframes_row_save(qs, body):
+    """Writes this row's keyframe prompt(s) -- non-blank fields save
+    verbatim, any still-needed blank prompt is composed by AI
+    automatically (see write_row_keyframes). No separate 'enable AI'
+    flag."""
     project = _project_from_body(body)
     number = int(body["number"])
     workflow = ds.TYPE_TO_WORKFLOW.get((body.get("type") or "t2v").strip().lower(), "fp8_t2v")
     fields = body.get("fields") or {}
-    use_ai = bool(body.get("use_ai"))
     verbose = bool(body.get("verbose"))
-    # ai_generated: tracked client-side (see applyGeneratedKeyframeContent/
-    # readManageRow) -- true when the content currently in the form came
-    # from a K-chip "Generate content" click, even though use_ai is always
-    # False by the time Save actually runs (nothing left to generate, see
-    # runManageSave's own comment). None (key absent -- CLI callers of
-    # this same endpoint shape, if any) falls back to use_ai itself.
-    first_frame_source_hint = bool(body["ai_generated"]) if "ai_generated" in body else None
-    ok, log = _capture(ds.write_row_keyframes, number, workflow, fields, use_ai, verbose=verbose,
-                        first_frame_source_hint=first_frame_source_hint)
+    ok, log = _capture(ds.write_row_keyframes, number, workflow, fields, verbose=verbose)
     return {"ok": ok, "log": log}
-
-
-def h_keyframes_row_generate(qs, body):
-    """The manage table's 'Generate content' action for keyframe/image
-    prompts -- see h_spec_row_generate; same dry-run contract, keyframes
-    version (generate_row_keyframes_content).
-
-    spec_content (optional): the spec 'S' ALSO just generated in this
-    same click, still unsaved -- lets a brand-new row's image prompt be
-    composed with real story context instead of "no spec exists yet"."""
-    project = _project_from_body(body)
-    number = int(body["number"])
-    workflow = ds.TYPE_TO_WORKFLOW.get((body.get("type") or "t2v").strip().lower(), "fp8_t2v")
-    fields = body.get("fields") or {}
-    verbose = bool(body.get("verbose"))
-    spec_override = body.get("spec_content")
-    ok, content, log = _capture_result(ds.generate_row_keyframes_content, number, workflow, fields,
-                                        verbose=verbose, spec_override=spec_override)
-    return {"ok": ok, "content": content, "log": log}
 
 
 def h_image_upload(qs, body):
@@ -937,6 +881,24 @@ def h_manage_reference_photo(qs, body):
         raise ValueError("no title (or explicit query) given to generate a reference image for")
     scene_prompt = (body.get("scene_prompt") or "").strip() or None
     return ds.generate_reference_image_to_slot(number, slot, query, scene_prompt=scene_prompt)
+
+
+def h_manage_generate_keyframe_image(qs, body):
+    """The manage table's "Generate new" button for a keyframe slot --
+    stages one on-demand candidate image (never touches the current
+    image, see ds.generate_keyframe_image_to_slot). prompt_text is
+    whatever's LIVE in that slot's textarea right now, even if unsaved
+    -- same as h_manage_reference_photo's scene_prompt, so a human can
+    tweak the prompt and try it immediately without a separate Save
+    first."""
+    project = _project_from_body(body)
+    number = int(body["number"])
+    workflow = ds.TYPE_TO_WORKFLOW.get((body.get("type") or "t2v").strip().lower(), "fp8_t2v")
+    slot = body["slot"]
+    prompt_text = (body.get("prompt_text") or "").strip()
+    if not prompt_text:
+        raise ValueError(f"no prompt text given for slot {slot!r} -- type one in first.")
+    return ds.generate_keyframe_image_to_slot(number, workflow, slot, prompt_text)
 
 
 def h_manage_clear_staged_image(qs, body):
@@ -1976,11 +1938,10 @@ ROUTES = {
     ("POST", "/api/youtube/analytics-ai-review"): h_youtube_analytics_ai_review,
     ("GET", "/api/manage-rows"): h_manage_rows,
     ("POST", "/api/manage/spec"): h_spec_row_save,
-    ("POST", "/api/manage/spec/generate"): h_spec_row_generate,
     ("POST", "/api/manage/keyframes"): h_keyframes_row_save,
-    ("POST", "/api/manage/keyframes/generate"): h_keyframes_row_generate,
     ("POST", "/api/manage/image"): h_image_upload,
     ("POST", "/api/manage/reference-photo"): h_manage_reference_photo,
+    ("POST", "/api/manage/generate-keyframe-image"): h_manage_generate_keyframe_image,
     ("POST", "/api/manage/clear-staged-image"): h_manage_clear_staged_image,
     ("POST", "/api/manage/delete-image"): h_manage_delete_image,
     ("POST", "/api/manage/rename-image"): h_manage_rename_image,
@@ -2397,7 +2358,7 @@ INDEX_HTML = r"""<!doctype html>
        widening it there would just waste density on the manage table's
        many small per-cell buttons), scoped here to widths where input is
        actually touch-driven. */
-    button, .mf-ai-chip { min-height: 44px; padding: 0.6rem 1rem; }
+    button { min-height: 44px; padding: 0.6rem 1rem; }
     input, select, textarea { min-height: 44px; }
     input[type="checkbox"], input[type="radio"] { min-height: 0; width: 1.2rem; height: 1.2rem; }
   }
@@ -2566,15 +2527,6 @@ INDEX_HTML = r"""<!doctype html>
     font-weight: 600; box-shadow: var(--shadow);
   }
   button.btn-danger:hover { filter: brightness(1.08); }
-  /* 'Generate content' mode (see updateManageActionButtonLabel) -- a
-     third, neutral-purple color distinct from btn-primary's "normal
-     write" blue and btn-danger's "stop/destructive" red, since this is
-     neither: it's an AI call that writes nothing to disk yet. */
-  button.btn-generate {
-    background: #8b5cf6; border-color: #8b5cf6; color: #fff;
-    font-weight: 600; box-shadow: var(--shadow);
-  }
-  button.btn-generate:hover { filter: brightness(1.08); }
   /* Current-render progress (see pollManageJobs) -- percent-filled once a
      real step/max is known, otherwise .mf-indeterminate-bar's sliding
      animation while still in the model-loading phase. */
@@ -2792,20 +2744,6 @@ INDEX_HTML = r"""<!doctype html>
     100% { left: 100%; }
   }
   .manage-table col.mf-col-images { width: 11rem; }
-
-  /* Two toggle chips: filled = on, outlined = off, one click flips it.
-     Replaced a details/summary dropdown (too much space for the summary +
-     popup), then plain checkboxes, then a native multi-select -- all
-     needed either an extra click-to-open step or an unfamiliar ctrl/cmd-
-     click gesture just to express two independent yes/no choices. */
-  .mf-ai-chips { display: flex; gap: 0.25rem; }
-  .mf-ai-chip {
-    width: 1.5rem; height: 1.5rem; padding: 0; margin: 0; font-size: 0.78em; font-weight: 700;
-    border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--card-bg);
-    color: var(--muted-fg); line-height: 1;
-  }
-  .mf-ai-chip:hover { background: var(--border-soft); }
-  .mf-ai-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 
   .mf-cell-row { display: flex; align-items: center; gap: 0.15rem; }
   .mf-cell-preview {
@@ -5794,11 +5732,9 @@ function getCellValue(tr, field) {
   return ta ? ta.value : (td.dataset.value || '');
 }
 
-// Writes a 'Generate content' response straight into the form (collapsed
-// preview, same as a fresh row load) -- nothing here touches disk, see
-// runManageGenerate. Overwrites whatever was in the cell before, which
-// is correct: this cell was blank (or the human explicitly cleared it)
-// or the AI wouldn't have been asked to compose it in the first place.
+// Writes a field's value straight into the form (collapsed preview,
+// same as a fresh row load) without touching disk -- used to restore a
+// row's fields after a reload (e.g. deleteSlotImage's "save first" path).
 function setCellValue(tr, field, value) {
   const td = tr.querySelector(`td[data-field="${field}"]`);
   if (!td) return;
@@ -5824,25 +5760,6 @@ function setSlotPromptValue(tr, field, value) {
   // instead of silently landing somewhere collapsed.
   const details = ta.closest('details');
   if (details) details.open = true;
-}
-
-// Recomputed on every selection/chip change (row checkbox, select-all,
-// per-row S/K chips, header 'apply to every row' chips) rather than
-// tracked as separate state -- the DOM is already the source of truth
-// for both, so deriving the label fresh each time can't drift out of
-// sync with it. "Generate content" whenever ANY currently-selected row
-// still wants AI for something (S or K on); "Save content" once none do
-// -- see runManageUpdates for what each actually does.
-function updateManageActionButtonLabel() {
-  const btn = document.getElementById('manage-run-updates-btn');
-  if (!btn) return;
-  const anyAi = manageSelectedRows().some(row => {
-    const tr = document.querySelector(`tr[data-number="${row.number}"]`);
-    return tr && manageAiValues(tr).length > 0;
-  });
-  btn.textContent = anyAi ? 'Generate content' : 'Save content';
-  btn.classList.toggle('btn-generate', anyAi);
-  btn.classList.toggle('btn-primary', !anyAi);
 }
 
 // Filters live INSIDE each header cell (Excel-style), not in a separate
@@ -5878,7 +5795,7 @@ function renderManageTable() {
         <tr>
           <th title="Select which rows Save content / Render video act on.">
             <input type="checkbox" id="manage-select-all" ${manageAnyDeselected() ? '' : 'checked'}
-                   onchange="toggleManageSelectAll(this.checked); updateManageActionButtonLabel()">
+                   onchange="toggleManageSelectAll(this.checked)">
           </th>
           ${th('#', 'Row number, plus status badges: new (no spec yet), from list (title/premise pre-filled from the master concept list), rendered, uploaded.', textFilter('number', 'filter #'))}
           ${th('Title', 'The video’s title. Type it directly and it’s saved verbatim; leave blank with "AI: spec" ticked to have it composed.', textFilter('title'))}
@@ -5900,22 +5817,15 @@ function renderManageTable() {
                       onclick="applyBulkGraphType()">Set</button>
             </div>
           </th>
-          ${th('AI direction', 'Optional creative direction for the AI -- only used if "AI: spec" is ticked for this row.', textFilter('note'))}
-          <th title="Spec = AI-compose spec fields left blank. KF = AI-compose keyframe/image prompts left blank. Any field you've typed directly is always used verbatim regardless.">
-            <div class="mf-th-label">AI <span class="mf-help">?</span></div>
-            <div class="mf-ai-chips">
-              <button type="button" class="mf-ai-chip" data-kind="spec" onclick="toggleManageAiAll(this)" title="Apply Spec to every row">S</button>
-              <button type="button" class="mf-ai-chip" data-kind="kf" onclick="toggleManageAiAll(this)" title="Apply KF to every row">K</button>
-            </div>
-          </th>
+          ${th('AI direction', 'Optional creative direction for the AI, used whenever a blank field on this row is auto-composed.', textFilter('note'))}
           ${th('Image(s)', 'Reference image(s) for i2v/fml. Upload to replace, type a still-image description for the AI to generate one from, or (first frame only) click "Online photo..." to generate one via Gemini instead -- useful for animals the local model tends to draw wrong. Requires a Gemini key in Settings (paid, no free tier); the button is hidden if none is configured.')}
         </tr>
       </thead>
       <tbody>${state.manageRows.map(manageRowHtml).join('')}</tbody>
     </table></div>
     <div class="row" style="margin:0.5rem 0">
-      <button id="manage-run-updates-btn" class="btn-primary" onclick="runManageUpdates()">Save content</button>
-      <span class="mf-help" title="Says 'Generate content' whenever a selected row has S or K ticked: composes AI content for blank fields straight into the form, but writes NOTHING to disk -- review it, clear a field and generate again as many times as you like, or reload the row to discard the draft. Says 'Save content' once no selected row wants AI: writes exactly what's in the form, verbatim, for every selected row whose fields changed. Never triggers a render.">?</span>
+      <button id="manage-run-updates-btn" class="btn-primary" onclick="runManageSaveClick()">Save content</button>
+      <span class="mf-help" title="Writes exactly what's in the form for every selected row whose fields changed, verbatim -- except any field still blank, which is composed by AI automatically. Never triggers a render.">?</span>
       <button id="manage-run-video-btn" class="btn-primary" onclick="handleRunVideoGenClick()">Render video</button>
       <span class="mf-help" title="For every SELECTED row: renders it for the first time if it has no video yet, or RE-RENDERS and overwrites the existing one if it does. Uses whatever is currently saved on disk -- click 'Save content' first if you just edited fields. Asks for confirmation before it starts.">?</span>
       <button type="button" onclick="deleteSlotImagesBulk(getCheckedSlotBulkItems())" title="Deletes every image slot checked above (the small checkbox next to each thumbnail's &times; button), behind a single confirmation instead of one per slot.">Delete checked images</button>
@@ -5933,15 +5843,6 @@ function renderManageTable() {
   if (!wrap.dataset.filterBound) {
     wrap.addEventListener('input', (ev) => {
       if (ev.target.classList.contains('mf-filter')) applyManageFilters();
-      // A human editing an AI-composed keyframe/image prompt by hand
-      // means it's no longer purely the model's own text -- clear the
-      // flag applyGeneratedKeyframeContent set, so Save no longer
-      // defaults first_frame_source to "online" for this row on its
-      // account (see write_row_keyframes's first_frame_source_hint).
-      if (ev.target.classList.contains('mf-slot-prompt')) {
-        const tr = ev.target.closest('tr');
-        if (tr) delete tr.dataset.kfAiGenerated;
-      }
     });
     wrap.addEventListener('change', (ev) => { if (ev.target.classList.contains('mf-filter')) applyManageFilters(); });
     wrap.dataset.filterBound = '1';
@@ -6019,7 +5920,7 @@ function manageRowHtml(row) {
   return `
     <tr data-number="${n}">
       <td><input type="checkbox" class="mf-select" ${manageIsDeselected(n) ? '' : 'checked'}
-                  onchange="setManageRowSelected(${n}, this.checked); updateManageActionButtonLabel()"></td>
+                  onchange="setManageRowSelected(${n}, this.checked)"></td>
       <td>#${n}<br>${badges}</td>
       ${manageCellHtml('title', row.title)}
       ${manageCellHtml('premise', row.premise)}
@@ -6033,33 +5934,8 @@ function manageRowHtml(row) {
         <option value="fml" ${type === 'fml' ? 'selected' : ''}>First/middle/last (fml)</option>
       </select></td>
       ${manageCellHtml('note', '')}
-      <td>${manageAiCellHtml()}</td>
       <td class="mf-images">${manageSlotsHtml(row, type)}</td>
     </tr>`;
-}
-
-// Two toggle chips, not a dropdown or a multi-select -- both of those
-// needed either a click-to-open interaction or an unfamiliar ctrl/cmd-
-// click gesture just to express two independent yes/no choices. A chip
-// is either filled (on) or outlined (off), one click flips it, state is
-// readable at a glance without hovering or opening anything.
-function manageAiCellHtml() {
-  return `
-    <div class="mf-ai-chips">
-      <button type="button" class="mf-ai-chip" data-kind="spec" onclick="toggleAiChip(this)"
-              title="AI-compose the spec fields left blank on this row">S</button>
-      <button type="button" class="mf-ai-chip" data-kind="kf" onclick="toggleAiChip(this)"
-              title="AI-compose the keyframe/image prompt(s) left blank on this row">K</button>
-    </div>`;
-}
-
-function toggleAiChip(btn) {
-  btn.classList.toggle('on');
-  updateManageActionButtonLabel();
-}
-
-function manageAiValues(tr) {
-  return [...tr.querySelectorAll('.mf-ai-chip.on')].map(b => b.dataset.kind);
 }
 
 function applyBulkGraphType() {
@@ -6073,14 +5949,17 @@ function applyBulkGraphType() {
   alert(`Set Graph type to "${value}" on ${applied} selected row(s). Click Save content to write it.`);
 }
 
-function toggleManageAiAll(btn) {
-  btn.classList.toggle('on');
-  const on = btn.classList.contains('on');
-  const kind = btn.dataset.kind;
-  document.querySelectorAll(`#manage-table-wrap tbody .mf-ai-chip[data-kind="${kind}"]`).forEach(b => {
-    b.classList.toggle('on', on);
-  });
-  updateManageActionButtonLabel();
+// Every currently-populated image slot for one row, in the shape
+// deleteSlotImagesBulk already expects -- shared by the per-row "Delete
+// all images" button and (indirectly) nothing else, but kept separate
+// from the cross-row getCheckedSlotBulkItems since the two collect
+// items from different sources (one row's real state vs. checkboxes).
+function getRowImageItems(row, type) {
+  if (type === 'i2v') return row.image_status.single ? [{ number: row.number, slot: 'image' }] : [];
+  const slotHas = row.slot_has_image || {};
+  return ['first', 'middle', 'last']
+    .filter(slot => slotHas[slot])
+    .map(slot => ({ number: row.number, slot }));
 }
 
 function manageSlotsHtml(row, type) {
@@ -6090,9 +5969,20 @@ function manageSlotsHtml(row, type) {
   // the staged file" -- only the former makes a separate "New (staged)"
   // comparison thumbnail meaningful (see get_manage_row's own comment).
   const showStaged = slot => row.real_images_present && !!(row.staged_slots || {})[slot];
+  const rowItems = getRowImageItems(row, type);
+  // Only shown once there's more than one populated slot -- for a
+  // single-slot row (i2v, or fml2v with just one image so far) this
+  // would just duplicate that slot's own delete (x) button right above it.
+  const deleteAllBtn = rowItems.length > 1
+    ? `<button type="button" style="font-size:0.7em;width:100%;margin-bottom:0.3rem"
+         onclick="deleteSlotImagesBulk(getRowImageItems(state.manageRows.find(r=>r.number===${row.number}), '${type}'))"
+         title="Deletes every image slot currently populated for this row in one confirmation -- each will need to be regenerated (automatically, at the next render) before it can be used again.">
+         Delete all images
+       </button>`
+    : '';
   if (type === 'i2v') {
-    return manageSlotHtml(row.number, 'i2v', 'image', row.image_status.single, row.i2v_prompt,
-      'i2v_generate_image_prompt', showStaged('image'));
+    return deleteAllBtn + manageSlotHtml(row.number, 'i2v', 'image', row.image_status.single, row.i2v_prompt,
+      'i2v_generate_image_prompt', showStaged('image'), undefined, true);
   }
   // 2026-08-12: per-slot now, not row.image_status.triple -- that flag
   // is deliberately all-or-nothing (render-readiness), which used to
@@ -6101,8 +5991,9 @@ function manageSlotsHtml(row, type) {
   // shows whatever's actually in each slot independently.
   const slotHas = row.slot_has_image || {};
   const guideStrengths = row.guide_strengths || {};
-  return ['first', 'middle', 'last'].map(slot =>
-    manageSlotHtml(row.number, 'fml2v', slot, !!slotHas[slot], row.fml_prompts[slot], slot, showStaged(slot), guideStrengths[slot])).join('');
+  return deleteAllBtn + ['first', 'middle', 'last'].map(slot =>
+    manageSlotHtml(row.number, 'fml2v', slot, !!slotHas[slot], row.fml_prompts[slot], slot, showStaged(slot),
+      guideStrengths[slot], !!slotHas.first)).join('');
 }
 
 // "Online photo" only applies to the FIRST frame of a workflow ('image'
@@ -6114,7 +6005,7 @@ const ONLINE_PHOTO_ELIGIBLE_SLOTS = new Set(['image', 'first']);
 
 const FML2V_SLOTS = ['first', 'middle', 'last'];
 
-function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptField, showStaged, guideStrength) {
+function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptField, showStaged, guideStrength, firstFrameExists) {
   // Weight (2026-08-12): fml2v_guide_strengths exposed per-slot -- how
   // strongly this keyframe anchors the video's motion at that point.
   // Middle tends to need a lower value than boundary slots (first/last)
@@ -6187,6 +6078,19 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
          Online photo (Gemini)&hellip;
        </button>`
     : '';
+  // Renders from the slot's own prompt via whichever backend Settings'
+  // kf_backend says for this role -- independent of "Online photo"
+  // above (a different feature, a real-world subject photo lookup).
+  // middle/last need the first frame as their I2I/image-edit base, so
+  // hidden entirely (not just disabled) until one exists -- same
+  // precedent as onlineBtn being hidden rather than offered-then-errors.
+  const generateBtn = (slot === 'image' || slot === 'first' || firstFrameExists)
+    ? `<button type="button" class="mf-generate-keyframe-btn" style="font-size:0.7em;width:100%;margin-top:0.2rem"
+         onclick="generateSlotKeyframeImage(${number}, '${slot}', '${workflowToType(workflow)}')"
+         title="Generate a new candidate image for this slot from its own prompt, via whichever backend Settings' kf_backend currently selects (local ComfyUI or Gemini image-edit). Stages the result for Current/New comparison -- the active render is untouched until you keep it.">
+         Generate new
+       </button>`
+    : '';
   // Current + New shown side by side, not stacked -- the whole point of
   // keeping both visible at once is comparing them directly against each
   // other before deciding whether to keep or discard the replacement;
@@ -6207,6 +6111,7 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
       ${weightInput}
       <input type="file" accept="image/*" style="font-size:0.75em" onchange="uploadSlotImage(${number}, '${slot}', this)">
       ${onlineBtn}
+      ${generateBtn}
     </div>`;
 }
 
@@ -6470,6 +6375,47 @@ async function fetchSlotReferencePhoto(number, slot) {
   }
 }
 
+// Independent from "Online photo" (that one's a real-world subject photo
+// lookup, not a prompt-driven render). This renders directly from the
+// slot's own keyframe prompt via whichever backend Settings' kf_backend
+// says for this role (local ComfyUI or Gemini image-edit) -- never a
+// per-click override, so it can't drift from what an actual render would
+// do. Always the LIVE (possibly unsaved) textarea value, matching
+// fetchSlotReferencePhoto's own scene-prompt handling. Stages the result
+// (Current/New comparison) -- never touches the active image.
+async function generateSlotKeyframeImage(number, slot, type) {
+  const tr = document.querySelector(`tr[data-number="${number}"]`);
+  const liveTextarea = tr.querySelector(`.mf-slot[data-slot="${slot}"] .mf-slot-prompt`);
+  const promptText = liveTextarea ? liveTextarea.value.trim() : '';
+  if (!promptText) { alert(`Type a prompt for the ${slot} slot first.`); return; }
+  const row = (state.manageRows || []).find(r => r.number === number);
+  const alreadyStaged = !!(row && row.staged_slots && row.staged_slots[slot]);
+  if (alreadyStaged) {
+    const ok = await confirmModal(
+      `This will generate a NEW ${slot} image and REPLACE the already-staged, ` +
+      `not-yet-rendered candidate for #${number}. The staged copy can't be recovered ` +
+      `after that (the active/rendered image, if any, isn't touched). Continue?`);
+    if (!ok) return;
+  }
+  const btn = tr.querySelector(`.mf-slot[data-slot="${slot}"] .mf-generate-keyframe-btn`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating...'; }
+  try {
+    await api('POST', '/api/manage/generate-keyframe-image', {
+      project: state.project, number, type, slot, prompt_text: promptText,
+    });
+    const data = await api('GET', `/api/manage-rows?project=${encodeURIComponent(state.project)}&numbers=${number}`);
+    const idx = state.manageRows.findIndex(r => r.number === number);
+    if (idx >= 0) state.manageRows[idx] = data.rows[0];
+    renderManageRowSlots(number);
+    const results = document.getElementById('manage-results');
+    if (results) results.innerHTML = `<pre>#${number} (${slot}): new candidate generated -- review it above.</pre>`;
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Generate new'; }
+  }
+}
+
 function renderManageRowSlots(number) {
   const row = (state.manageRows || []).find(r => r.number === number);
   const tr = document.querySelector(`tr[data-number="${number}"]`);
@@ -6518,15 +6464,15 @@ function readManageRow(tr) {
     tags: getTagsValue(tr, 'tags'),
   };
   const note = getCellValue(tr, 'note').trim();
-  const aiValues = manageAiValues(tr);
-  const useAiSpec = aiValues.includes('spec');
-  const useAiKf = aiValues.includes('kf');
   const kfFields = {};
   tr.querySelectorAll('.mf-slot-prompt').forEach(el => { kfFields[el.dataset.field] = el.value; });
-  const kfAiGenerated = tr.dataset.kfAiGenerated === '1';
-  return { number, type, fields, note, useAiSpec, useAiKf, kfFields, kfAiGenerated };
+  return { number, type, fields, note, kfFields };
 }
 
+// Strict "differs from what's on disk" -- used for the unsaved-changes
+// warning (rowHasUnsavedChanges), which should only fire when the human
+// actually typed something, not just because a field happens to be
+// blank. See specNeedsSave for the broader check Save itself uses.
 function specFieldsDirty(row, current) {
   if (!row.exists) return true;
   if (workflowToType(row.workflow) !== current.type) return true;
@@ -6541,141 +6487,42 @@ function kfFieldsDirty(row, current) {
   return false;
 }
 
-function applyGeneratedSpecContent(tr, content) {
-  ['title', 'premise', 'positive_prompt', 'description'].forEach(f => {
-    if (content[f] !== undefined) setCellValue(tr, f, content[f]);
-  });
-  if (content.negative_prompt !== undefined) setTagsValue(tr, 'negative_prompt', content.negative_prompt);
-  if (content.tags !== undefined) setTagsValue(tr, 'tags', content.tags);
+// Broader than specFieldsDirty -- also true when a required field is
+// still blank, even if that exactly matches what's on disk, so Save
+// reaches the server to auto-compose it (see write_row_spec's own
+// field-locking: blank fields are always AI-composed now, no chip).
+function specNeedsSave(row, current) {
+  if (specFieldsDirty(row, current)) return true;
+  return Object.values(current.fields).some(v => !(v || '').trim());
 }
 
-function applyGeneratedKeyframeContent(tr, type, content) {
-  if (type === 'i2v') {
-    setSlotPromptValue(tr, 'i2v_generate_image_prompt', content.i2v_generate_image_prompt || '');
-  } else if (type === 'fml') {
-    ['first', 'middle', 'last'].forEach(k => setSlotPromptValue(tr, k, content[k] || ''));
+// Same idea as specNeedsSave, but a blank keyframe slot only needs
+// saving if it ALSO has no image yet -- an image alone already
+// satisfies the workflow (see write_row_keyframes's own "already
+// satisfied, nothing new to record" early return).
+function kfNeedsSave(row, current) {
+  if (kfFieldsDirty(row, current)) return true;
+  if (current.type === 'i2v') {
+    return !(current.kfFields.i2v_generate_image_prompt || '').trim() && !row.image_status.single;
   }
-  // Marks this row's keyframe content as AI-authored for the eventual
-  // Save click -- runManageSave always passes use_ai:false (nothing left
-  // to generate by then), so this is the only surviving signal that lets
-  // write_row_keyframes default first_frame_source to "online" for
-  // content that came from the model, without also doing it for a
-  // human's own hand-typed prompt. Cleared if the human edits the
-  // textarea afterward (setSlotPromptValue's own oninput hook below) --
-  // a hand-edit means it's no longer purely the model's own composition.
-  tr.dataset.kfAiGenerated = '1';
+  if (current.type === 'fml') {
+    const slotHas = row.slot_has_image || {};
+    return ['first', 'middle', 'last'].some(k => !(current.kfFields[k] || '').trim() && !slotHas[k]);
+  }
+  return false;
 }
 
-// The one button dispatches to whichever action its OWN label currently
-// promises (see updateManageActionButtonLabel) -- recomputed here too,
-// at the moment of the actual click, rather than trusted from the label
-// text alone, so a click can't act on a stale mode if something changed
-// between the last label refresh and now.
-async function runManageUpdates() {
+async function runManageSaveClick() {
   const selected = manageSelectedRows();
   if (!selected.length) { alert('No rows selected (untick the header checkbox to deselect all, or tick at least one row).'); return; }
-  const rowsWantingAi = selected.filter(row => {
-    const tr = document.querySelector(`tr[data-number="${row.number}"]`);
-    return tr && manageAiValues(tr).length > 0;
-  });
-  if (rowsWantingAi.length) {
-    await runManageGenerate(rowsWantingAi);
-  } else {
-    await runManageSave(selected);
-  }
-}
-
-// 'Generate content' -- composes AI content for whichever selected rows
-// have S/K ticked, straight into the form fields (applyGeneratedSpec/
-// KeyframeContent), but NEVER writes spec_{number}.json (see
-// h_spec_row_generate / h_keyframes_row_generate on the server side).
-// Rows with neither chip ticked are left untouched by this click --
-// they're not part of "generate," they'll be picked up by a later 'Save
-// content' click once nothing is left wanting AI. Regenerate as many
-// times as you like (clear a field, it comes back into schema_hint and
-// gets composed again -- see write_row_spec's field-locking), or just
-// reload the row to throw the whole draft away -- nothing here has
-// touched disk.
-async function runManageGenerate(rows) {
-  const btn = document.getElementById('manage-run-updates-btn');
-  const verbose = document.getElementById('manage-verbose').checked;
-  btn.disabled = true;
-  const originalLabel = btn.textContent;
-  btn.textContent = 'Generating...';
-  document.getElementById('manage-results').innerHTML =
-    `<div class="card"><span class="mf-spinner"></span><span class="badge">working</span> generating ${rows.length} row(s)...</div>`;
-  const results = [];
-  try {
-    for (const row of rows) {
-      const tr = document.querySelector(`tr[data-number="${row.number}"]`);
-      const current = readManageRow(tr);
-      // A brand-new row has nothing on disk yet -- if S is ALSO
-      // generating this click, hand its result straight to the keyframes
-      // call below as context (spec_content) instead of making it read a
-      // spec that was never saved. See h_keyframes_row_generate.
-      let generatedSpecContent = null;
-      if (current.useAiSpec) {
-        try {
-          const r = await api('POST', '/api/manage/spec/generate', {
-            project: state.project, number: current.number, type: current.type,
-            fields: current.fields, note: current.note, verbose,
-          });
-          if (r.ok && r.content) {
-            applyGeneratedSpecContent(tr, r.content);
-            generatedSpecContent = r.content;
-            results.push(`#${current.number} spec: generated -- not saved yet`);
-            // Auto-untick S on success -- a completed generate isn't
-            // "still pending," and leaving it ticked would make the very
-            // next click try to regenerate content that's already sitting
-            // there reviewed. Re-tick it deliberately to generate again.
-            // Left ON on failure/error (below) so the row stays in
-            // 'Generate' mode for an easy retry, nothing to review yet.
-            const sChip = tr.querySelector('.mf-ai-chip[data-kind="spec"]');
-            if (sChip) sChip.classList.remove('on');
-          } else {
-            results.push(`#${current.number} spec: FAILED - ${r.log}`);
-          }
-        } catch (e) { results.push(`#${current.number} spec: ERROR - ${e.message}`); }
-      }
-      if (current.useAiKf && current.type !== 't2v') {
-        // Not gated on "does an image already satisfy this row" -- that
-        // gate would make ticking K on a row with an existing image
-        // silently skip the API call entirely, producing a bare "Nothing
-        // to generate." with no explanation. Composing a fresh prompt to
-        // then regenerate/replace an existing image (via "Online photo")
-        // is a normal, legitimate thing to want -- see
-        // generate_row_keyframes_content's own matching logic.
-        try {
-          const r = await api('POST', '/api/manage/keyframes/generate', {
-            project: state.project, number: current.number, type: current.type,
-            fields: current.kfFields, spec_content: generatedSpecContent, verbose,
-          });
-          if (r.ok && r.content) {
-            applyGeneratedKeyframeContent(tr, current.type, r.content);
-            results.push(`#${current.number} keyframes: generated -- not saved yet`);
-            const kChip = tr.querySelector('.mf-ai-chip[data-kind="kf"]');
-            if (kChip) kChip.classList.remove('on');
-          } else {
-            results.push(`#${current.number} keyframes: FAILED - ${r.log}`);
-          }
-        } catch (e) { results.push(`#${current.number} keyframes: ERROR - ${e.message}`); }
-      }
-    }
-  } finally {
-    btn.disabled = false;
-    updateManageActionButtonLabel();
-  }
-  const resultsEl = document.getElementById('manage-results');
-  if (resultsEl) resultsEl.innerHTML =
-    `<div class="card"><pre>${esc(results.length ? results.join('\n\n') : 'Nothing to generate.')}</pre>` +
-    `<div class="muted" style="margin-top:0.4rem">Nothing saved yet. Review the fields above -- clear one and generate again to redo just that field, or reload the row to discard the whole draft. Untick S/K once you're happy, then click Save content.</div></div>`;
+  await runManageSave(selected);
 }
 
 // 'Save content' -- writes exactly what's currently in the form to
-// spec_{number}.json, verbatim, no AI involved (this path is only
-// reachable when no selected row has S/K ticked -- see
-// updateManageActionButtonLabel / runManageUpdates). Still skips a row
-// whose fields exactly match what's already on disk.
+// spec_{number}.json, verbatim, EXCEPT any still-blank required field,
+// which the server auto-composes via AI (see write_row_spec/
+// write_row_keyframes). No manual on/off switch and no separate preview
+// step -- review the result after it saves, or edit and Save again.
 // Shared by runManageSave's loop and deleteSlotImage's "save first"
 // path (see rowHasUnsavedChanges) -- writes exactly one row's current
 // form fields to disk, verbatim, no AI. Returns a results array (0-2
@@ -6684,30 +6531,25 @@ async function runManageGenerate(rows) {
 async function saveManageRowContent(row, tr, verbose) {
   const results = [];
   const current = readManageRow(tr);
-  if (specFieldsDirty(row, current)) {
+  if (specNeedsSave(row, current)) {
     try {
       const r = await api('POST', '/api/manage/spec', {
         project: state.project, number: current.number, type: current.type,
-        fields: current.fields, use_ai: false, note: current.note, verbose,
+        fields: current.fields, note: current.note, verbose,
       });
       results.push(`#${current.number} spec: ${r.ok ? (r.log || 'done') : 'FAILED - ' + r.log}`);
     } catch (e) { results.push(`#${current.number} spec: ERROR - ${e.message}`); }
   }
   if (current.type !== 't2v') {
-    // Requiring !imageSatisfied here too (skip the write whenever real
-    // images already existed) would mean freshly composed/typed keyframe
-    // text for a row whose story had just been rewritten never even
-    // reaches the server, no matter how write_row_keyframes itself
-    // handles stale images once fields arrive -- the request would never
-    // be sent in the first place. kfFieldsDirty alone (text actually
-    // changed from what's on disk) is the right gate; the server deletes
-    // stale images itself when real new prompt text shows up for a slot
-    // that already had one (see write_row_keyframes).
-    if (kfFieldsDirty(row, current)) {
+    // kfNeedsSave: text actually changed from what's on disk, OR a slot
+    // is still blank with no image to satisfy it either -- the server
+    // deletes stale images itself when real new prompt text shows up for
+    // a slot that already had one (see write_row_keyframes).
+    if (kfNeedsSave(row, current)) {
       try {
         const r = await api('POST', '/api/manage/keyframes', {
           project: state.project, number: current.number, type: current.type,
-          fields: current.kfFields, use_ai: false, ai_generated: current.kfAiGenerated, verbose,
+          fields: current.kfFields, verbose,
         });
         results.push(`#${current.number} keyframes: ${r.ok ? (r.log || 'done') : 'FAILED - ' + r.log}`);
       } catch (e) { results.push(`#${current.number} keyframes: ERROR - ${e.message}`); }
@@ -6867,18 +6709,23 @@ function jumpToManageRow(number) {
 }
 
 // The concrete "yes, do it" action behind the most common guided refusal
-// (missing fml2v keyframe prompts / i2v image prompt) -- ticks that row's
-// K chip and runs the same "Generate content" preview flow the chip
-// itself drives, so a human doesn't have to find and click through the
-// UI by hand after already having been told exactly what's needed.
+// (missing fml2v keyframe prompts / i2v image prompt) -- saves just this
+// one row directly, which auto-composes the missing keyframe prompt(s)
+// since they're blank (see write_row_keyframes), so a human doesn't have
+// to find and click through the UI by hand after already having been
+// told exactly what's needed.
 async function generateKeyframesForRow(number) {
   const tr = document.querySelector(`tr[data-number="${number}"]`);
   if (!tr) { alert(`#${number} isn't currently loaded in the table above -- load it first.`); return; }
-  const kChip = Array.from(tr.querySelectorAll('.mf-ai-chip')).find(c => c.textContent.trim() === 'K');
-  if (kChip && !kChip.classList.contains('on')) kChip.click();
   tr.scrollIntoView({behavior: 'smooth', block: 'center'});
-  const genBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim().includes('Generate content') || b.textContent.trim().includes('Save content'));
-  if (genBtn) genBtn.click();
+  const row = state.manageRows.find(r => r.number === number);
+  if (!row) return;
+  const verbose = document.getElementById('manage-verbose')?.checked;
+  const results = await saveManageRowContent(row, tr, verbose);
+  await loadManageTable();
+  const resultsEl = document.getElementById('manage-results');
+  if (resultsEl) resultsEl.innerHTML =
+    `<div class="card"><pre>${esc(results.length ? results.join('\n\n') : 'Nothing changed.')}</pre></div>`;
 }
 
 // One combined card/log instead of one per job (generate + rework are

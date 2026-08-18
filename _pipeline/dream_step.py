@@ -1725,13 +1725,13 @@ def build_row_spec_payload(number, locked_fields, note, workflow):
     return payload
 
 
-def write_row_spec(number, workflow, fields, use_ai, note, verbose=False):
+def write_row_spec(number, workflow, fields, note, verbose=False):
     """One manage-table row's spec write -- fields is every editable base
     field as currently shown in the table (blank string for "not filled
-    in"). Non-blank fields are locked verbatim; blank ones are either
-    AI-composed (use_ai True) or left for do_write_spec's own required-
-    field validation to reject with a clear error (use_ai False -- the
-    human chose to fill everything in by hand and missed one).
+    in"). Non-blank fields are locked verbatim; blank ones are always
+    AI-composed -- there is no manual on/off switch. If every base field
+    is already non-blank, nothing is generated and this degenerates to a
+    plain verbatim save (see the `payload is None` branch below).
 
     do_write_spec does a full overwrite (spec_path.write_text), so
     building the new spec dict from scratch (just naive_locked_fields +
@@ -1748,31 +1748,9 @@ def write_row_spec(number, workflow, fields, use_ai, note, verbose=False):
     if error:
         raise SystemExit(error)
 
-    if not use_ai:
-        missing = [f for f in ROW_SPEC_FIELDS if f not in naive_locked_fields]
-        if missing:
-            raise SystemExit(
-                f"[dream_step] #{number}: AI is off for this row, and these fields are "
-                f"still blank: {missing}. Either type content into them directly, or tick "
-                f"the 'S' AI chip for this row so the model fills in whatever's left blank.")
-        spec = dict(existing_on_disk)
-        spec.update(naive_locked_fields)
-        spec.update(code_owned)
-        # Every base field here is locked_fields -- the human typed all of
-        # it directly, nothing is AI-composed. The beat-structure check
-        # exists to guardrail AI-authored content, not to second-guess a
-        # human who deliberately wrote their own dialogue timing -- warn,
-        # don't block (positive_prompt_is_human), and don't use
-        # allow_custom_beats for this: that flag is the CLI's own explicit,
-        # opt-in "skip the check with no warning at all" contract, a
-        # different thing from "the human typed this in the table."
-        do_write_spec(number, json.dumps(spec), positive_prompt_is_human=True)
-        return
-
-    # Same fix as generate_row_spec_content, same reason: with AI on and
-    # a note given, only a field that actually DIFFERS from what's on
-    # disk counts as human-locked -- otherwise every pre-filled,
-    # untouched field looks "locked" and the note gets silently ignored.
+    # With a note given, only a field that actually DIFFERS from what's on
+    # disk counts as human-locked -- otherwise every pre-filled, untouched
+    # field looks "locked" and the note gets silently ignored.
     if note:
         locked_fields = {k: v for k, v in naive_locked_fields.items()
                           if v.strip() != (existing_on_disk.get(k) or "").strip()}
@@ -1809,99 +1787,30 @@ def write_row_spec(number, workflow, fields, use_ai, note, verbose=False):
         raise SystemExit(f"[dream_step] #{number}: the AI couldn't produce a spec that "
                           f"passed validation after several tries -- see the attempts "
                           f"above for exactly what it got wrong. Try a clearer creative "
-                          f"direction, or fill in the field(s) yourself and turn AI off.")
+                          f"direction, or fill in the field(s) yourself instead.")
 
 
-def generate_row_spec_content(number, workflow, fields, note, verbose=False):
-    """The manage table's 'Generate content' action -- same field-locking
-    rules as write_row_spec (non-blank fields are locked verbatim, blank
-    ones get AI-composed), but returns the composed+validated fields
-    instead of writing spec_{number}.json. Nothing touches disk here --
-    'Save content' (write_row_spec) is the only thing that actually
-    persists, so a human can review, clear a field and generate again as
-    many times as they like, or just reload the row to discard the whole
-    draft, before ever committing anything. Raises SystemExit on the same
-    errors write_row_spec would (missing required fields, or the AI
-    failing validation after retries).
-
-    The manage table always pre-fills every field with the row's existing
-    on-disk content, so "the human deliberately typed/kept this exact
-    value" and "this field was never touched, it's just what was already
-    there" are indistinguishable from a non-blank value alone. When a
-    note is given, only a field that actually DIFFERS from the on-disk
-    spec counts as locked -- an untouched field is fair game for the
-    model to rewrite, matching build_spec_request_payload's own "note
-    given -> don't even show old content, nothing to anchor on" behavior
-    for the CLI path."""
-    if note:
-        spec_path = DATA_DIR / f"spec_{number:03d}.json"
-        existing_on_disk = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.exists() else {}
-        locked_fields = {k: v for k, v in fields.items()
-                          if k in ROW_SPEC_FIELDS and (v or "").strip()
-                          and (v or "").strip() != (existing_on_disk.get(k) or "").strip()}
-    else:
-        locked_fields = {k: v for k, v in fields.items() if k in ROW_SPEC_FIELDS and (v or "").strip()}
-    code_owned, error = determine_code_owned_spec_fields(number, workflow)
-    if error:
-        raise SystemExit(error)
-
-    payload = build_row_spec_payload(number, locked_fields, note, workflow)
-    if payload is None:
-        # Every base field is already locked -- nothing for the model to
-        # compose, so this degenerates to validating what's already typed
-        # and handing it straight back (same content 'Save content' would
-        # write, just not written yet).
-        spec = dict(locked_fields)
-        spec.update(code_owned)
-        return _validate_and_normalize_spec(number, spec, positive_prompt_is_human=True)
-
-    # See write_row_spec's identical branch for why: the minimal template
-    # only covers a full write/regen (no locked fields), not a partial one.
-    if using_strong_creative_backend() and not locked_fields:
-        prompt = build_simple_spec_prompt(number, note, workflow, title_locked="title" in locked_fields)
-    else:
-        prompt = _render_creative_prompt(payload)
-    if verbose:
-        print(f"[dream_step] #{number}: prompt sent to the model:\n{prompt}\n")
-    content = _generate_spec_content(number, prompt, code_owned, extra_locked_fields=locked_fields, verbose=verbose)
-    if content is None:
-        raise SystemExit(f"[dream_step] #{number}: the AI couldn't produce a spec that "
-                          f"passed validation after several tries -- see the attempts "
-                          f"above for exactly what it got wrong. Try a clearer creative "
-                          f"direction, or fill in the field(s) yourself and turn AI off.")
-    return content
-
-
-def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_frame_source_hint=None):
+def write_row_keyframes(number, workflow, fields, verbose=False):
     """One manage-table row's keyframe-prompt write. `fields` carries
     whatever prompt text the human typed for slots that don't already have
     an image (uploaded or found): i2v -- {"i2v_generate_image_prompt": ...};
     fml2v -- {"first":..., "middle":..., "last":...}. A row whose images
     already fully satisfy its workflow (1 for i2v, 3 named 1/2/3 for fml2v)
     needs nothing written here at all -- the image alone is enough.
+    Non-blank fields save verbatim; any still-blank prompt needed is
+    always AI-composed -- no manual on/off switch.
 
     fml2v is all-or-nothing on the prompt side: check_image_prerequisites
     only accepts three real images OR the complete fml2v_keyframe_prompts
     object, never a partial mix -- so unless all three images are already
     present, all three prompts are needed (each individually still locked
-    verbatim if the human typed it; the model, if used, only fills the
-    rest.
+    verbatim if the human typed it; the model only fills the rest.
 
-    first_frame_source_hint: whether the CONTENT being written here was
-    AI-composed, independent of `use_ai` -- the web UI's "Generate
-    content" (K chip) always previews before saving, so by the time this
-    actually runs at Save time use_ai is deliberately False (nothing
-    left to generate, see runManageSave's own comment) even though the
-    text sitting in the fields came from the model a moment ago. The web
-    UI passes this explicitly (tracked client-side from the generate
-    step); None (the CLI's single-step generate-and-save path, which has
-    no separate preview) falls back to use_ai itself. When true and this
-    row is about to auto-generate a first frame (no real image yet),
-    "first_frame_source": "online" is set on the spec, so a real CC0
-    photo seeds the same T2I/I2I graph instead of the blank placeholder,
-    fixing the species
-    accuracy AI-authored image prompts can't guarantee on their own."""
-    prefer_online = use_ai if first_frame_source_hint is None else first_frame_source_hint
+    Whenever this function is the one actually composing a first-frame
+    prompt (never when the human typed it verbatim), it sets
+    "first_frame_source": "online" on the spec, so a real CC0 photo seeds
+    the same T2I/I2I graph instead of the blank placeholder -- fixes the
+    species accuracy an AI-authored image prompt alone can't guarantee."""
     images = find_reference_images(number)
 
     if workflow == "i2v":
@@ -1915,25 +1824,18 @@ def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_f
             images[0].unlink(missing_ok=True)
             images = []
         if text:
-            updates = {"i2v_generate_image_prompt": text}
-            if prefer_online:
-                updates["first_frame_source"] = "online"
-            merge_and_write_spec(number, updates)
+            merge_and_write_spec(number, {"i2v_generate_image_prompt": text})
             return
-        if not use_ai:
-            raise SystemExit(f"[dream_step] #{number}: i2v needs either an uploaded "
-                              f"image or an image-prompt description -- neither given.")
         payload = build_keyframes_request_payload(number, 1)
         if payload is None:
             raise SystemExit(f"[dream_step] #{number}: no spec exists yet.")
         ok = _generate_and_write_keyframes(
             number, _render_creative_prompt(payload), verbose=verbose,
-            extra_locked_fields={"first_frame_source": "online"} if prefer_online else None)
+            extra_locked_fields={"first_frame_source": "online"})
         if not ok:
             raise SystemExit(f"[dream_step] #{number}: the AI couldn't produce an "
                               f"image prompt that passed validation -- see the attempts "
-                              f"above. Try a clearer description, or type one in yourself "
-                              f"and turn AI off.")
+                              f"above. Try a clearer description, or type one in yourself.")
         return
 
     if workflow == "fml2v":
@@ -1942,8 +1844,8 @@ def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_f
         if len(images) == 3 and {p.stem for p in images} == {"1", "2", "3"}:
             if not typed:
                 return  # already satisfied, nothing new to record
-            # A story rewrite (S chip) that leaves stale keyframe images in
-            # place would otherwise silently drop freshly-typed/composed
+            # A story rewrite that leaves stale keyframe images in place
+            # would otherwise silently drop freshly-typed/composed
             # keyframe text right here -- fields is never even looked at
             # once images satisfy the workflow, so the spec would keep
             # pointing at images from the OLD story with no record the
@@ -1959,8 +1861,6 @@ def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_f
         locked = typed
         if len(locked) == 3:
             updates = {"fml2v_keyframe_prompts": locked}
-            if prefer_online:
-                updates["first_frame_source"] = "online"
             # Deleting the FILES isn't enough on its own -- the spec's own
             # fml2v_first_image/middle/last fields (set by a prior render
             # to the old images' paths) survive a merge untouched
@@ -1979,10 +1879,6 @@ def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_f
                         updates[field] = None
             merge_and_write_spec(number, updates)
             return
-        if not use_ai:
-            raise SystemExit(f"[dream_step] #{number}: fml2v needs three reference "
-                              f"images (1/2/3) or all three keyframe prompts (first/"
-                              f"middle/last) -- neither fully given.")
         payload = build_keyframes_request_payload(number, 3)
         if payload is None:
             raise SystemExit(f"[dream_step] #{number}: no spec exists yet.")
@@ -1998,89 +1894,14 @@ def write_row_keyframes(number, workflow, fields, use_ai, verbose=False, first_f
                                          f"fml2v_keyframe_prompts, consistent with those.")
         prompt = _render_creative_prompt(payload)
         extra_locked_fields = {"fml2v_keyframe_prompts": locked} if locked else {}
-        if prefer_online:
-            extra_locked_fields["first_frame_source"] = "online"
+        extra_locked_fields["first_frame_source"] = "online"
         ok = _generate_and_write_keyframes(number, prompt, verbose=verbose,
-                                            extra_locked_fields=extra_locked_fields or None)
+                                            extra_locked_fields=extra_locked_fields)
         if not ok:
             raise SystemExit(f"[dream_step] #{number}: the AI couldn't produce keyframe "
                               f"prompts that passed validation -- see the attempts above. "
-                              f"Try clearer descriptions, or type them in yourself and "
-                              f"turn AI off.")
+                              f"Try clearer descriptions, or type them in yourself.")
         return
-
-
-def generate_row_keyframes_content(number, workflow, fields, verbose=False, spec_override=None):
-    """The manage table's 'Generate content' action for keyframe/image
-    prompts -- same field-locking / all-or-nothing rules as
-    write_row_keyframes, but returns the composed fields instead of
-    writing spec_{number}.json. Nothing touches disk here -- 'Save
-    content' (write_row_keyframes) is the only thing that actually
-    persists. Always attempts AI for whatever isn't already locked (this
-    is only ever called from the 'K' chip's Generate action, so use_ai is
-    implied True -- unlike write_row_keyframes, which also serves the
-    AI-off Save path). Deliberately does NOT skip/return None just
-    because real images already satisfy the workflow -- doing so would
-    make ticking K on a row that already had an image silently produce a
-    bare "Nothing to generate." with zero explanation, both here AND
-    client-side -- see runManageUpdates' own matching handling --
-    being called here at all already means a human explicitly asked to
-    compose a fresh prompt (e.g. to then regenerate/replace an existing
-    image via "Online photo"), a legitimate request that must not be
-    refused outright.
-    Raises SystemExit on the same errors write_row_keyframes would.
-
-    spec_override: when the 'S' spec chip was ALSO ticked and generated
-    in this SAME click (a brand-new row has nothing on disk yet for the
-    keyframe prompt to be composed consistent with) -- the just-generated,
-    unsaved spec content, so this can still use the real title/premise/
-    positive_prompt as context instead of failing with "no spec exists
-    yet." See build_keyframes_request_payload / _merge_and_validate_spec."""
-    if workflow == "i2v":
-        text = (fields.get("i2v_generate_image_prompt") or "").strip()
-        if text:
-            merged = _merge_and_validate_spec(number, {"i2v_generate_image_prompt": text}, base_spec=spec_override)
-            return {"i2v_generate_image_prompt": merged.get("i2v_generate_image_prompt", text)}
-        payload = build_keyframes_request_payload(number, 1, spec_override=spec_override)
-        if payload is None:
-            raise SystemExit(f"[dream_step] #{number}: no spec exists yet.")
-        merged, _update_fields = _generate_keyframes_content(
-            number, _render_creative_prompt(payload), verbose=verbose, spec_override=spec_override)
-        if merged is None:
-            raise SystemExit(f"[dream_step] #{number}: the AI couldn't produce an "
-                              f"image prompt that passed validation -- see the attempts "
-                              f"above. Try a clearer description, or type one in yourself "
-                              f"and turn AI off.")
-        return {"i2v_generate_image_prompt": merged.get("i2v_generate_image_prompt", "")}
-
-    if workflow == "fml2v":
-        locked = {k: (fields.get(k) or "").strip() for k in ("first", "middle", "last")
-                  if (fields.get(k) or "").strip()}
-        if len(locked) == 3:
-            merged = _merge_and_validate_spec(number, {"fml2v_keyframe_prompts": locked}, base_spec=spec_override)
-            return merged.get("fml2v_keyframe_prompts", locked)
-        payload = build_keyframes_request_payload(number, 3, spec_override=spec_override)
-        if payload is None:
-            raise SystemExit(f"[dream_step] #{number}: no spec exists yet.")
-        if locked:
-            payload["schema_hint"]["fml2v_keyframe_prompts"] = {
-                k: v for k, v in payload["schema_hint"]["fml2v_keyframe_prompts"].items()
-                if k not in locked}
-            payload["instructions"] += (f" first/middle/last already locked by the human: "
-                                         f"{list(locked)} -- write ONLY the remaining "
-                                         f"sub-key(s) shown in schema_hint's "
-                                         f"fml2v_keyframe_prompts, consistent with those.")
-        prompt = _render_creative_prompt(payload)
-        merged, _update_fields = _generate_keyframes_content(
-            number, prompt, verbose=verbose,
-            extra_locked_fields={"fml2v_keyframe_prompts": locked} if locked else None,
-            spec_override=spec_override)
-        if merged is None:
-            raise SystemExit(f"[dream_step] #{number}: the AI couldn't produce keyframe "
-                              f"prompts that passed validation -- see the attempts above. "
-                              f"Try clearer descriptions, or type them in yourself and "
-                              f"turn AI off.")
-        return merged.get("fml2v_keyframe_prompts", locked)
 
 
 def resolve_slot_image_lenient(number, workflow, slot):
@@ -2316,25 +2137,15 @@ def get_manage_row(number):
     }
 
 
-def build_keyframes_request_payload(number, image_count, spec_override=None):
+def build_keyframes_request_payload(number, image_count):
     """Shared by write_row_keyframes (the manage table's real AI-generation
     path) and --interactive. Returns None if no spec exists yet for this
-    number AND no spec_override was given. image_count: 1 ->
-    i2v_generate_image_prompt, 3 -> fml2v_keyframe_prompts.
-
-    spec_override: the manage table's 'Generate content' preview path
-    (generate_row_keyframes_content) needs to compose an image prompt
-    using spec content that was ALSO just generated in the same click but
-    not saved yet -- nothing's on disk to read in that case. Callers that
-    already have the spec in hand (a just-generated, unsaved dict) pass
-    it here instead of relying on the disk read."""
-    if spec_override is not None:
-        spec = spec_override
-    else:
-        spec_path = DATA_DIR / f"spec_{number:03d}.json"
-        if not spec_path.exists():
-            return None
-        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    number. image_count: 1 -> i2v_generate_image_prompt, 3 ->
+    fml2v_keyframe_prompts."""
+    spec_path = DATA_DIR / f"spec_{number:03d}.json"
+    if not spec_path.exists():
+        return None
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
     if image_count == 1:
         fields_needed = ["i2v_generate_image_prompt"]
         # Without an explicit prohibition, the model tends to copy
@@ -2798,14 +2609,12 @@ def sync_master_list_entry(number, title, premise):
 
 
 def _validate_and_normalize_spec(number, spec, allow_custom_beats=False, positive_prompt_is_human=False):
-    """The validation core of do_write_spec, split out so the manage
-    table's 'Generate content' action (generate_row_spec_content) can
-    validate AI-composed content the exact same way WITHOUT writing it to
-    disk -- a human reviews/regenerates first, nothing is saved until
-    'Save content' is clicked. do_write_spec is the only place that
-    actually persists; this function just enforces every rule a spec has
-    to pass either way. Mutates and returns spec (sets "number", applies
-    the default negative_prompt) -- raises SystemExit on any failure,
+    """The validation core of do_write_spec, split out so AI-composed
+    content can be validated the exact same way as anything else written
+    through do_write_spec, which is the only place that actually
+    persists; this function just enforces every rule a spec has to pass
+    either way. Mutates and returns spec (sets "number", applies the
+    default negative_prompt) -- raises SystemExit on any failure,
     same as do_write_spec always has."""
     spec["number"] = number
 
@@ -3629,6 +3438,52 @@ def generate_reference_image_to_slot(number, slot, query, scene_prompt=None):
     path = save_uploaded_image(number, slot, data, ".png")
     model = load_config().get("gemini_model") or gemini_image.MODEL
     return {"path": str(path), "query": query, "model": model}
+
+
+def generate_keyframe_image_to_slot(number, workflow, slot, prompt_text):
+    """The manage table's "Generate new" button for a keyframe IMAGE (as
+    opposed to the prompt TEXT written by write_row_keyframes) -- one
+    on-demand candidate, staged the exact same way
+    generate_reference_image_to_slot (Gemini "Online photo") and manual
+    uploads both already are, via save_uploaded_image -- so the result
+    shows up in the same Current/New comparison, never touching the
+    active image until the human deletes or replaces it. Local-vs-Gemini
+    for this slot follows config.json's kf_backend, the same decision a
+    real render makes (see generate_dream.generate_one_keyframe_candidate)
+    -- never a per-click override, so this can't drift from what Render/
+    Rework would actually produce for this role.
+
+    slot 'image'/'first': no prerequisite. slot 'middle'/'last': the
+    first-frame image must already exist (it's the I2I/image-edit base
+    either way) -- raises SystemExit with a clear message if not, rather
+    than silently generating from nothing."""
+    import generate_dream
+    role = {"image": "first", "first": "first", "middle": "middle", "last": "last"}.get(slot)
+    if role is None:
+        raise SystemExit(f"[dream_step] #{number}: invalid slot {slot!r} for keyframe generation.")
+
+    first_frame_path = None
+    if role != "first":
+        first_frame_path = resolve_slot_image_lenient(number, workflow, "first")
+        if first_frame_path is None:
+            raise SystemExit(
+                f"[dream_step] #{number}: the '{slot}' slot needs the first-frame image "
+                f"to already exist -- it's the base every regeneration (local I2I or "
+                f"Gemini image-edit) is conditioned on.\nTO FIX: generate/upload a first "
+                f"frame for this row before regenerating '{slot}'.")
+
+    spec_path = DATA_DIR / f"spec_{number:03d}.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.exists() else {"number": number}
+
+    tmp_path = DATA_DIR / f"_kf_tmp_{number}_{slot}.png"
+    try:
+        generate_dream.generate_one_keyframe_candidate(
+            spec, role, prompt_text, tmp_path, first_frame_path=first_frame_path)
+        data = tmp_path.read_bytes()
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    path = save_uploaded_image(number, slot, data, ".png")
+    return {"path": str(path)}
 
 
 def migrate_uploaded_images(number, spec):
@@ -5126,22 +4981,13 @@ def ensure_workflow_type(number, spec, type_arg, kind):
     return False
 
 
-def _merge_and_validate_spec(number, updates, base_spec=None):
-    """The validation core of merge_and_write_spec, split out so the
-    manage table's 'Generate content' keyframe preview
-    (generate_row_keyframes_content) can validate an AI-composed update
-    the exact same way WITHOUT writing it to disk. Returns the merged,
-    validated spec dict (mutates nothing on disk).
-
-    base_spec: same reasoning as build_keyframes_request_payload's
-    spec_override -- a spec that was ALSO just generated in the same
-    click but not saved yet has nothing on disk to merge into. Callers
-    pass the in-hand dict instead of relying on the disk read."""
-    if base_spec is not None:
-        existing = dict(base_spec)
-    else:
-        spec_path = DATA_DIR / f"spec_{number:03d}.json"
-        existing = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.exists() else {}
+def _merge_and_validate_spec(number, updates):
+    """The validation core of merge_and_write_spec, split out so it can
+    also validate an AI-composed update WITHOUT writing it to disk (see
+    _generate_keyframes_content). Returns the merged, validated spec
+    dict (mutates nothing on disk)."""
+    spec_path = DATA_DIR / f"spec_{number:03d}.json"
+    existing = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.exists() else {}
     existing.update(updates)
     existing.pop("number", None)
     return _validate_and_normalize_spec(number, existing, allow_custom_beats=True)
@@ -5338,9 +5184,7 @@ def _generate_spec_content(number, prompt, code_owned, max_validation_retries=3,
     is specific and actionable enough for the model to fix on its own.
 
     Does NOT write anything to disk -- see _generate_and_write_spec (the
-    real 'Save content' path) and generate_row_spec_content (the manage
-    table's 'Generate content' preview path, dry-run by design) for the
-    two things that actually call this.
+    real 'Save content' path, the only thing that calls this).
 
     extra_locked_fields: manage-table fields the human typed in directly
     (build_row_spec_payload already excluded these from what the model
@@ -5506,20 +5350,16 @@ def _interactive_spec(s):
 
 
 def _generate_keyframes_content(number, prompt, max_validation_retries=3,
-                                 extra_locked_fields=None, verbose=False, spec_override=None):
+                                 extra_locked_fields=None, verbose=False):
     """Same self-correcting retry pattern as _generate_spec_content, for
     keyframe prompt fields -- shared by the CLI and the web UI. Does NOT
     write anything to disk; see _generate_and_write_keyframes (the real
-    'Save content' path) and generate_row_keyframes_content (the manage
-    table's 'Generate content' preview path).
+    'Save content' path).
 
     extra_locked_fields: manage-table sub-fields (e.g. fml2v_keyframe_prompts'
     "first"/"middle") the human typed in directly -- merged into whichever
     of the model's answer is a dict at the same key (locked values win on
     conflict), since the model was only asked for the remaining sub-keys.
-
-    spec_override: see _merge_and_validate_spec's own -- a spec generated
-    but not yet saved in the SAME 'Generate content' click.
 
     Returns (merged_spec, update_fields) on success -- merged_spec is the
     full validated spec (for a preview to show), update_fields is just
@@ -5543,7 +5383,7 @@ def _generate_keyframes_content(number, prompt, max_validation_retries=3,
             else:
                 content[field] = locked_value
         try:
-            merged = _merge_and_validate_spec(number, content, base_spec=spec_override)
+            merged = _merge_and_validate_spec(number, content)
             return merged, content
         except SystemExit as e:
             if attempt == max_validation_retries:

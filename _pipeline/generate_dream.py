@@ -798,6 +798,92 @@ def try_online_first_frame(spec, dest_dir, scene_prompt, dest_path, force=False)
     return dest_path
 
 
+def generate_one_keyframe_attempt(role, prompt_text, dest_path, comfyui_base=None, comfyui_output_dir=None,
+                                   reference_filename=None, gemini_reference_image_path=None):
+    """Single, no-retry image generation for one keyframe role -- either
+    local ComfyUI T2I/I2I (reference_filename = a filename already
+    uploaded to ComfyUI's own input folder) or Gemini image-edit
+    (gemini_reference_image_path = a local path to condition on),
+    whichever gemini_reference_image_path being set selects. Writes to
+    dest_path directly, no review/retry -- callers that want that
+    already have their own loop (generate_keyframes' own generate_one).
+    Shared so the full-render path and an on-demand single candidate
+    (generate_one_keyframe_candidate) can't drift apart."""
+    if gemini_reference_image_path is not None:
+        model = dream_step.load_config().get("gemini_model") or gemini_image.MODEL
+        print(f"[generate_dream] -> keyframe '{role}' via gemini image-edit ({model})...", flush=True)
+        start = time.time()
+        gemini_image.edit_image(prompt_text, [gemini_reference_image_path], dest_path)
+        print(f"[generate_dream] <- keyframe '{role}' via gemini image-edit done in "
+              f"{time.time() - start:.1f}s", flush=True)
+        return dest_path
+    workflow_cfg, template = load_workflow_template("t2i_i2i")
+    prompt, _ = build_prompt(template, workflow_cfg, prompt_text, None,
+                              randomize_seeds=True, image_filename=reference_filename)
+    print(f"[generate_dream] -> keyframe '{role}' via local ComfyUI T2I/I2I...", flush=True)
+    start = time.time()
+    comfyui_base = comfyui_base or find_comfyui_base_url()
+    prompt_id = queue_prompt(comfyui_base, prompt)
+    history_entry = wait_for_history(comfyui_base, prompt_id)
+    image_item = find_output_image(history_entry)
+    tmp_image_path = download_or_locate(comfyui_base, image_item, comfyui_output_dir)
+    try:
+        shutil.copy2(tmp_image_path, dest_path)
+    finally:
+        if tmp_image_path.parent == PIPELINE_DIR:
+            tmp_image_path.unlink(missing_ok=True)
+    print(f"[generate_dream] <- keyframe '{role}' via local ComfyUI done in "
+          f"{time.time() - start:.1f}s", flush=True)
+    return dest_path
+
+
+def generate_one_keyframe_candidate(spec, role, prompt_text, dest_path, first_frame_path=None,
+                                     comfyui_base=None, comfyui_output_dir=None):
+    """Generates ONE keyframe image (no review/retry loop). Picks local
+    ComfyUI vs Gemini per config.json's kf_backend, the SAME 2x2 decision
+    generate_keyframes uses for a full render (see its own comment) --
+    never re-derives that choice independently, so an on-demand
+    regeneration can't drift from what an actual render would do for
+    this role. Writes directly to dest_path -- caller decides where that
+    is (a real Dream folder, or a staging location for a preview-before-
+    commit action).
+
+    role == "first": no first_frame_path needed -- T2I from a blank
+    placeholder (local) or Gemini text-to-image (online), matching
+    try_online_first_frame's own online/local decision (per-Tale
+    first_frame_source=="online", or kf_backend's global force). Also
+    covers i2v's single frame -- same graph, same decision.
+
+    role in ("middle", "last"): first_frame_path is REQUIRED -- both are
+    always conditioned on the actual first frame, never each other or a
+    blank placeholder (local I2I or Gemini image-edit, whichever
+    kf_backend calls for)."""
+    comfyui_base = comfyui_base or find_comfyui_base_url()
+    kf_backend = dream_step.load_config().get("kf_backend", "all_local")
+
+    if role == "first":
+        force_first_gemini = kf_backend in ("all_gemini", "first_gemini_rest_local")
+        online_path = try_online_first_frame(spec, dest_path.parent, prompt_text, dest_path,
+                                              force=force_first_gemini)
+        if online_path is not None:
+            return online_path
+        blank_filename = f"t2i_blank_regen_{spec['number']}.png"
+        upload_image_to_comfyui(comfyui_base, PIPELINE_DIR / "blank_placeholder_512x896.png", blank_filename)
+        return generate_one_keyframe_attempt(role, prompt_text, dest_path, comfyui_base, comfyui_output_dir,
+                                              reference_filename=blank_filename)
+
+    if first_frame_path is None:
+        raise ValueError(f"generate_one_keyframe_candidate: role={role!r} requires first_frame_path")
+    use_gemini_for_rest = kf_backend in ("all_gemini", "first_local_rest_gemini")
+    if use_gemini_for_rest:
+        return generate_one_keyframe_attempt(role, prompt_text, dest_path,
+                                              gemini_reference_image_path=first_frame_path)
+    reference_filename = f"t2i_frame1_regen_{spec['number']}.png"
+    upload_image_to_comfyui(comfyui_base, first_frame_path, reference_filename)
+    return generate_one_keyframe_attempt(role, prompt_text, dest_path, comfyui_base, comfyui_output_dir,
+                                          reference_filename=reference_filename)
+
+
 def generate_keyframes(spec, keyframe_prompts, comfyui_base, comfyui_output_dir, dest_dir):
     story_context = spec.get("positive_prompt")
     """Auto-generate the three first/middle/last still images an fml2v
@@ -839,8 +925,6 @@ def generate_keyframes(spec, keyframe_prompts, comfyui_base, comfyui_output_dir,
     their own prompt text didn't change, since they're conditioned on
     first's actual pixel output, not just its prompt.
     """
-    workflow_cfg, template = load_workflow_template("t2i_i2i")
-
     sidecar_path = dest_dir / "_fml2v_keyframe_prompts.json"
     previous_prompts = {}
     if sidecar_path.exists():
@@ -866,44 +950,14 @@ def generate_keyframes(spec, keyframe_prompts, comfyui_base, comfyui_output_dir,
     first_changed = role_changed("first")
 
     def generate_one_attempt(role, reference_filename, dest_index):
-        prompt, _ = build_prompt(
-            template, workflow_cfg, keyframe_prompts[role], None,
-            randomize_seeds=True, image_filename=reference_filename)
-        print(f"[generate_dream] -> keyframe '{role}' via local ComfyUI T2I/I2I...", flush=True)
-        start = time.time()
-        prompt_id = queue_prompt(comfyui_base, prompt)
-        history_entry = wait_for_history(comfyui_base, prompt_id)
-        image_item = find_output_image(history_entry)
-        tmp_image_path = download_or_locate(comfyui_base, image_item, comfyui_output_dir)
-        dest_path = dest_dir / f"{dest_index}.png"
-        try:
-            shutil.copy2(tmp_image_path, dest_path)
-        finally:
-            # try/finally so a failed copy (disk full, permissions, etc.)
-            # still cleans up the downloaded temp file instead of leaking
-            # it in PIPELINE_DIR forever.
-            if tmp_image_path.parent == PIPELINE_DIR:
-                tmp_image_path.unlink(missing_ok=True)
-        print(f"[generate_dream] <- keyframe '{role}' via local ComfyUI done in "
-              f"{time.time() - start:.1f}s", flush=True)
-        return dest_path
+        return generate_one_keyframe_attempt(
+            role, keyframe_prompts[role], dest_dir / f"{dest_index}.png",
+            comfyui_base, comfyui_output_dir, reference_filename=reference_filename)
 
     def generate_one_attempt_gemini(role, dest_index, reference_image_path):
-        """kf_middle_last_backend="gemini_middle_last" variant of
-        generate_one_attempt -- a real billed Gemini image-EDIT call
-        (image+text-in, image-out) conditioned on the actual first-frame
-        image, replacing the local ComfyUI I2I pass for this role. Same
-        "maintain everything, but X" prompt phrasing local I2I already
-        relies on works here too -- it's an instruction to an image
-        model either way, just a different one."""
-        model = dream_step.load_config().get("gemini_model") or gemini_image.MODEL
-        print(f"[generate_dream] -> keyframe '{role}' via gemini image-edit ({model})...", flush=True)
-        start = time.time()
-        dest_path = dest_dir / f"{dest_index}.png"
-        gemini_image.edit_image(keyframe_prompts[role], [reference_image_path], dest_path)
-        print(f"[generate_dream] <- keyframe '{role}' via gemini image-edit done in "
-              f"{time.time() - start:.1f}s", flush=True)
-        return dest_path
+        return generate_one_keyframe_attempt(
+            role, keyframe_prompts[role], dest_dir / f"{dest_index}.png",
+            gemini_reference_image_path=reference_image_path)
 
     def generate_one(role, reference_filename, dest_index, compare_against=None,
                       gemini_reference_image_path=None):
