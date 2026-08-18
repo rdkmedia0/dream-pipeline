@@ -2861,7 +2861,7 @@ INDEX_HTML = r"""<!doctype html>
     0% { left: -40%; }
     100% { left: 100%; }
   }
-  .manage-table col.mf-col-images { width: 11rem; }
+  .manage-table col.mf-col-images { width: 17rem; }
 
   .mf-cell-row { display: flex; align-items: center; gap: 0.15rem; }
   .mf-cell-preview {
