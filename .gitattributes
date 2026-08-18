@@ -1,0 +1,7 @@
+# entrypoint.sh gets COPY'd straight into the Docker image and run via
+# /bin/sh -- CRLF line endings there break it outright ("/bin/sh^M: bad
+# interpreter" or similar), which core.autocrlf=true (the common Windows
+# Git default) would otherwise introduce on checkout despite the repo's
+# own blob staying LF. Force LF for every .sh file regardless of the
+# checking-out machine's autocrlf setting.
+*.sh text eol=lf
