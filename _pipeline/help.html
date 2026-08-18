@@ -146,6 +146,7 @@
     <div class="grp">Using the tool</div>
     <a href="#manage-table">Manage table</a>
     <a href="#render-types">Render types</a>
+    <a href="#video-review">Video review</a>
     <a href="#chat">Chat assistant</a>
     <a href="#upload">YouTube upload</a>
 
@@ -327,7 +328,27 @@
          a render starts, so Ollama and ComfyUI don't fight over the same GPU.</p>
       <p>If a render fails right after switching a number to a new graph type, it's almost always
          because that type's extra fields (image, i2v/fml prompts) haven't been filled in yet —
-         go back to Manage, fill them in (or tick the AI chip), then retry.</p>
+         go back to Manage and fill them in, or just leave them blank and click Save content,
+         which composes them automatically, then retry.</p>
+    </section>
+
+    <section id="video-review">
+      <h2>Video review</h2>
+      <p>Rendered videos show up in the <strong>Videos</strong> sidebar tab, split into
+         <strong>Active</strong> (needs review) and <strong>Reviewed</strong>. Selecting one plays
+         it in the Player card, with <strong>Move to Reviewed</strong>, <strong>Delete</strong>,
+         and <strong>Provide feedback</strong> underneath.</p>
+      <p><strong>Fullscreen</strong> (the button above the player) has its own Prev/Next/Feedback/
+         Move/Exit controls, so a full review pass never has to drop back to the main window between
+         videos.</p>
+      <h3>Provide feedback</h3>
+      <p>Type what didn't work about the video — the AI revises the <em>existing</em> story/prompt
+         to address it (a real edit, not a fresh unrelated rewrite) and reworks the render. This
+         starts immediately if nothing else is currently rendering; otherwise it queues automatically
+         and a status banner in the player tracks progress, so you can keep reviewing other videos
+         while it works in the background. Feedback items are processed one at a time, in the order
+         submitted, and a queued feedback rework never starts while any other render is in
+         progress — no need to wait for it yourself before reviewing the next video.</p>
     </section>
 
     <section id="chat">

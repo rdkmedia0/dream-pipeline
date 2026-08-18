@@ -38,6 +38,17 @@ any particular subject or theme.
 
 ![Creative Content Editor](docs/screenshots/creative-editor.png)
 
+**Video review** — play each render (fullscreen supported, with its own
+prev/next/move controls so review never has to drop back to the main
+window), then Move to Reviewed, Delete, or **Provide feedback** — type
+what didn't work and the AI revises the existing story/prompt (a real
+edit, not a fresh unrelated rewrite) and reworks the render. Starts
+immediately if nothing else is rendering, otherwise queues automatically
+so review keeps going in the meantime — a status banner tracks progress
+either way.
+
+![Video review](docs/screenshots/video-review.png)
+
 **YouTube upload & scheduling** — connect a channel, set a publish
 template (privacy, tags, schedule cadence), and let the pipeline handle
 timed releases.
