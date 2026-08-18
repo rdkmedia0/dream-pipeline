@@ -5053,9 +5053,21 @@ function renderPlayerCard() {
       <button data-action="fs-prev" ${idx <= 0 ? 'disabled' : ''} title="Previous video">&larr; Prev</button>
       <button data-action="fs-next" ${idx === -1 || idx >= list.length - 1 ? 'disabled' : ''} title="Next video">Next &rarr;</button>
       <span class="fs-spacer"></span>
-      <button data-action="fs-feedback" title="Give feedback and regenerate this video">Feedback&hellip;</button>
       <button data-action="fs-move" title="${sel.location === 'active' ? 'Move to Reviewed' : 'Move to Active'}">${sel.location === 'active' ? '&rarr; Reviewed' : '&rarr; Active'}</button>
       <button data-action="fs-exit" title="Exit fullscreen">Exit fullscreen</button>
+    </div>` : '';
+  // Always-expanded feedback textarea, not a button-triggered modal --
+  // confirmModal/promptModal append to document.body, which sits OUTSIDE
+  // the fullscreened element's subtree, so a modal opened from inside
+  // fullscreen would render invisibly (Fullscreen API only paints the
+  // fullscreened element's own subtree). Keeping the input expanded
+  // in-place here means it's visible in fullscreen and ready to use as
+  // the human navigates prev/next, no popup involved either way.
+  const feedbackInline = (sel && state.playerHtml) ? `
+    <div class="row" id="fs-feedback-inline" style="margin-top:0.4rem;align-items:flex-start;gap:0.3rem">
+      <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical"
+                placeholder="What didn't work about this video? The AI will revise the current story/prompt and re-render it."></textarea>
+      <button data-action="fs-feedback-submit" title="Submit feedback and queue a rework of this video -- starts right away if nothing else is rendering, otherwise queues.">Submit feedback</button>
     </div>` : '';
   // Empty placeholder, filled in by pollFeedbackQueueOnce() -- kept
   // inside player-fs-wrap (not the manage row below) so it's visible
@@ -5080,6 +5092,9 @@ function renderPlayerCard() {
     const controls = wrap.querySelector('.player-fs-controls');
     if (controls) controls.outerHTML = fsControls || '';
     else if (fsControls) wrap.insertAdjacentHTML('beforeend', fsControls);
+    const inline = wrap.querySelector('#fs-feedback-inline');
+    if (inline) inline.outerHTML = feedbackInline || '';
+    else if (feedbackInline) wrap.insertAdjacentHTML('beforeend', feedbackInline);
     if (!wrap.querySelector('#feedback-queue-banner')) wrap.insertAdjacentHTML('beforeend', feedbackBanner);
     return;
   }
@@ -5091,6 +5106,7 @@ function renderPlayerCard() {
     <div class="player-fs-wrap" id="player-fs-wrap">
       <div id="player">${state.playerHtml || '<div class="muted">select a video below to play</div>'}</div>
       ${fsControls}
+      ${feedbackInline}
       ${feedbackBanner}
     </div>
     ${manage}`;
@@ -5297,7 +5313,8 @@ sidebar.addEventListener('click', (ev) => {
     const action = actionBtn.dataset.action;
     if (action === 'move' || action === 'fs-move') moveVideo(state.selected.folder, state.selected.location);
     else if (action === 'delete') deleteVideo(state.selected.folder, state.selected.location);
-    else if (action === 'feedback' || action === 'fs-feedback') submitVideoFeedback();
+    else if (action === 'feedback') submitVideoFeedback();
+    else if (action === 'fs-feedback-submit') submitInlineFeedback();
     else if (action === 'fullscreen') {
       const wrap = document.getElementById('player-fs-wrap');
       if (wrap && wrap.requestFullscreen) wrap.requestFullscreen().catch(() => {});
@@ -5376,12 +5393,36 @@ async function submitVideoFeedback() {
     `on this and re-render it -- starts right away if nothing else is rendering, otherwise queues.`,
     "e.g. the melon joke didn't land, pacing too slow, wrong voice...");
   if (!note) return;
+  await postVideoFeedback(v.number, note);
+}
+
+// Fullscreen counterpart of submitVideoFeedback -- reads the always-
+// expanded #fs-feedback-input textarea instead of opening promptModal,
+// since a modal (appended to document.body) would render outside the
+// fullscreened element's subtree and be invisible while fullscreen (see
+// feedbackInline's comment in renderPlayerCard).
+async function submitInlineFeedback() {
+  const sel = state.selected;
+  if (!sel) return;
+  const v = (state.videos || []).find(x => x.folder === sel.folder && x.location === sel.location);
+  if (!v || v.number == null) {
+    alert('This folder name doesn\'t match the expected "<label> #<number> <title>" pattern, so it has no number to give feedback against.');
+    return;
+  }
+  const input = document.getElementById('fs-feedback-input');
+  const note = input ? input.value.trim() : '';
+  if (!note) { if (input) input.focus(); return; }
+  await postVideoFeedback(v.number, note);
+  if (input) input.value = '';
+}
+
+async function postVideoFeedback(number, note) {
   try {
-    const result = await api('POST', '/api/manage/submit-feedback', { project: state.project, number: v.number, note });
+    const result = await api('POST', '/api/manage/submit-feedback', { project: state.project, number, note });
     const banner = document.getElementById('feedback-queue-banner');
     if (banner) banner.textContent = result.queued_position <= 1
-      ? `Feedback for #${v.number}: starting now...`
-      : `Feedback for #${v.number}: queued (${result.queued_position - 1} ahead)...`;
+      ? `Feedback for #${number}: starting now...`
+      : `Feedback for #${number}: queued (${result.queued_position - 1} ahead)...`;
     startFeedbackPolling();
   } catch (e) { alert(e.message); }
 }
