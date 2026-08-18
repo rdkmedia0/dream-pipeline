@@ -3020,7 +3020,7 @@ function setTheme(name) {
 
 const app = document.getElementById('app');
 const sidebar = document.getElementById('sidebar');
-let state = { project: null, status: null, videos: [], reviewMode: false };
+let state = { project: null, status: null, videos: [], reviewMode: true };
 
 async function api(method, path, body) {
   const opts = { method };
@@ -5142,9 +5142,11 @@ function buildFsOverlayHtml() {
   // inside real fullscreen, since confirmModal/promptModal append to
   // document.body, outside the fullscreened element's subtree, where the
   // Fullscreen API won't paint it). Only rendered when Review mode is
-  // on, instead of permanently eating space in fullscreen for a flow
-  // most viewing sessions don't need -- on persists across Prev/Next so
-  // a review pass doesn't have to re-enable it per video.
+  // on -- defaults to true (see state's own init) since fullscreen is
+  // primarily used for review passes here, but stays a toggle (not
+  // rendered unconditionally) so it can be switched off for plain
+  // viewing; persists across Prev/Next either way, so a review pass
+  // doesn't re-enable/re-disable it per video.
   const feedbackInline = (sel && state.playerHtml && state.reviewMode) ? `
     <div class="player-fs-feedback" id="fs-feedback-inline">
       <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical"
