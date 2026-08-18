@@ -496,6 +496,11 @@ def run_ai_review(cache_data, project_name):
         "avg_engagement_rate": round(sum(engagement) / len(engagement), 4) if engagement else 0,
     }
 
+    # Video titles/tags below are the creator's own YouTube upload metadata
+    # (not third-party/public user input) and flow into the LLM prompt
+    # unsanitized via json.dumps. Intentional for this solo-creator use
+    # case -- this is trusted input, not something to reuse as a pattern
+    # anywhere a less-trusted source (e.g. viewer comments) is involved.
     summary_payload = {
         "project": project_name,
         "video_count": len(videos),

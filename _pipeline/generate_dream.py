@@ -456,9 +456,20 @@ def get_episode_label(data_dir):
 
 
 def sanitize_filename(name):
+    # Confirmed defensive gap (2026-08-18): every CURRENT call site passes a
+    # string that already includes a numbered prefix (e.g.
+    # f"Dream #{number} {title}"), so in practice the combined result can't
+    # collapse to empty even when title itself is nothing but forbidden/dot
+    # characters -- but this function has no guarantee of that shape, and
+    # nothing stops a future caller from passing just a raw title. Without
+    # this fallback, an all-bad-character input strips to "", and
+    # DREAMS_ROOT / "" resolves to DREAMS_ROOT itself -- the same
+    # empty-folder-name collapse _validate_project_folder_name (dream_step.py)
+    # already guards against for project names, just missing here.
     bad = '<>:"/\\|?*'
     out = "".join(c for c in name if c not in bad)
-    return out.strip().rstrip(".")
+    out = out.strip().rstrip(".")
+    return out or "untitled"
 
 
 # Must match dream_step.py's own _FALLBACK_RENDER_WIDTH/HEIGHT/DURATION_S
@@ -639,22 +650,38 @@ def wait_for_history(comfyui_base, prompt_id, timeout_s=3600, poll_s=5):
     raise TimeoutError(f"Timed out waiting for prompt {prompt_id} after {timeout_s}s")
 
 
-def find_output_video(history_entry):
+def _find_output_item(history_entry, extensions):
+    """Scans a ComfyUI history entry's outputs for the first item whose
+    filename ends in one of `extensions` -- shared by find_output_video
+    (a single ".mp4") and find_output_image (the keyframe still-image
+    extensions), which previously duplicated this exact scan."""
     outputs = history_entry.get("outputs", {})
     for node_id, out in outputs.items():
         for key, items in out.items():
             if not isinstance(items, list):
                 continue
             for item in items:
-                if isinstance(item, dict) and str(item.get("filename", "")).lower().endswith(".mp4"):
+                if isinstance(item, dict) and str(item.get("filename", "")).lower().endswith(extensions):
                     return item
-    raise RuntimeError(f"No .mp4 output found in history outputs: {json.dumps(outputs)[:500]}")
+    raise RuntimeError(f"No matching output found in history outputs: {json.dumps(outputs)[:500]}")
 
 
-def download_or_locate_video(comfyui_base, video_item, comfyui_output_dir=None):
-    subfolder = video_item.get("subfolder", "")
-    filename = video_item["filename"]
-    vtype = video_item.get("type", "output")
+def find_output_video(history_entry):
+    return _find_output_item(history_entry, (".mp4",))
+
+
+def find_output_image(history_entry):
+    """Same scan as find_output_video, but for a still-image output (used by
+    the T2I/I2I keyframe-generation graphs -- see generate_keyframes)."""
+    return _find_output_item(history_entry, (".png", ".jpg", ".jpeg", ".webp"))
+
+
+def download_or_locate(comfyui_base, item, comfyui_output_dir=None):
+    """Shared by the video and image output paths -- previously duplicated
+    byte-for-byte as download_or_locate_video/download_or_locate_image."""
+    subfolder = item.get("subfolder", "")
+    filename = item["filename"]
+    itype = item.get("type", "output")
     if comfyui_output_dir:
         local_path = Path(comfyui_output_dir) / subfolder / filename
         if local_path.exists():
@@ -664,35 +691,6 @@ def download_or_locate_video(comfyui_base, video_item, comfyui_output_dir=None):
     # process (see find_comfyui_base_url's docstring): the local_path
     # check above just won't exist, and this download path already works
     # correctly regardless of host.
-    q = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": vtype})
-    url = f"{comfyui_base}/view?{q}"
-    tmp_path = PIPELINE_DIR / f"_tmp_{filename}"
-    urllib.request.urlretrieve(url, tmp_path)
-    return tmp_path
-
-
-def find_output_image(history_entry):
-    """Same scan as find_output_video, but for a still-image output (used by
-    the T2I/I2I keyframe-generation graphs -- see generate_keyframes)."""
-    outputs = history_entry.get("outputs", {})
-    for node_id, out in outputs.items():
-        for key, items in out.items():
-            if not isinstance(items, list):
-                continue
-            for item in items:
-                if isinstance(item, dict) and str(item.get("filename", "")).lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
-                    return item
-    raise RuntimeError(f"No image output found in history outputs: {json.dumps(outputs)[:500]}")
-
-
-def download_or_locate_image(comfyui_base, image_item, comfyui_output_dir=None):
-    subfolder = image_item.get("subfolder", "")
-    filename = image_item["filename"]
-    itype = image_item.get("type", "output")
-    if comfyui_output_dir:
-        local_path = Path(comfyui_output_dir) / subfolder / filename
-        if local_path.exists():
-            return local_path
     q = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": itype})
     url = f"{comfyui_base}/view?{q}"
     tmp_path = PIPELINE_DIR / f"_tmp_{filename}"
@@ -709,7 +707,7 @@ def upload_image_to_comfyui(comfyui_base, src_path, dest_filename):
     physical folder ComfyUI reads from, e.g. same machine or an NFS/SMB
     mount). Uploading the bytes over HTTP instead works identically
     whether ComfyUI is on this machine or a remote one, matching how
-    download_or_locate_video/image already fall back to HTTP when the
+    download_or_locate already falls back to HTTP when the
     local path doesn't exist. overwrite=true so the filename we ask for
     is always the filename that lands (no silent ComfyUI-side rename on
     collision), matching the deterministic naming this pipeline already
@@ -908,11 +906,16 @@ def generate_keyframes(spec, keyframe_prompts, comfyui_base, comfyui_output_dir,
         prompt_id = queue_prompt(comfyui_base, prompt)
         history_entry = wait_for_history(comfyui_base, prompt_id)
         image_item = find_output_image(history_entry)
-        tmp_image_path = download_or_locate_image(comfyui_base, image_item, comfyui_output_dir)
+        tmp_image_path = download_or_locate(comfyui_base, image_item, comfyui_output_dir)
         dest_path = dest_dir / f"{dest_index}.png"
-        shutil.copy2(tmp_image_path, dest_path)
-        if tmp_image_path.parent == PIPELINE_DIR:
-            tmp_image_path.unlink(missing_ok=True)
+        try:
+            shutil.copy2(tmp_image_path, dest_path)
+        finally:
+            # try/finally so a failed copy (disk full, permissions, etc.)
+            # still cleans up the downloaded temp file instead of leaking
+            # it in PIPELINE_DIR forever.
+            if tmp_image_path.parent == PIPELINE_DIR:
+                tmp_image_path.unlink(missing_ok=True)
         print(f"[generate_dream] <- keyframe '{role}' via local ComfyUI done in "
               f"{time.time() - start:.1f}s", flush=True)
         return dest_path
@@ -1093,11 +1096,13 @@ def generate_i2v_first_frame(spec, prompt_text, comfyui_base, comfyui_output_dir
         prompt_id = queue_prompt(comfyui_base, prompt)
         history_entry = wait_for_history(comfyui_base, prompt_id)
         image_item = find_output_image(history_entry)
-        tmp_image_path = download_or_locate_image(comfyui_base, image_item, comfyui_output_dir)
+        tmp_image_path = download_or_locate(comfyui_base, image_item, comfyui_output_dir)
         dest_path = dest_dir / "1.png"
-        shutil.copy2(tmp_image_path, dest_path)
-        if tmp_image_path.parent == PIPELINE_DIR:
-            tmp_image_path.unlink(missing_ok=True)
+        try:
+            shutil.copy2(tmp_image_path, dest_path)
+        finally:
+            if tmp_image_path.parent == PIPELINE_DIR:
+                tmp_image_path.unlink(missing_ok=True)
         return dest_path
 
     # Review against the intended description before accepting, same as
@@ -1214,7 +1219,7 @@ def run_once(spec, template, workflow_cfg, comfyui_base, comfyui_output_dir, see
     prompt_id = queue_prompt(comfyui_base, prompt)
     history_entry = wait_for_history(comfyui_base, prompt_id)
     video_item = find_output_video(history_entry)
-    tmp_video_path = download_or_locate_video(comfyui_base, video_item, comfyui_output_dir)
+    tmp_video_path = download_or_locate(comfyui_base, video_item, comfyui_output_dir)
     duration = ffprobe_check(tmp_video_path)
     return tmp_video_path, duration, used_seeds
 
@@ -1266,7 +1271,7 @@ def run_test_render(graph_path, wiring, comfyui_output_dir, test_image_paths=Non
     prompt_id = queue_prompt(comfyui_base, prompt)
     history_entry = wait_for_history(comfyui_base, prompt_id)
     video_item = find_output_video(history_entry)
-    tmp_video_path = download_or_locate_video(comfyui_base, video_item, comfyui_output_dir)
+    tmp_video_path = download_or_locate(comfyui_base, video_item, comfyui_output_dir)
     return tmp_video_path, used_seeds
 
 
@@ -1282,13 +1287,13 @@ def main():
                           "(e.g. --seeds 10,0). Overrides the spec's \"seeds\" field. "
                           "Omit for random. Lock these before iterating on wording, or "
                           "you cannot tell a prompt change from a re-roll.")
-    ap.add_argument("--comfyui-output-dir", default=r"D:\Ai\output",
+    ap.add_argument("--comfyui-output-dir", default=None,
                      help="Same-machine fast path: if ComfyUI's real output folder is "
                           "reachable at this local path, its files are read directly "
-                          "instead of downloaded over HTTP. Harmless (just a slower "
-                          "download fallback, see download_or_locate_video/image) when "
-                          "ComfyUI is actually on a different machine and this path "
-                          "doesn't exist here.")
+                          "instead of downloaded over HTTP. Omit entirely (the default) "
+                          "when ComfyUI is on a different machine/container -- "
+                          "download_or_locate() already falls back to HTTP over the "
+                          "network in that case, so no default path is needed.")
     args = ap.parse_args()
 
     global DREAMS_DIR, INDEX_PATH
@@ -1499,9 +1504,14 @@ def main():
                 attempt_seeds, args.randomize_seeds,
                 image_filename=i2v_image_filename, image_filenames=fml2v_image_filenames,
                 guide_strengths=fml2v_guide_strengths)
-            shutil.copy2(tmp_video_path, dest_mp4)
-            if tmp_video_path.parent == PIPELINE_DIR:
-                tmp_video_path.unlink(missing_ok=True)
+            try:
+                shutil.copy2(tmp_video_path, dest_mp4)
+            finally:
+                # try/finally so a failed copy still cleans up the
+                # downloaded temp file instead of leaking it in
+                # PIPELINE_DIR forever.
+                if tmp_video_path.parent == PIPELINE_DIR:
+                    tmp_video_path.unlink(missing_ok=True)
             write_txt(dest_txt, spec, spec["negative_prompt"],
                       keyframe_prompts=spec.get("fml2v_keyframe_prompts") if is_fml2v else None)
             update_index(spec, folder_name_safe, workflow_name, used_seeds)

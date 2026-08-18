@@ -188,25 +188,24 @@ def finish_redirect_flow(flow, code):
 
 def finish_client_secret_authorization(flow, code):
     """Step 2 of the redirect-based flow for Settings' Save/Reauthorize
-    action -- same contract as authorize_client_secret() (returns
-    (creds, result), verifies with a real query_channel() call, persists
-    nothing to disk itself) but completing a flow that build_redirect_flow()
-    started instead of blocking on run_local_server()."""
+    action -- returns (creds, result), verifies with a real query_channel()
+    call, persists nothing to disk itself -- but completing a flow that
+    build_redirect_flow() started instead of blocking on
+    run_local_server()."""
     creds = finish_redirect_flow(flow, code)
     return creds, query_channel(creds)
 
 
 def finish_project_channel_connect(flow, code, youtube_dir):
     """Step 2 of the redirect-based flow for the Upload tab's 'Connect
-    channel' button -- same contract as connect_project_channel() (always
-    a fresh consent for THIS project specifically, persists the result as
-    this project's own token.json.enc) but completing a flow that
-    build_redirect_flow() started instead of blocking on
-    run_local_server()."""
+    channel' button -- always a fresh consent for THIS project specifically,
+    persists the result as this project's own token.json.enc -- but
+    completing a flow that build_redirect_flow() started instead of
+    blocking on run_local_server()."""
     creds = finish_redirect_flow(flow, code)
     result = query_channel(creds)
     youtube_dir.mkdir(parents=True, exist_ok=True)
-    (youtube_dir / "token.json.enc").write_bytes(secret_store.encrypt_text(creds.to_json()))
+    secret_store.write_encrypted(youtube_dir / "token.json.enc", creds.to_json())
     return result
 
 
@@ -332,31 +331,9 @@ def get_authenticated_service(youtube_dir, expected_channel_handle=None, return_
               f"{result.get('channel_handle') or result['channel_title']}.", flush=True)
 
     if newly_adopted:
-        token_path.write_bytes(secret_store.encrypt_text(creds.to_json()))
+        secret_store.write_encrypted(token_path, creds.to_json())
     client = build("youtube", "v3", credentials=creds)
     return (client, creds) if return_creds else client
-
-
-def connect_project_channel(youtube_dir):
-    """Explicit, human-initiated connect action (the Upload tab's
-    'Connect channel' button) -- ALWAYS opens a real browser consent
-    screen for THIS project specifically, never silently reuses another
-    project's token the way get_authenticated_service's fallback does.
-    Use this when that silent-reuse path already tried and didn't match,
-    or the human just wants to explicitly pick/confirm a channel. Returns
-    query_channel's result dict so the caller can show what got
-    connected."""
-    token_path = youtube_dir / "token.json.enc"
-    client_secret_path = _secrets_base_dir() / "youtube" / "client_secret.json.enc"
-    if not client_secret_path.exists():
-        raise SystemExit(f"[upload_dream] missing {client_secret_path} -- add the OAuth "
-                          f"Desktop app client JSON via Settings first.")
-    client_config = json.loads(secret_store.decrypt_text(client_secret_path.read_bytes()))
-    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-    creds = flow.run_local_server(port=0)
-    result = query_channel(creds)
-    token_path.write_bytes(secret_store.encrypt_text(creds.to_json()))
-    return result
 
 
 def check_project_channel(youtube_dir, expected_channel_handle):
@@ -418,7 +395,7 @@ def check_project_channel(youtube_dir, expected_channel_handle):
     actual_handle = result.get("channel_handle")
     matches = _handles_match(actual_handle, expected_channel_handle) if expected_channel_handle else None
     if newly_adopted and matches:
-        token_path.write_bytes(secret_store.encrypt_text(creds.to_json()))
+        secret_store.write_encrypted(token_path, creds.to_json())
     return {"connected": True, "channel_title": result["channel_title"],
             "channel_handle": actual_handle, "expected_handle": expected_channel_handle,
             "matches": matches}
@@ -458,23 +435,6 @@ def query_channel(creds):
     # differently, not a stable identifier. Not every channel has one set.
     return {"ok": True, "authorized_scopes": creds.scopes, "channel_title": snippet["title"],
             "channel_handle": snippet.get("customUrl")}
-
-
-def authorize_client_secret(client_config):
-    """Runs the real OAuth consent flow (opens a browser, a human clicks
-    Allow) against a client_secret config that isn't saved/trusted yet,
-    THEN verifies it with a real API call (query_channel()) -- used by
-    Settings' "Save" action (auth + verify together, per explicit
-    requirement: saving should do a real API query after OAuth, not
-    just trust that consent succeeded). Returns (creds, result) --
-    the caller (web_ui.py) is the one that decides whether/how long to
-    keep `creds` in memory for a later no-browser "Test connection"
-    click; this function itself never persists anything to disk (this
-    isn't the per-project token.json flow -- that's
-    get_authenticated_service())."""
-    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-    creds = flow.run_local_server(port=0)
-    return creds, query_channel(creds)
 
 
 def find_video_file(project_dir, number, title):

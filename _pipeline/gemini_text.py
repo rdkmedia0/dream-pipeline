@@ -59,8 +59,8 @@ def list_text_models(api_key=None):
     reasoning as that function's own docstring: a hardcoded model ID goes
     stale as Google renames/retires them."""
     api_key = api_key or gemini_image.load_api_key()
-    url = f"{API_BASE}/models?key={api_key}&pageSize=1000"
-    req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+    url = f"{API_BASE}/models?pageSize=1000"
+    req = urllib.request.Request(url, headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode("utf-8"))
@@ -100,12 +100,12 @@ def generate_vision_text(prompt, b64_images, model=None, api_key=None):
     makes for Ollama."""
     api_key = api_key or gemini_image.load_api_key()
     model = model or _resolve_vision_model()
-    url = f"{API_BASE}/models/{model}:generateContent?key={api_key}"
+    url = f"{API_BASE}/models/{model}:generateContent"
     parts = [{"text": prompt}] + [
         {"inlineData": {"mimeType": "image/png", "data": b64}} for b64 in b64_images]
     body = json.dumps({"contents": [{"parts": parts}]}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
-                                  headers={"Content-Type": "application/json"})
+                                  headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             data = json.loads(r.read().decode("utf-8"))
@@ -135,7 +135,7 @@ def generate_json_with_search(prompt, retries=3, model=None, api_key=None):
     already uses for that reason."""
     api_key = api_key or gemini_image.load_api_key()
     model = model or _resolve_search_model()
-    url = f"{API_BASE}/models/{model}:generateContent?key={api_key}"
+    url = f"{API_BASE}/models/{model}:generateContent"
     attempt_prompt = prompt
     history = []
     for attempt in range(1, retries + 1):
@@ -144,7 +144,7 @@ def generate_json_with_search(prompt, retries=3, model=None, api_key=None):
             "tools": [{"google_search": {}}],
         }).encode("utf-8")
         req = urllib.request.Request(url, data=body, method="POST",
-                                      headers={"Content-Type": "application/json"})
+                                      headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
         try:
             with urllib.request.urlopen(req, timeout=180) as r:
                 data = json.loads(r.read().decode("utf-8"))
@@ -206,7 +206,7 @@ def generate_json(prompt, retries=3, model=None, api_key=None):
     already does for Ollama's prompts."""
     api_key = api_key or gemini_image.load_api_key()
     model = model or _resolve_model()
-    url = f"{API_BASE}/models/{model}:generateContent?key={api_key}"
+    url = f"{API_BASE}/models/{model}:generateContent"
     attempt_prompt = prompt
     history = []
     for attempt in range(1, retries + 1):
@@ -214,7 +214,7 @@ def generate_json(prompt, retries=3, model=None, api_key=None):
             "contents": [{"parts": [{"text": attempt_prompt}]}],
         }).encode("utf-8")
         req = urllib.request.Request(url, data=body, method="POST",
-                                      headers={"Content-Type": "application/json"})
+                                      headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
         try:
             with urllib.request.urlopen(req, timeout=180) as r:
                 data = json.loads(r.read().decode("utf-8"))

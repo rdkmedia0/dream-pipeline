@@ -69,8 +69,8 @@ def list_image_models(api_key=None):
     isn't enough; check each candidate's own description before
     trusting it as stable."""
     api_key = api_key or load_api_key()
-    url = f"{API_BASE}/models?key={api_key}&pageSize=1000"
-    req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+    url = f"{API_BASE}/models?pageSize=1000"
+    req = urllib.request.Request(url, headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode("utf-8"))
@@ -290,10 +290,10 @@ def generate_reference_image(prompt, dest_path, api_key=None, model=None):
     _check_pay_guard()
     api_key = api_key or load_api_key()
     model = model or _resolve_model()
-    url = f"{API_BASE}/models/{model}:generateContent?key={api_key}"
+    url = f"{API_BASE}/models/{model}:generateContent"
     body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
-                                  headers={"Content-Type": "application/json"})
+                                  headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             data = json.loads(r.read().decode("utf-8"))
@@ -345,13 +345,13 @@ def edit_image(prompt, source_image_paths, dest_path, api_key=None, model=None):
     _check_pay_guard()
     api_key = api_key or load_api_key()
     model = model or _resolve_model()
-    url = f"{API_BASE}/models/{model}:generateContent?key={api_key}"
+    url = f"{API_BASE}/models/{model}:generateContent"
     parts = [{"inlineData": {"mimeType": "image/png",
                               "data": base64.b64encode(p.read_bytes()).decode("utf-8")}}
              for p in source_image_paths] + [{"text": prompt}]
     body = json.dumps({"contents": [{"parts": parts}]}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
-                                  headers={"Content-Type": "application/json"})
+                                  headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             data = json.loads(r.read().decode("utf-8"))

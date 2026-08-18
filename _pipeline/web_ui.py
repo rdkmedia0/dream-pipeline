@@ -917,7 +917,9 @@ def h_image_upload(qs, body):
     number = int(body["number"])
     slot = body["slot"]
     filename = body.get("filename") or ""
-    ext = Path(filename).suffix or ".png"
+    ext = Path(filename).suffix.lower() or ".png"
+    if ext not in ds.IMAGE_EXTENSIONS:
+        raise ValueError(f"unsupported image extension: {ext!r}")
     data = base64.b64decode(body["data_base64"])
     path = ds.save_uploaded_image(number, slot, data, ext)
     return {"ok": True, "path": str(path)}
@@ -951,6 +953,9 @@ def h_manage_delete_image(qs, body):
 
 
 def h_manage_rename_image(qs, body):
+    """The manage table's per-slot "Use as..." reassignment -- swaps
+    (never overwrites) an existing fml2v slot's image into a different
+    slot, e.g. reusing an already-generated 'middle' pose as 'first'."""
     project = _project_from_body(body)
     number = int(body["number"])
     workflow = body["workflow"]
@@ -959,6 +964,9 @@ def h_manage_rename_image(qs, body):
 
 
 def h_manage_guide_strengths_save(qs, body):
+    """Saves the manage table's per-slot fml2v "weight" input (guide
+    strength) -- how strongly that keyframe anchors motion at that point
+    in the render."""
     project = _project_from_body(body)
     number = int(body["number"])
     strengths = body["strengths"]
@@ -1026,7 +1034,7 @@ def _save_youtube_test_creds(creds):
     _YOUTUBE_TEST_CREDS = creds
     path = _youtube_test_token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(secret_store.encrypt_text(creds.to_json()))
+    secret_store.write_encrypted(path, creds.to_json())
 
 
 def _load_youtube_test_creds():
@@ -1083,7 +1091,7 @@ def h_youtube_client_secret_save(qs, body):
                           'OAuth client JSON from Google Cloud Console, not a Web app one.')
     path = _client_secret_enc_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(secret_store.encrypt_text(content))
+    secret_store.write_encrypted(path, content)
     _clear_youtube_test_creds()
     return {"ok": True}
 
@@ -1152,7 +1160,7 @@ def h_gemini_key_save(qs, body):
         raise ValueError("Key could not be validated -- click Test for the specific error.")
     path = _gemini_key_enc_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(secret_store.encrypt_text(content))
+    secret_store.write_encrypted(path, content)
     return {"ok": True}
 
 
@@ -1778,15 +1786,14 @@ def _run_workflow_test_render(test_id, graph_path, wiring, test_image_paths):
     import generate_dream
     config = ds.load_config()
     comfyui_path = config.get("comfyui_path")
-    # Same machine-specific default this pipeline's own generate_dream.py
-    # main() falls back to -- no config.json key currently stores this
-    # separately from comfyui_path, so mirror that existing behavior
-    # rather than inventing a new setting just for this test path. Only
-    # used for the OUTPUT side now (a same-machine fast path that skips
+    # Only used for the OUTPUT side now (a same-machine fast path that skips
     # an HTTP download when it happens to exist) -- images are uploaded
     # to ComfyUI over HTTP (see upload_image_to_comfyui), no local input
-    # dir needed at all anymore.
-    output_dir = Path(comfyui_path) / "output" if comfyui_path else Path(r"D:\Ai\output")
+    # dir needed at all anymore. None (no comfyui_path configured) is fine:
+    # download_or_locate() already falls back to HTTP when there's no local
+    # path to check, so no machine-specific default is needed here.
+    output_dir = Path(comfyui_path) / "output" if comfyui_path else None
+    tmp_path = None
     try:
         tmp_path, used_seeds = generate_dream.run_test_render(
             graph_path, wiring, output_dir, test_image_paths)
@@ -1797,6 +1804,12 @@ def _run_workflow_test_render(test_id, graph_path, wiring, test_image_paths):
         _TEST_RENDER_RESULTS[test_id] = {"ok": False, "error": str(e)}
         raise
     finally:
+        # Confirmed real gap (2026-08-18): download_or_locate()'s temp file
+        # was never cleaned up here on ANY path (success included) --
+        # unlike generate_dream.py's own callers of run_once/
+        # generate_one_attempt, which already delete it after copying.
+        if tmp_path is not None and tmp_path.parent == generate_dream.PIPELINE_DIR:
+            tmp_path.unlink(missing_ok=True)
         if test_image_paths is not None:
             paths = (test_image_paths.values() if isinstance(test_image_paths, dict)
                       else [test_image_paths])
@@ -2129,6 +2142,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    @staticmethod
+    def _scrub_secret_text(text):
+        # Confirmed real gap (2026-08-18): unlike the explicit HTTPError branch
+        # below, this catch-all stringifies whatever exception object it gets,
+        # and some of those (URLError wrapping a failed Gemini/YouTube request,
+        # an AttributeError from a malformed API response) can carry the
+        # original request URL -- which may still contain a key=/token=
+        # query-string fragment -- inside str(e). Strip those before they ever
+        # reach the browser.
+        return re.sub(r'(?i)\b(key|token|api_key|access_token|refresh_token)=[^&\s"\']+', r'\1=***', text)
+
     def _dispatch(self, method):
         parsed = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(parsed.query)
@@ -2215,7 +2239,8 @@ class Handler(BaseHTTPRequestHandler):
         except SystemExit as e:
             self._send_json({"error": str(e)}, 422)
         except Exception as e:
-            self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+            msg = self._scrub_secret_text(f"{type(e).__name__}: {e}")
+            self._send_json({"error": msg}, 500)
 
     def do_GET(self):
         self._dispatch("GET")
@@ -5365,7 +5390,7 @@ function renderProjectChannelStatus(el, data) {
 }
 
 // Always opens a real fresh browser consent for THIS project specifically
-// (upload_dream.connect_project_channel never silently reuses another
+// (finish_project_channel_connect never silently reuses another
 // project's token) -- runs as a background job since the request would
 // otherwise hang until the human clicks Allow, same pattern as
 // startYoutubeReauthorize/pollYoutubeClientSecretTest above.
@@ -5405,23 +5430,6 @@ async function pollConnectProjectChannel(jobId) {
     setTimeout(() => pollConnectProjectChannel(jobId), 1500);
   } catch (e) {
     el.innerHTML = `ERROR: ${esc(e.message)}`;
-  }
-}
-
-async function loadYoutubeClientConnectionStatusForUpload() {
-  const el = document.getElementById('yt-upload-client-status');
-  if (!el) return;
-  try {
-    const data = await api('GET', '/api/youtube/client-secret-status');
-    youtubeClientSecretPresent = data.present;
-    if (!data.present) {
-      el.innerHTML = '<span class="badge badge-danger">MISSING</span> no client_secret.json saved -- set one up in Settings first';
-      return;
-    }
-    el.innerHTML = '<span class="badge badge-ok">OK</span> client_secret.json saved -- checking connection...';
-    await autoTestYoutubeConnection(el);
-  } catch (e) {
-    el.textContent = 'ERROR: ' + e.message;
   }
 }
 
@@ -5872,6 +5880,7 @@ function renderManageTable() {
       <span class="mf-help" title="Says 'Generate content' whenever a selected row has S or K ticked: composes AI content for blank fields straight into the form, but writes NOTHING to disk -- review it, clear a field and generate again as many times as you like, or reload the row to discard the draft. Says 'Save content' once no selected row wants AI: writes exactly what's in the form, verbatim, for every selected row whose fields changed. Never triggers a render.">?</span>
       <button id="manage-run-video-btn" class="btn-primary" onclick="handleRunVideoGenClick()">Render video</button>
       <span class="mf-help" title="For every SELECTED row: renders it for the first time if it has no video yet, or RE-RENDERS and overwrites the existing one if it does. Uses whatever is currently saved on disk -- click 'Save content' first if you just edited fields. Asks for confirmation before it starts.">?</span>
+      <button type="button" onclick="deleteSlotImagesBulk(getCheckedSlotBulkItems())" title="Deletes every image slot checked above (the small checkbox next to each thumbnail's &times; button), behind a single confirmation instead of one per slot.">Delete checked images</button>
       <label class="row" style="width:auto;gap:0.3rem;margin-left:auto" title="Also show the exact prompt sent to the AI and its raw response, for every attempt.">
         <input type="checkbox" id="manage-verbose" style="width:auto">Verbose
       </label>
@@ -6097,6 +6106,7 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
     : '';
   const thumb = hasImage
     ? `<div class="muted" style="font-size:0.7em">${showStaged ? 'Current' : ''}
+         <input type="checkbox" class="mf-slot-bulk-check" data-number="${number}" data-slot="${slot}" title="Select for bulk delete" style="width:auto;vertical-align:middle">
          <button type="button" style="font-size:0.9em;padding:0 0.3em" title="Delete this rendered image permanently -- it'll need to be regenerated (locally, or via Gemini if 'online' sourcing is set) before the next render can use this slot again."
                  onclick="deleteSlotImage(${number}, '${slot}')">&times;</button>
        </div>
@@ -6262,6 +6272,15 @@ async function deleteSlotImage(number, slot) {
   } catch (e) { alert(e.message); }
 }
 
+// Reads every checked .mf-slot-bulk-check box across the whole manage
+// table (not just the current row) into the {number, slot} list
+// deleteSlotImagesBulk expects -- the toolbar's "Delete checked images"
+// button's only job is collecting these and handing them off.
+function getCheckedSlotBulkItems() {
+  return [...document.querySelectorAll('.mf-slot-bulk-check:checked')]
+    .map(cb => ({ number: parseInt(cb.dataset.number, 10), slot: cb.dataset.slot }));
+}
+
 // Bulk sibling of deleteSlotImage -- deletes many (number, slot) image
 // slots across possibly-different rows behind a SINGLE confirmation,
 // instead of one popup per slot (confirmed real friction 2026-08-14:
@@ -6272,7 +6291,7 @@ async function deleteSlotImage(number, slot) {
 // (never partial -- a row's edits are either saved before its images
 // are touched, or the whole bulk op is cancelled).
 async function deleteSlotImagesBulk(items) {
-  if (!items.length) return;
+  if (!items.length) { alert('No image slots checked -- tick the checkbox next to a thumbnail first.'); return; }
   const unsavedNumbers = [...new Set(items
     .map(it => it.number)
     .filter(number => {

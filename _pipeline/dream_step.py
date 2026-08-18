@@ -2070,38 +2070,25 @@ def generate_row_keyframes_content(number, workflow, fields, verbose=False, spec
         return merged.get("fml2v_keyframe_prompts", locked)
 
 
-def resolve_slot_image(number, workflow, slot):
-    """The actual reference-image file (if any) currently satisfying one
-    manage-table image slot -- used by the web UI to serve a thumbnail.
-    None if that slot isn't satisfied yet. Deliberately all-or-nothing for
-    fml2v (a real image only counts once all three are present, matching
-    the render-time rule that fml2v needs a complete triple) -- for
-    RENDER-READINESS that's correct. See resolve_slot_image_lenient for
-    "what's actually sitting in the folder right now," a different
-    question the manage table also needs answered."""
-    images = find_reference_images(number)
-    if workflow == "i2v":
-        return images[0] if len(images) == 1 else None
-    if workflow == "fml2v" and len(images) == 3 and {p.stem for p in images} == {"1", "2", "3"}:
-        idx = {"first": 0, "middle": 1, "last": 2}.get(slot)
-        return images[idx] if idx is not None else None
-    return None
-
-
 def resolve_slot_image_lenient(number, workflow, slot):
-    """Same lookup as resolve_slot_image, but per-slot independently --
-    an fml2v Dream with only 2 of 3 keyframe images still shows whichever
-    ones actually exist, instead of resolve_slot_image's all-or-nothing
-    "not a real complete set, show nothing" behavior.
+    """The actual reference-image file (if any) currently sitting in one
+    manage-table image slot -- used by the web UI to serve a thumbnail.
+    None if that slot isn't satisfied yet. Per-slot independent: an fml2v
+    Dream with only 2 of 3 keyframe images still shows whichever ones
+    actually exist, rather than requiring a complete triple.
 
-    Confirmed real bug (2026-08-12): deleting just the 'first' slot's
-    image (to force a regen after a story rewrite) made the OTHER TWO
-    still-good images ('middle'/'last', 2.png/3.png, physically still on
-    disk) vanish from the manage table entirely -- nothing to look at,
-    reuse, or manually reassign to a different slot. resolve_slot_image's
-    "only show once render-ready" rule is right for deciding whether a
-    render can proceed, wrong for deciding what a human editing this row
-    gets to see."""
+    Confirmed real bug (2026-08-12): an earlier all-or-nothing version
+    (only counting a slot as filled once all three fml2v images were
+    present, matching the render-time rule that fml2v needs a complete
+    triple) meant deleting just the 'first' slot's image (to force a
+    regen after a story rewrite) made the OTHER TWO still-good images
+    ('middle'/'last', 2.png/3.png, physically still on disk) vanish from
+    the manage table entirely -- nothing to look at, reuse, or manually
+    reassign to a different slot. "Only show once render-ready" is right
+    for deciding whether a render can proceed, wrong for deciding what a
+    human editing this row gets to see -- so this lookup is now the only
+    one the manage table uses; render-readiness is checked separately
+    where it actually matters."""
     if workflow == "i2v":
         images = find_reference_images(number)
         return images[0] if len(images) == 1 else None
@@ -3249,8 +3236,8 @@ def do_review_images(number):
                 print(f"[dream_step] >>> consistency review failed to run ({e})", flush=True)
     finally:
         cfg = vram_guard.load_config()
-        if cfg.get("vision_model_name"):
-            vram_guard.ollama_stop_model(cfg, model_name=cfg["vision_model_name"])
+        if cfg.get("vision_model"):
+            vram_guard.ollama_stop_model(cfg, model_name=cfg["vision_model"])
 
 
 def load_json(path, default):
@@ -3908,12 +3895,14 @@ def run_render(number, event_type, randomize_seeds=False, verbose=False, cancel_
     # rather than strict UTF-8, since a still-wrong byte from some other
     # source shouldn't be able to repeat this failure mode ever again --
     # worst case a mangled character in the log, never a crashed render.
-    proc = subprocess.Popen(cmd, cwd=str(PIPELINE_DIR), stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True, bufsize=1,
-                             encoding="utf-8", errors="replace")
-    for line in proc.stdout:
-        print(line, end="", flush=True)
-    proc.wait()
+    # with-block (not a bare Popen()) so an exception mid-stream (e.g. the
+    # print() below failing) still closes stdout and waits on the process
+    # instead of leaking the pipe/subprocess handle.
+    with subprocess.Popen(cmd, cwd=str(PIPELINE_DIR), stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, bufsize=1,
+                           encoding="utf-8", errors="replace") as proc:
+        for line in proc.stdout:
+            print(line, end="", flush=True)
     ok = proc.returncode == 0
     if ok:
         record_history(number, event_type)
@@ -4950,8 +4939,8 @@ def with_vram_guard(fn, *args, **kwargs):
         print("[dream_step] freeing VRAM now that rendering is done for this call...", flush=True)
         vram_guard.comfyui_free_vram(cfg)
         vram_guard.ollama_stop_model(cfg)
-        if cfg.get("vision_model_name"):
-            vram_guard.ollama_stop_model(cfg, model_name=cfg["vision_model_name"])
+        if cfg.get("vision_model"):
+            vram_guard.ollama_stop_model(cfg, model_name=cfg["vision_model"])
 
 
 def do_generate(numbers, type_arg, verbose=False, cancel_check=None):

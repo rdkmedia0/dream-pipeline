@@ -165,7 +165,7 @@ def install_ollama():
         # non-interactively (e.g. this session) -- same crash pattern
         # install_pip_requirements() had, fixed the same way here.
         try:
-            subprocess.run("curl -fsSL https://ollama.com/install.sh | sh", shell=True, check=True)
+            subprocess.run(["sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Automated Ollama install failed (exit {e.returncode}) -- likely needs sudo "
                   "and none was available non-interactively.")

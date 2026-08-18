@@ -90,6 +90,26 @@ def encrypt_text(text):
     return Fernet(_get_or_create_key()).encrypt(text.encode("utf-8"))
 
 
+def write_encrypted(path, text):
+    """The ONLY way a `.enc` secret file should ever be written -- encrypts
+    and chmods 0600 (POSIX, best-effort, same no-op-on-Windows reasoning as
+    _get_or_create_key's own chmod) in one place. Confirmed real gap
+    (2026-08-18): every call site used to do
+    `path.write_bytes(secret_store.encrypt_text(text))` directly, which
+    writes the encrypted payload with the OS/filesystem's default
+    permissions -- only the Fernet KEY file itself ever got tightened to
+    owner-only, leaving every actual secret payload (client_secret.json.enc,
+    token.json.enc, gemini_api_key.enc) relying purely on directory-level
+    ACLs. Centralizing the write here means a future secret can't be added
+    without this protection by accident."""
+    path = Path(path)
+    path.write_bytes(encrypt_text(text))
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass  # best-effort, same as _get_or_create_key's own chmod
+
+
 def decrypt_text(data):
     """Reverses encrypt_text(). Raises ValueError (not Fernet's own
     InvalidToken) on a bad/corrupt/wrong-key file, so callers can catch
@@ -141,5 +161,5 @@ def migrate_plaintext_if_present(plaintext_path, encrypted_path):
     encrypted_path = Path(encrypted_path)
     if encrypted_path.is_file() or not plaintext_path.is_file():
         return
-    encrypted_path.write_bytes(encrypt_text(plaintext_path.read_text(encoding="utf-8")))
+    write_encrypted(encrypted_path, plaintext_path.read_text(encoding="utf-8"))
     plaintext_path.unlink()
