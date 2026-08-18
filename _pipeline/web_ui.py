@@ -2861,7 +2861,7 @@ INDEX_HTML = r"""<!doctype html>
     0% { left: -40%; }
     100% { left: 100%; }
   }
-  .manage-table col.mf-col-images { width: 17rem; }
+  .manage-table col.mf-col-images { width: 22rem; }
 
   .mf-cell-row { display: flex; align-items: center; gap: 0.15rem; }
   .mf-cell-preview {
@@ -4114,7 +4114,7 @@ function settingsFormHtml(config) {
           Lock chat to this model <span class="mf-help" title="Locks chat to this model, hiding the per-message picker.">?</span>
         </label>
       </div>
-      <div class="row" style="gap:0.9rem; margin-top:0.4rem; align-items:center; flex-wrap:wrap">
+      <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:0.4rem">
         <label class="row" style="gap:0.4rem; width:auto">
           <input type="checkbox" id="cfg-spec-trend-mode" ${config.spec_trend_mode_enabled ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'spec_trend_mode_enabled','checkbox'); updateSpecTrendUI();">
           Use performance trends when writing content <span class="mf-help" title="When on, every AI-composed manage-table row (S chip, and the CLI's own generation) quietly checks this project's own YouTube Analytics for top-performing titles/tags and uses that as style/word-choice signal -- it never changes or overrides the row's own concept (title/premise), only informs tone in whatever's already being written. Safe to leave on permanently: if this project has no analytics data yet, generation proceeds completely normally with no error and no trend context.">?</span>
