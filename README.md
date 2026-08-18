@@ -10,9 +10,11 @@ internet.
 ## Quick start (Docker — recommended)
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
+No build step — `docker-compose.yml` pulls a pre-built image from GHCR.
 Then open **http://127.0.0.1:8420**.
 
 `docker-compose.yml` mounts two volumes outside the repo:
@@ -50,7 +52,15 @@ directly.
 dreamPipeline/
   _pipeline/          the application — start with web_ui.py
   Dockerfile, docker-compose.yml, entrypoint.sh
+  docker-publish.sh   maintainer-only: builds + pushes the image to GHCR
   run_dream_pipeline.{sh,bat}   bare-install launchers
+```
+
+Publishing a new image version (maintainers only — end users never build):
+
+```bash
+./docker-publish.sh          # pushes :latest
+./docker-publish.sh v1.2.0   # pushes a versioned tag + updates :latest
 ```
 
 Project data (one directory per channel, e.g. `ChatAiMals/`) is **not**

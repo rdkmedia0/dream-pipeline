@@ -1,7 +1,10 @@
 services:
   dream-pipeline:
-    build: .
-    image: dream-pipeline:latest
+    # Pulled from GHCR, never built locally -- `docker compose pull && docker
+    # compose up -d` is the whole install. See docker-publish.sh (repo root)
+    # for how a new version actually gets published there; that's a
+    # maintainer step, not something an end user ever needs to run.
+    image: ghcr.io/rdkmedia0/dream-pipeline:latest
     ports:
       # Bound to 127.0.0.1 on the HOST side deliberately -- web_ui.py's
       # whole design is "no auth, single local user" (see its own
