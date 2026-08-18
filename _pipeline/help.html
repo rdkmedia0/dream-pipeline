@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dream Pipeline — Help</title>
+<style>
+  :root {
+    --accent: #4a90e2; --accent-fg: #ffffff; --accent-soft: #4a90e21f;
+    --bg: #f6f7f9; --fg: #16181d; --card-bg: #ffffff; --field-bg: #ffffff;
+    --border: #d9dce2; --border-soft: #e8eaed; --muted-fg: #6b7280;
+    --shadow: 0 1px 2px rgba(16,24,40,0.05), 0 1px 3px rgba(16,24,40,0.06);
+    --shadow-md: 0 4px 10px rgba(16,24,40,0.08), 0 2px 4px rgba(16,24,40,0.06);
+    --radius: 10px; --radius-sm: 6px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e8e9ec; --card-bg: #1d2025; --field-bg: #1a1d22;
+      --border: #33373f; --border-soft: #282c33; --muted-fg: #9aa0ab;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.25);
+      --shadow-md: 0 6px 16px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.3);
+    }
+  }
+  html[data-theme="dark"]  { --bg: #14161a; --fg: #e8e9ec; --card-bg: #1d2025; --field-bg: #1a1d22; --border: #33373f; --border-soft: #282c33; --muted-fg: #9aa0ab; }
+  html[data-theme="light"] { --bg: #f6f7f9; --fg: #16181d; --card-bg: #ffffff; --field-bg: #ffffff; --border: #d9dce2; --border-soft: #e8eaed; --muted-fg: #6b7280; }
+  html[data-theme="forest"]  { --accent: #2f9e59; --accent-fg: #ffffff; --accent-soft: #2f9e591f; }
+  html[data-theme="sunset"]  { --accent: #e2703a; --accent-fg: #ffffff; --accent-soft: #e2703a1f; }
+  html[data-theme="grape"]   { --accent: #8a4fe2; --accent-fg: #ffffff; --accent-soft: #8a4fe21f; }
+  html[data-theme="rose"]    { --accent: #e2437a; --accent-fg: #ffffff; --accent-soft: #e2437a1f; }
+  html[data-theme="slate"]   { --accent: #546e7a; --accent-fg: #ffffff; --accent-soft: #546e7a1f; }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, kbd {
+    font: 0.88em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--field-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0.1em 0.4em;
+  }
+  pre {
+    background: var(--field-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 0.8rem 1rem; overflow-x: auto;
+  }
+  pre code { background: none; border: none; padding: 0; }
+
+  .shell { display: flex; min-height: 100vh; }
+
+  /* Sidebar TOC */
+  nav.toc {
+    width: 250px; flex: 0 0 250px; position: sticky; top: 0; align-self: flex-start;
+    height: 100vh; overflow-y: auto; padding: 1.5rem 1rem;
+    border-right: 1px solid var(--border-soft); background: var(--card-bg);
+  }
+  nav.toc h1 { font-size: 1.05rem; margin: 0 0 0.2rem; }
+  nav.toc .sub { color: var(--muted-fg); font-size: 0.8rem; margin: 0 0 1.2rem; }
+  nav.toc a {
+    display: block; color: var(--fg); padding: 0.35rem 0.6rem; border-radius: var(--radius-sm);
+    font-size: 0.88rem;
+  }
+  nav.toc a:hover { background: var(--border-soft); text-decoration: none; }
+  nav.toc .grp { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted-fg); margin: 1.1rem 0 0.3rem; padding: 0 0.6rem; }
+  nav.toc .grp:first-of-type { margin-top: 0.4rem; }
+
+  main { flex: 1; min-width: 0; padding: 2.5rem clamp(1rem, 4vw, 4rem); max-width: 880px; }
+
+  .badge {
+    display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 0.15rem 0.55rem;
+    border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+    letter-spacing: 0.02em;
+  }
+
+  header.hero { margin-bottom: 2.5rem; }
+  header.hero h1 { font-size: 1.9rem; margin: 0.4rem 0 0.3rem; }
+  header.hero p { color: var(--muted-fg); font-size: 1.02rem; margin: 0; max-width: 62ch; }
+
+  section { margin-bottom: 3rem; scroll-margin-top: 1.5rem; }
+  section h2 {
+    font-size: 1.35rem; margin: 0 0 1rem; padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  section h3 { font-size: 1.05rem; margin: 1.6rem 0 0.6rem; }
+  section p { margin: 0.6rem 0; }
+  section ul, section ol { margin: 0.6rem 0; padding-left: 1.4rem; }
+  section li { margin: 0.3rem 0; }
+
+  .card {
+    border: 1px solid var(--border); background: var(--card-bg); border-radius: var(--radius);
+    padding: 1.1rem 1.3rem; margin: 1rem 0; box-shadow: var(--shadow);
+  }
+  .card.tip { border-left: 3px solid var(--accent); }
+  .card.warn { border-left: 3px solid #e2703a; }
+  .card p:first-child { margin-top: 0; }
+  .card p:last-child { margin-bottom: 0; }
+
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--muted-fg); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.02em; }
+  tr:last-child td { border-bottom: none; }
+
+  details.faq {
+    border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 0.6rem 0;
+    background: var(--card-bg); overflow: hidden;
+  }
+  details.faq summary {
+    cursor: pointer; padding: 0.75rem 1rem; font-weight: 600; list-style: none;
+    display: flex; align-items: center; gap: 0.6rem;
+  }
+  details.faq summary::-webkit-details-marker { display: none; }
+  details.faq summary::before { content: "+"; color: var(--accent); font-weight: 700; width: 1em; }
+  details.faq[open] summary::before { content: "–"; }
+  details.faq .body { padding: 0 1rem 1rem 2.6rem; color: var(--fg); }
+  details.faq .body p:first-child { margin-top: 0; }
+
+  .kv { display: grid; grid-template-columns: minmax(140px, auto) 1fr; gap: 0.4rem 1rem; margin: 0.8rem 0; }
+  .kv dt { font-weight: 600; font-size: 0.88rem; }
+  .kv dd { margin: 0; color: var(--muted-fg); font-size: 0.88rem; }
+
+  .pill-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.6rem 0; }
+  .pill { font-size: 0.78rem; padding: 0.2rem 0.6rem; border-radius: 999px; background: var(--field-bg); border: 1px solid var(--border); }
+
+  footer { color: var(--muted-fg); font-size: 0.82rem; padding: 2rem 0 4rem; border-top: 1px solid var(--border-soft); margin-top: 3rem; }
+
+  @media (max-width: 800px) {
+    .shell { flex-direction: column; }
+    nav.toc { position: relative; width: 100%; flex: none; height: auto; border-right: none; border-bottom: 1px solid var(--border-soft); }
+    main { padding: 1.5rem 1.2rem; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="toc">
+    <h1>Dream Pipeline</h1>
+    <p class="sub">Help &amp; reference</p>
+
+    <div class="grp">Getting started</div>
+    <a href="#overview">Overview</a>
+    <a href="#first-run">First run</a>
+    <a href="#concepts">Core concepts</a>
+
+    <div class="grp">Using the tool</div>
+    <a href="#manage-table">Manage table</a>
+    <a href="#render-types">Render types</a>
+    <a href="#chat">Chat assistant</a>
+    <a href="#upload">YouTube upload</a>
+
+    <div class="grp">Reference</div>
+    <a href="#settings-ref">Settings reference</a>
+    <a href="#dependencies">Dependencies &amp; migration</a>
+
+    <div class="grp">Help</div>
+    <a href="#faq">FAQ &amp; troubleshooting</a>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <span class="badge">Local &amp; offline</span>
+      <h1>Dream Pipeline Help</h1>
+      <p>A guide to running the AI video-generation pipeline: writing specs, generating videos,
+         using the chat assistant, and fixing the most common issues.</p>
+    </header>
+
+    <section id="overview">
+      <h2>Overview</h2>
+      <p>Dream Pipeline turns a short concept into a rendered, uploadable video. Each video is
+         identified by a number — what you call that unit (a "Dream," a "Tale," an "Episode," or
+         anything else) is entirely up to your project's own naming, not fixed by the tool. For
+         each number there's a <strong>spec</strong> (<code>spec_NNN.json</code>) describing what
+         it is — title, premise, the actual prompt text, tags — which gets rendered through
+         <strong>ComfyUI</strong> using a local <strong>Ollama</strong> model for any AI-composed
+         writing.</p>
+      <div class="card tip">
+        <p><strong>Everything runs locally by default.</strong> Ollama hosts the language model,
+           ComfyUI renders the video. The only optional exception is Gemini — if you save an API
+           key in Settings, creative writing, vision QC, and/or keyframe generation can use
+           Google's real API instead, at whatever per-role granularity you choose.</p>
+      </div>
+    </section>
+
+    <section id="first-run">
+      <h2>First run</h2>
+      <ol>
+        <li>Start the web UI (the desktop shortcut, or <code>python dream_step.py --web</code>
+            from <code>_pipeline/</code>).</li>
+        <li>Open <strong>⚙ Settings</strong> (top right) and confirm the Ollama and ComfyUI URLs
+            point at your actual instances — defaults assume both are running on this machine.</li>
+        <li>Click <strong>Refresh models from Ollama URL</strong> and pick a Creative model and
+            Vision model from what's actually installed.</li>
+        <li>Click <strong>Check dependencies</strong> to confirm your Ollama
+            executable is found — if it's missing, install it before trying a real
+            render. (ffmpeg isn't needed at all; ffprobe's job is done by the <code>av</code>
+            Python package instead of a real ffprobe binary — neither is checked here since
+            neither is an external dependency anymore.)</li>
+        <li>Pick or create a project from the Projects screen, then go to <strong>Manage</strong>.</li>
+      </ol>
+    </section>
+
+    <section id="concepts">
+      <h2>Core concepts</h2>
+
+      <h3>Projects</h3>
+      <p>A project is a sibling folder of <code>_pipeline/</code> (e.g. your channel's folder).
+         Each project has its own specs, rendered videos, and concept list — projects never
+         share content.</p>
+
+      <h3>The field-locking rule</h3>
+      <p>This is the single most important rule in the whole tool:</p>
+      <div class="card warn">
+        <p><strong>Any field you've typed content into is used exactly as-is, always.</strong>
+           The AI never touches a field that already has content — even if you ask it to change
+           the tone, style, or direction. If you want the AI to rewrite something, you must
+           clear that field first.</p>
+      </div>
+      <p>Blank fields are only AI-composed if that row's AI chip (<strong>S</strong> for spec
+         fields, <strong>K</strong> for keyframe/image prompts) is turned on. If AI is off and a
+         field is blank, saving fails with a clear error telling you to fill it in or turn AI on.</p>
+
+      <h3>Workflow types</h3>
+      <table>
+        <tr><th>Type</th><th>What it needs</th><th>When to use it</th></tr>
+        <tr><td><code>t2v</code> — text-to-video</td>
+            <td>Just the prompt fields.</td>
+            <td>Default. No reference image needed.</td></tr>
+        <tr><td><code>i2v</code> — image-to-video</td>
+            <td>One reference image. Renders from the same <code>positive_prompt</code>/
+                <code>negative_prompt</code> as every other workflow — since the image already
+                fixes appearance, prefer describing the <em>animation</em> over re-describing
+                appearance.</td>
+            <td>You have a specific starting frame you want animated.</td></tr>
+        <tr><td><code>fml</code> — first/middle/last</td>
+            <td>Three reference images (or three keyframe prompts) for the opening, middle, and
+                closing frames.</td>
+            <td>A story with a clear beginning/turn/end you want to control precisely.</td></tr>
+      </table>
+
+      <h3>Custom workflow files</h3>
+      <p>Each type (<code>t2v</code>/<code>i2v</code>/<code>fml</code>) is backed by a
+         <code>workflow_api_*.json</code> ComfyUI graph. You can drop in your own exported graph
+         alongside the built-ins instead of being limited to them:</p>
+      <ol>
+        <li>Export your graph from ComfyUI as an API-format JSON, and save it directly into the
+            <code>_pipeline</code> folder as <code>workflow_api_&lt;anything&gt;.json</code> — the
+            filename must contain <code>t2v</code>, <code>i2v</code>, or <code>fml</code>
+            somewhere in it (case-insensitive), since that's the only way the pipeline can tell
+            which type it's for.</li>
+        <li>Open Settings → <strong>Workflow files</strong>. Your file appears in the matching
+            type's dropdown, marked "(needs test)". Select it.</li>
+        <li>The pipeline automatically detects which node holds the positive prompt, the negative
+            prompt, and (for i2v/fml) the image input(s), using ComfyUI's own live node schema —
+            the same technique Settings' model-file check uses, extended to trace prompt wiring
+            through the graph. If it can't confidently identify these, it says so and you can't
+            select the file until the graph is fixed or a different one is picked.</li>
+        <li>Once detected, click <strong>Test this wiring</strong>. This runs a real render through
+            ComfyUI with a placeholder prompt (and, for i2v/fml, a test image you supply) — it uses
+            real GPU time, so only do this when you're ready to spend it.</li>
+        <li>Review the result. If it looks right, confirm to save it — it becomes the active file
+            for that type. If not, discard it; nothing is saved and you can try again.</li>
+      </ol>
+      <div class="card tip">
+        The pipeline only wires up the parts it actually sends data into (prompts, images, seeds).
+        Everything else in your graph — samplers, resolution, model choices, LoRAs — is used
+        exactly as you exported it. You're responsible for the graph itself being correctly
+        configured in ComfyUI; this only finds and confirms the handful of fields it needs to
+        write into.
+      </div>
+    </section>
+
+    <section id="manage-table">
+      <h2>Manage table</h2>
+      <p>This is where you write and edit spec content. Load number(s) with the field at the top
+         (a single number, a range like <code>1-5</code>, comma-separated, or <code>all</code>).</p>
+
+      <h3>Columns</h3>
+      <div class="kv">
+        <dt>Title / Premise</dt><dd>Click to expand into a full text box. Premise is an internal summary, not shown publicly.</dd>
+        <dt>Positive prompt</dt><dd>The actual animation prompt. Must contain a <code>[Scene Setup]:</code> section and a <code>[Timeline & Audio Sync]:</code> section with at least 2 timestamped beats, each with its own <code>Video:</code> and <code>Audio:</code> lines.</dd>
+        <dt>Negative prompt / Tags</dt><dd>Comma-separated, shown as removable pills — type a term and press Enter or comma to add it.</dd>
+        <dt>Description</dt><dd>The public-facing YouTube description text.</dd>
+        <dt>Graph type</dt><dd>t2v / i2v / fml — see workflow types above.</dd>
+        <dt>AI direction</dt><dd>Free-text creative guidance for the AI, used only for fields left blank with AI on. Does nothing to fields you've already filled in — see the field-locking rule.</dd>
+        <dt>AI chips (S / K)</dt><dd>S = compose blank spec fields. K = compose blank keyframe/image prompts. Toggle per-row, or use the header chip to toggle every row at once.</dd>
+        <dt>Image(s)</dt><dd>Shows whether a reference image already exists for this number (for i2v/fml).</dd>
+      </div>
+
+      <h3>Running things</h3>
+      <ul>
+        <li><strong>Save content</strong> — writes spec/keyframe content for selected rows. Never renders anything.</li>
+        <li><strong>Render video</strong> — the separate, explicit render step. Renders for the first time, or re-renders (overwriting the current file) if one already exists. Always asks for confirmation.</li>
+      </ul>
+      <div class="card tip">
+        <p>Every cell with content has a small <strong>×</strong> button to clear just that
+           field — useful when you want the AI to redo one specific field without touching the rest.</p>
+      </div>
+    </section>
+
+    <section id="render-types">
+      <h2>The render pipeline</h2>
+      <p>A render goes through ComfyUI using one of four workflow graphs (<code>workflow_api_*.json</code>
+         in <code>_pipeline/</code>), each with its own fixed node layout. VRAM guard
+         (<code>vram_guard.py</code>) automatically frees GPU memory held by a local model before
+         a render starts, so Ollama and ComfyUI don't fight over the same GPU.</p>
+      <p>If a render fails right after switching a number to a new graph type, it's almost always
+         because that type's extra fields (image, i2v/fml prompts) haven't been filled in yet —
+         go back to Manage, fill them in (or tick the AI chip), then retry.</p>
+    </section>
+
+    <section id="chat">
+      <h2>Chat assistant</h2>
+      <p>A help chat lives in its own sidebar tab, next to Videos. It can answer questions about
+         how the tool works and, for numbers already loaded in the Manage table, propose field
+         content — but it can never write a file or run code, and nothing it says is saved
+         automatically.</p>
+      <div class="card">
+        <p><strong>Reviewing proposals:</strong> when the assistant suggests field content,
+           you'll see an Apply option. Clicking it fills the matching cells in the table — exactly
+           as if you'd typed it yourself — but you still have to click <strong>Save content</strong>
+           afterward for anything to actually be saved.</p>
+      </div>
+
+      <h3>Chat model</h3>
+      <p>Chat uses your local Ollama model — including real web search, via a tool-calling loop
+         that needs no account of any kind.</p>
+    </section>
+
+    <section id="upload">
+      <h2>YouTube upload</h2>
+      <p>Uploading needs a one-time OAuth "Desktop app" client, set up once in Settings under
+         "YouTube credentials" — shared across every project. Each project then gets its own
+         <code>token.json</code>, but its first upload reuses whatever session Settings' connection
+         check already verified (or any other project's prior upload) automatically — no extra
+         browser step for it. A real "Allow" click in a browser is only ever needed once overall,
+         the very first time this app is authorized on this Google account at all (via Settings'
+         "Save"/"Reauthorize", or a project's first upload if that hasn't happened yet) — this
+         step can't be automated or skipped, but it never repeats after that.</p>
+    </section>
+
+    <section id="settings-ref">
+      <h2>Settings reference</h2>
+      <div class="kv">
+        <dt>Ollama URL</dt><dd>Where your Ollama instance runs. Only point this at a remote/hosted instance if you trust the source — your prompts and generated content go there.</dd>
+        <dt>ComfyUI URL</dt><dd>Where ComfyUI runs. Same trust note as Ollama URL.</dd>
+        <dt>Creative model</dt><dd>Used for spec/keyframe text generation and chat's local tool-calling. No fixed default — if unset, the first model in your live Ollama list is used automatically.</dd>
+        <dt>Lock chat to this model</dt><dd>When on, chat always uses the Creative model above with no per-message override, and the model picker in chat is hidden.</dd>
+        <dt>Vision model</dt><dd>Reviews generated reference images/keyframes for quality.</dd>
+        <dt>Graceful stop timeout (s)</dt><dd>How long VRAM guard waits, retrying the unload request, for Ollama to confirm nothing is loaded before giving up.</dd>
+        <dt>Workflow files</dt><dd>Which <code>workflow_api_*.json</code> graph backs each type (t2v/i2v/fml) — pick the built-in default or one of your own drop-in graphs. See "Custom workflow files" above for how to add one.</dd>
+      </div>
+    </section>
+
+    <section id="dependencies">
+      <h2>Dependencies &amp; migration</h2>
+      <p>This pipeline runs end to end on <strong>ComfyUI + Ollama</strong> — nothing else is
+         required. The "Check dependencies" button in Settings confirms both services' HTTP
+         APIs actually respond at their configured URLs, which is the first thing worth
+         checking after moving this pipeline to a new machine — there's no local-executable
+         check of any kind, purely URL reachability, so it reports identically whether either
+         service is local or on a completely different host. Neither ffmpeg nor ffprobe are
+         needed anymore — ffmpeg's only caller (an experimental multi-shot rendering feature)
+         was removed, and ffprobe's job is done by the <code>av</code> Python package instead
+         of a subprocess call. VRAM guard (freeing GPU memory before a render) talks to Ollama
+         and ComfyUI purely through their own HTTP APIs — no <code>nvidia-smi</code> or local
+         process management involved — so this orchestrator no longer needs to run on the same
+         machine as Ollama/ComfyUI/the GPU (e.g. this pipeline on Linux behind a Cloudflare
+         tunnel, Ollama/ComfyUI/the GPU on a separate Windows box reachable over the network) —
+         just point Ollama URL/ComfyUI URL at that host. One remaining piece isn't cross-host
+         safe yet: i2v/fml2v reference-image handoff to ComfyUI is still a local file copy.</p>
+      <p>Python package requirements are listed in <code>_pipeline/requirements.txt</code>
+         (<code>pip install -r requirements.txt</code>). The four <code>workflow_api_*.json</code>
+         files must move together with the rest of <code>_pipeline/</code> — they're referenced
+         by fixed ComfyUI node IDs, so a re-export from ComfyUI on the new machine can silently
+         break a workflow; the pipeline validates this at load time and will tell you exactly
+         which node ID is missing if that happens.</p>
+
+      <div class="card tip">
+        <p><strong>Guided setup:</strong> <code>python _pipeline/setup_installer.py</code> walks
+           through everything on a fresh machine — installs Python packages, optionally installs
+           Ollama and ComfyUI (skip anything you already have), and downloads whatever model files
+           are actually missing. Which files are needed is worked out live by reading the
+           <code>workflow_api_*.json</code> graphs and confirming each candidate against ComfyUI's
+           own running API — not a fixed list, so it stays correct if a workflow changes or a new
+           one is added. Known files download automatically from their real, pre-verified
+           HuggingFace sources (<code>_pipeline/install_manifest.py</code>); for anything without a
+           pre-verified source, both the CLI and the web UI's Settings/dependency-check popup give
+           you a one-click HuggingFace search by filename — most ComfyUI models can be found there
+           — but <strong>you're responsible for confirming it's actually the right file</strong>
+           (correct quantization/precision, not a tampered mirror) before placing it manually. It
+           never re-downloads a file that's already present, and every step can be skipped. Scoped
+           to Windows/Linux with an NVIDIA GPU — see the FAQ below for why AMD/Intel aren't
+           covered.</p>
+      </div>
+
+      <h3>Installing each dependency manually</h3>
+      <table>
+        <tr><th>Tool</th><th>Get it</th><th>Notes</th></tr>
+        <tr>
+          <td>Ollama</td>
+          <td><a href="https://ollama.com/download" target="_blank" rel="noopener">ollama.com/download</a></td>
+          <td>Runs the local language model(s). After installing, pull whichever model(s) you
+              plan to use (<code>ollama pull &lt;name&gt;</code>) before setting them in Settings.</td>
+        </tr>
+        <tr>
+          <td>ComfyUI</td>
+          <td><a href="https://www.comfy.org/download" target="_blank" rel="noopener">comfy.org/download</a>
+              (or <a href="https://github.com/Comfy-Org/ComfyUI" target="_blank" rel="noopener">GitHub</a>
+              for the scriptable git-clone install <code>setup_installer.py</code> uses)</td>
+          <td>The actual render engine. Needs a compatible NVIDIA GPU for realistic render times.</td>
+        </tr>
+      </table>
+      <p>VRAM guard doesn't need <code>nvidia-smi</code> or any local process-management tool —
+         it asks Ollama and ComfyUI what THEY have loaded, purely over their own HTTP APIs, so
+         there's nothing GPU- or OS-specific to install for it at all.</p>
+      <div class="card tip">
+        <p>After installing anything here, use Settings' <strong>Check dependencies</strong>
+           button to confirm the pipeline can actually find it — that's the same check this table
+           is describing, run for real against your machine.</p>
+      </div>
+
+      <h3>Exposing Ollama/ComfyUI on your network</h3>
+      <p>By default, both Ollama and ComfyUI only listen on <code>localhost</code> — fine when
+         everything runs on one machine, but if this pipeline runs on a <em>different</em> machine
+         (or in a container) than Ollama/ComfyUI/the GPU, each service needs telling to accept
+         connections from other machines, and each machine's firewall needs a rule allowing it.
+         Neither step is this pipeline's job — it only ever talks to whatever URL you put in
+         Settings — so this is standard Ollama/ComfyUI/OS administration, covered here because
+         getting it wrong is the single most common reason a correctly-typed URL still shows
+         unreachable.</p>
+      <table>
+        <tr><th></th><th>Windows</th><th>Linux</th></tr>
+        <tr>
+          <td><strong>Bind beyond localhost</strong></td>
+          <td>Set the <code>OLLAMA_HOST</code> environment variable to <code>0.0.0.0</code>
+              (System Properties → Environment Variables, or
+              <code>setx OLLAMA_HOST 0.0.0.0</code> in an admin terminal), then restart Ollama.
+              For ComfyUI, launch with <code>--listen 0.0.0.0</code>.</td>
+          <td>Same <code>OLLAMA_HOST=0.0.0.0</code> (e.g. in the systemd unit's
+              <code>Environment=</code> line, or exported before launching manually). Same
+              ComfyUI <code>--listen 0.0.0.0</code> flag.</td>
+        </tr>
+        <tr>
+          <td><strong>Open the firewall port</strong></td>
+          <td>Windows Defender Firewall → Advanced settings → Inbound Rules → New Rule → Port →
+              allow Ollama's (11434) and/or ComfyUI's (8000/8188) TCP port.</td>
+          <td>Distro-dependent — e.g. <code>sudo ufw allow 11434/tcp</code> and
+              <code>sudo ufw allow 8188/tcp</code> on Ubuntu, or the equivalent
+              <code>firewall-cmd</code>/<code>iptables</code> rule elsewhere.</td>
+        </tr>
+      </table>
+      <div class="card tip">
+        <p>Binding a model-serving API to <code>0.0.0.0</code> and opening a firewall port makes
+           it reachable by anything else on that network, with no authentication of its own — fine
+           on a trusted home/LAN, worth a real second thought (a VPN, or at least router-level
+           access rules) before doing this on anything more exposed. This is the same trust model
+           this pipeline's own web UI already documents for itself (see the top of this page).</p>
+      </div>
+      <p>Once bound and the firewall rule is in place, point Settings' Ollama URL/ComfyUI URL at
+         that machine's real LAN address (e.g. <code>http://192.168.1.20:11434</code>) instead of
+         <code>localhost</code>, then use Settings' <strong>Check dependencies</strong> to confirm
+         it's actually reachable from where this pipeline runs.</p>
+    </section>
+
+    <section id="faq">
+      <h2>FAQ &amp; troubleshooting</h2>
+
+      <details class="faq">
+        <summary>I asked the AI to change something but the result looks unchanged</summary>
+        <div class="body">
+          <p>This is almost always the field-locking rule: any field with existing content is
+             used verbatim, regardless of what you type into AI direction. Clear the field(s)
+             you want rewritten first (the <strong>×</strong> button on that cell), make sure the
+             row's AI chip is on, then run updates again.</p>
+        </div>
+      </details>
+
+      <details class="faq">
+        <summary>"AI is off for this row, and these fields are still blank"</summary>
+        <div class="body">
+          <p>Exactly what it says — either type content into the listed fields directly, or tick
+             the S (spec) or K (keyframes) AI chip for that row so the model fills in whatever's
+             left blank.</p>
+        </div>
+      </details>
+
+      <details class="faq">
+        <summary>"Switching to &lt;type&gt; needs [...], not yet set"</summary>
+        <div class="body">
+          <p>Changing a number's graph type (e.g. t2v → i2v) requires that type's extra fields
+             (an image, or i2v/fml-specific prompts) to already exist. Load that number into
+             Manage, fill those fields in — or tick the AI chip to compose them — click
+             <strong>Save content</strong>, then retry the render.</p>
+        </div>
+      </details>
+
+      <details class="faq">
+        <summary>A render fails with a missing-node-ID error</summary>
+        <div class="body">
+          <p>The named <code>workflow_api_*.json</code> file was likely re-exported from ComfyUI
+             (even a routine resave) and its internal node IDs shifted. Either restore the
+             previously-working file, or re-run the conversion
+             (<code>convert_workflow_to_api.py</code>) on a fresh export and update the matching
+             entry in <code>generate_dream.py</code>'s <code>WORKFLOWS</code> dict with the new IDs.</p>
+        </div>
+      </details>
+
+      <details class="faq">
+        <summary>Check dependencies reports something MISSING</summary>
+        <div class="body">
+          <p>Install the named tool and make sure it's on your system PATH, then re-run the
+             check. The checked tool (Ollama) works the same way on Windows and Linux, so this
+             check isn't platform-dependent.</p>
+        </div>
+      </details>
+
+      <details class="faq">
+        <summary>Can I move this pipeline to another machine?</summary>
+        <div class="body">
+          <p>Yes — see <a href="#dependencies">Dependencies &amp; migration</a> above. Copy the
+             whole <code>_pipeline/</code> folder plus your project folders, install the pip
+             requirements, point Settings at wherever Ollama/ComfyUI run on the new machine, and
+             run "Check dependencies" to confirm everything's in place.</p>
+        </div>
+      </details>
+
+      <details class="faq">
+        <summary>What does the AI chat actually have access to?</summary>
+        <div class="body">
+          <p>Nothing beyond answering questions and, when relevant, proposing field content for
+             numbers already loaded in your table. It cannot write files, run code, or save
+             anything on its own — every proposal needs an explicit Apply click from you, and
+             <strong>Save content</strong> is still the only thing that writes to disk.</p>
+        </div>
+      </details>
+    </section>
+
+    <footer>
+      Dream Pipeline — local video generation tool. This page is served from
+      <code>_pipeline/help.html</code>; edit it directly to keep it up to date.
+    </footer>
+  </main>
+</div>
+<script>
+  (function() {
+    var saved = localStorage.getItem('theme') || 'ocean';
+    document.documentElement.setAttribute('data-theme', saved === 'ocean' ? 'light' : saved);
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+# Machine-specific, private, or generated -- never belongs in the repo.
+# Same exclusion reasoning as .dockerignore (secrets/config must never
+# ship baked into an image OR a commit); kept in sync with it.
+
+# Local runtime config -- network topology, model choices, per-machine.
+# The GUI's Settings screen is the only thing that should ever write this.
+_pipeline/config.json
+
+# Encrypted secrets at rest (Gemini API key, YouTube OAuth client/token) --
+# see secret_store.py's own docstring on what this encryption does and
+# doesn't protect against. Never committed regardless.
+**/*.enc
+_pipeline/gemini/
+_pipeline/youtube/
+_pipeline/gemini/usage.json
+_pipeline/model_check_cache.json
+
+# Project data (rendered videos, keyframes, specs, index.json) -- lives
+# entirely outside this repo (see docker-compose.yml's /data volume), but
+# ignored here too in case a project folder ever ends up nested alongside
+# _pipeline/ during local testing.
+/data/
+/ChatAiMals/
+/dreams/
+/guitest/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Browser automation cache (Playwright/etc, if ever installed locally)
+_pipeline/browsers/
+
+# Editor/OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code's own local session/permission state -- machine-specific,
+# not part of the application.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

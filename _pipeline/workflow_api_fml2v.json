@@ -1,0 +1,1228 @@
+{
+  "1": {
+    "inputs": {
+      "sampler_name": "euler_ancestral_cfg_pp"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "2": {
+    "inputs": {
+      "steps": 8,
+      "max_shift": 2.05,
+      "base_shift": 0.95,
+      "stretch": true,
+      "terminal": 0.1,
+      "latent": [
+        "24",
+        0
+      ]
+    },
+    "class_type": "LTXVScheduler",
+    "_meta": {
+      "title": "LTXVScheduler (for more steps)"
+    }
+  },
+  "4": {
+    "inputs": {
+      "sampler_name": "euler_cfg_pp"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "5": {
+    "inputs": {
+      "sigmas": "0.909375, 0.725, 0.421875, 0.0"
+    },
+    "class_type": "ManualSigmas",
+    "_meta": {
+      "title": "ManualSigmas (LTX-2)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "cfg": 1,
+      "model": [
+        "197",
+        0
+      ],
+      "positive": [
+        "2182",
+        0
+      ],
+      "negative": [
+        "2182",
+        1
+      ]
+    },
+    "class_type": "CFGGuider",
+    "_meta": {
+      "title": "CFG Guider"
+    }
+  },
+  "9": {
+    "inputs": {
+      "frames_number": [
+        "2077",
+        1
+      ],
+      "frame_rate": [
+        "92",
+        1
+      ],
+      "batch_size": 1,
+      "audio_vae": [
+        "175",
+        0
+      ]
+    },
+    "class_type": "LTXVEmptyLatentAudio",
+    "_meta": {
+      "title": "LTXV Empty Latent Audio"
+    }
+  },
+  "10": {
+    "inputs": {
+      "frame_rate": [
+        "2076",
+        0
+      ],
+      "positive": [
+        "16",
+        0
+      ],
+      "negative": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "LTXVConditioning",
+    "_meta": {
+      "title": "LTXVConditioning"
+    }
+  },
+  "11": {
+    "inputs": {
+      "text": "second bird, extra bird, phantom bird, bird silhouette, ghost bird, hovering bird, bird already on car, bird standing on ground, flock of birds, multiple crows, bird shadow on car, duplicate animal, early flight, pre-rendered flight, two crows, duplicate bird, cluttered background, bird standing on car, droppings disappearing",
+      "clip": [
+        "190",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "13": {
+    "inputs": {
+      "noise": [
+        "15",
+        0
+      ],
+      "guider": [
+        "36",
+        0
+      ],
+      "sampler": [
+        "1",
+        0
+      ],
+      "sigmas": [
+        "215",
+        0
+      ],
+      "latent_image": [
+        "24",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "14": {
+    "inputs": {
+      "noise_seed": 43
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "15": {
+    "inputs": {
+      "noise_seed": 42
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "16": {
+    "inputs": {
+      "text": [
+        "2070:2002",
+        0
+      ],
+      "clip": [
+        "190",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "18": {
+    "inputs": {
+      "av_latent": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "LTXVSeparateAVLatent",
+    "_meta": {
+      "title": "LTXVSeparateAVLatent"
+    }
+  },
+  "21": {
+    "inputs": {
+      "noise": [
+        "14",
+        0
+      ],
+      "guider": [
+        "8",
+        0
+      ],
+      "sampler": [
+        "4",
+        0
+      ],
+      "sigmas": [
+        "216",
+        0
+      ],
+      "latent_image": [
+        "34",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "24": {
+    "inputs": {
+      "video_latent": [
+        "2221",
+        2
+      ],
+      "audio_latent": [
+        "2316",
+        0
+      ]
+    },
+    "class_type": "LTXVConcatAVLatent",
+    "_meta": {
+      "title": "LTXVConcatAVLatent"
+    }
+  },
+  "25": {
+    "inputs": {
+      "samples": [
+        "2222",
+        2
+      ],
+      "upscale_model": [
+        "182",
+        0
+      ],
+      "vae": [
+        "181",
+        0
+      ]
+    },
+    "class_type": "LTXVLatentUpsampler",
+    "_meta": {
+      "title": "spatial"
+    }
+  },
+  "32": {
+    "inputs": {
+      "width": [
+        "2191",
+        1
+      ],
+      "height": [
+        "2192",
+        1
+      ],
+      "length": [
+        "2077",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyLTXVLatentVideo",
+    "_meta": {
+      "title": "EmptyLTXVLatentVideo"
+    }
+  },
+  "34": {
+    "inputs": {
+      "video_latent": [
+        "2182",
+        2
+      ],
+      "audio_latent": [
+        "18",
+        1
+      ]
+    },
+    "class_type": "LTXVConcatAVLatent",
+    "_meta": {
+      "title": "LTXVConcatAVLatent"
+    }
+  },
+  "36": {
+    "inputs": {
+      "cfg": 1,
+      "model": [
+        "197",
+        0
+      ],
+      "positive": [
+        "2221",
+        0
+      ],
+      "negative": [
+        "2221",
+        1
+      ]
+    },
+    "class_type": "CFGGuider",
+    "_meta": {
+      "title": "CFG Guider"
+    }
+  },
+  "43": {
+    "inputs": {
+      "frame_rate": [
+        "2076",
+        0
+      ],
+      "loop_count": 0,
+      "filename_prefix": "LTX-2",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "149",
+        0
+      ],
+      "audio": [
+        "150",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "Video Combine 🎥🅥🅗🅢"
+    }
+  },
+  "44": {
+    "inputs": {
+      "width": [
+        "2080",
+        0
+      ],
+      "height": [
+        "2079",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "keep_proportion": "crop",
+      "pad_color": "0, 0, 0",
+      "crop_position": "center",
+      "divisible_by": 32,
+      "device": "cpu",
+      "image": [
+        "45",
+        0
+      ]
+    },
+    "class_type": "ImageResizeKJv2",
+    "_meta": {
+      "title": "Resize Image v2"
+    }
+  },
+  "45": {
+    "inputs": {
+      "image": "1 (3).png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "FIRST FRAME"
+    }
+  },
+  "47": {
+    "inputs": {
+      "image": "2.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "MIDDLE FRAME"
+    }
+  },
+  "48": {
+    "inputs": {
+      "width": [
+        "44",
+        1
+      ],
+      "height": [
+        "44",
+        2
+      ],
+      "upscale_method": "lanczos",
+      "keep_proportion": "crop",
+      "pad_color": "0, 0, 0",
+      "crop_position": "center",
+      "divisible_by": 32,
+      "device": "cpu",
+      "image": [
+        "47",
+        0
+      ]
+    },
+    "class_type": "ImageResizeKJv2",
+    "_meta": {
+      "title": "Resize Image v2"
+    }
+  },
+  "49": {
+    "inputs": {
+      "longer_edge": 1536,
+      "images": [
+        "48",
+        0
+      ]
+    },
+    "class_type": "ResizeImagesByLongerEdge",
+    "_meta": {
+      "title": "Resize Images by Longer Edge (DEPRECATED)"
+    }
+  },
+  "50": {
+    "inputs": {
+      "img_compression": 18,
+      "image": [
+        "2168",
+        0
+      ]
+    },
+    "class_type": "LTXVPreprocess",
+    "_meta": {
+      "title": "LTXV Preprocess"
+    }
+  },
+  "92": {
+    "inputs": {
+      "expression": "a",
+      "a": [
+        "2076",
+        0
+      ]
+    },
+    "class_type": "SimpleCalculatorKJ",
+    "_meta": {
+      "title": "SimpleCalculatorKJ"
+    }
+  },
+  "146": {
+    "inputs": {
+      "av_latent": [
+        "21",
+        0
+      ]
+    },
+    "class_type": "LTXVSeparateAVLatent",
+    "_meta": {
+      "title": "LTXVSeparateAVLatent"
+    }
+  },
+  "149": {
+    "inputs": {
+      "tile_size": 512,
+      "overlap": 64,
+      "temporal_size": 4096,
+      "temporal_overlap": 8,
+      "samples": [
+        "2156",
+        2
+      ],
+      "vae": [
+        "181",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeTiled",
+    "_meta": {
+      "title": "VAE Decode (Tiled)"
+    }
+  },
+  "150": {
+    "inputs": {
+      "samples": [
+        "146",
+        1
+      ],
+      "audio_vae": [
+        "175",
+        0
+      ]
+    },
+    "class_type": "LTXVAudioVAEDecode",
+    "_meta": {
+      "title": "LTXV Audio VAE Decode"
+    }
+  },
+  "175": {
+    "inputs": {
+      "vae_name": "LTX23_audio_vae_bf16.safetensors",
+      "device": "main_device",
+      "weight_dtype": "bf16"
+    },
+    "class_type": "VAELoaderKJ",
+    "_meta": {
+      "title": "VAELoader KJ"
+    }
+  },
+  "180": {
+    "inputs": {
+      "vae_name": "taeltx2_3.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "181": {
+    "inputs": {
+      "vae_name": "LTX23_video_vae_bf16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "182": {
+    "inputs": {
+      "model_name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+    },
+    "class_type": "LatentUpscaleModelLoader",
+    "_meta": {
+      "title": "Load Latent Upscale Model"
+    }
+  },
+  "187": {
+    "inputs": {
+      "unet_name": "ltx-2.3-22b-distilled-1.1_transformer_only_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "190": {
+    "inputs": {
+      "clip_name1": "gemma_3_12B_it_fp8_scaled.safetensors",
+      "clip_name2": "ltx-2.3_text_projection_bf16.safetensors",
+      "type": "ltxv",
+      "device": "default"
+    },
+    "class_type": "DualCLIPLoader",
+    "_meta": {
+      "title": "Load CLIP (Dual)"
+    }
+  },
+  "197": {
+    "inputs": {
+      "nag_scale": 11,
+      "nag_alpha": 0.25,
+      "nag_tau": 2.5,
+      "inplace": true,
+      "model": [
+        "198",
+        0
+      ],
+      "nag_cond_video": [
+        "11",
+        0
+      ],
+      "nag_cond_audio": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "LTX2_NAG",
+    "_meta": {
+      "title": "LTX2 NAG"
+    }
+  },
+  "198": {
+    "inputs": {
+      "preview_rate": 8,
+      "model": [
+        "2107",
+        0
+      ],
+      "vae": [
+        "180",
+        0
+      ]
+    },
+    "class_type": "LTX2SamplingPreviewOverride",
+    "_meta": {
+      "title": "LTX2 Sampling Preview Override"
+    }
+  },
+  "215": {
+    "inputs": {
+      "sigmas": "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+    },
+    "class_type": "ManualSigmas",
+    "_meta": {
+      "title": "ManualSigmas"
+    }
+  },
+  "216": {
+    "inputs": {
+      "sigmas": "0.85, 0.7250, 0.4219, 0.0"
+    },
+    "class_type": "ManualSigmas",
+    "_meta": {
+      "title": "ManualSigmas"
+    }
+  },
+  "2071": {
+    "inputs": {
+      "source": [
+        "2070:2002",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "ENHANCED PROMPT"
+    }
+  },
+  "2076": {
+    "inputs": {
+      "value": 24
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "FPS"
+    }
+  },
+  "2077": {
+    "inputs": {
+      "expression": "((round((a * b -1) / 8)) * 8) + 1 ",
+      "a": [
+        "2078",
+        0
+      ],
+      "b": [
+        "2076",
+        0
+      ]
+    },
+    "class_type": "SimpleCalculatorKJ",
+    "_meta": {
+      "title": "SimpleCalculatorKJ"
+    }
+  },
+  "2078": {
+    "inputs": {
+      "value": 24
+    },
+    "class_type": "INTConstant",
+    "_meta": {
+      "title": "LENGTH (in seconds)"
+    }
+  },
+  "2079": {
+    "inputs": {
+      "value": 896
+    },
+    "class_type": "INTConstant",
+    "_meta": {
+      "title": "HEIGHT"
+    }
+  },
+  "2080": {
+    "inputs": {
+      "value": 512
+    },
+    "class_type": "INTConstant",
+    "_meta": {
+      "title": "WIDTH"
+    }
+  },
+  "2082": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "ENABLE PROMPT ENHANCER"
+    }
+  },
+  "2083": {
+    "inputs": {
+      "longer_edge": 1536,
+      "images": [
+        "44",
+        0
+      ]
+    },
+    "class_type": "ResizeImagesByLongerEdge",
+    "_meta": {
+      "title": "Resize Images by Longer Edge (DEPRECATED)"
+    }
+  },
+  "2084": {
+    "inputs": {
+      "img_compression": 18,
+      "image": [
+        "2083",
+        0
+      ]
+    },
+    "class_type": "LTXVPreprocess",
+    "_meta": {
+      "title": "LTXV Preprocess"
+    }
+  },
+  "2103": {
+    "inputs": {
+      "value": "Warm, modern feature-film 3D animated style, soft overcast daylight. Medium shot of a single glossy black crow with a sharp beak, perched alone on a telephone wire. The street below features only one empty, stationary parked car with no other animals or birds present. \n\nThe crow leans forward, tilting its head curiously and says in a bright, curious voice: \"What are they doing in there? They've been in there for six hours. Six.\" \n\nThe crow tilts its head playfully and says: \"I've seen the driver come out twice. Nobody needs that much bread. It makes no sense, and I'm still hungry.\" \n\nThe crow's feathers puff up dramatically with comic indignation, and it says in a dramatic tone: \"I am infuriated. They will feel my wrath!\"\n\nThe crow launches forward off the wire and swoops downward towards the empty parked car roof with back turned away from camera and crow swoops in low above the car roof where it releases white and black wet liquid droppings that burst across the car roof like a water balloon covering it in what looks like wet paint. The crow lets out a cackling crow laugh as it continues flying, rising over the houses and into the distance, growing smaller and smaller, as it disappears over the horizon."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "PROMPT"
+    }
+  },
+  "2107": {
+    "inputs": {
+      "PowerLoraLoaderHeaderWidget": {
+        "type": "PowerLoraLoaderHeaderWidget"
+      },
+      "➕ Add Lora": "",
+      "model": [
+        "187",
+        0
+      ]
+    },
+    "class_type": "Power Lora Loader (rgthree)",
+    "_meta": {
+      "title": "Power Lora Loader (rgthree)"
+    }
+  },
+  "2108": {
+    "inputs": {
+      "value": 1
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "LAST FRAME STRENGTH"
+    }
+  },
+  "2110": {
+    "inputs": {
+      "value": 0.4
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "FIRST FRAME STRENGTH"
+    }
+  },
+  "2156": {
+    "inputs": {
+      "positive": [
+        "2182",
+        0
+      ],
+      "negative": [
+        "2182",
+        1
+      ],
+      "latent": [
+        "146",
+        0
+      ]
+    },
+    "class_type": "LTXVCropGuides",
+    "_meta": {
+      "title": "LTXVCropGuides"
+    }
+  },
+  "2168": {
+    "inputs": {
+      "longer_edge": 1536,
+      "images": [
+        "2171",
+        0
+      ]
+    },
+    "class_type": "ResizeImagesByLongerEdge",
+    "_meta": {
+      "title": "Resize Images by Longer Edge (DEPRECATED)"
+    }
+  },
+  "2171": {
+    "inputs": {
+      "width": [
+        "48",
+        1
+      ],
+      "height": [
+        "48",
+        2
+      ],
+      "upscale_method": "lanczos",
+      "keep_proportion": "crop",
+      "pad_color": "0, 0, 0",
+      "crop_position": "center",
+      "divisible_by": 32,
+      "device": "cpu",
+      "image": [
+        "2172",
+        0
+      ]
+    },
+    "class_type": "ImageResizeKJv2",
+    "_meta": {
+      "title": "Resize Image v2"
+    }
+  },
+  "2172": {
+    "inputs": {
+      "image": "3.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "LAST FRAME"
+    }
+  },
+  "2174": {
+    "inputs": {
+      "img_compression": 18,
+      "image": [
+        "49",
+        0
+      ]
+    },
+    "class_type": "LTXVPreprocess",
+    "_meta": {
+      "title": "LTXV Preprocess"
+    }
+  },
+  "2182": {
+    "inputs": {
+      "num_guides": "2",
+      "num_guides.frame_idx_1": 0,
+      "num_guides.strength_1": [
+        "2110",
+        0
+      ],
+      "num_guides.frame_idx_2": -1,
+      "num_guides.strength_2": [
+        "2108",
+        0
+      ],
+      "positive": [
+        "2222",
+        0
+      ],
+      "negative": [
+        "2222",
+        1
+      ],
+      "vae": [
+        "181",
+        0
+      ],
+      "latent": [
+        "25",
+        0
+      ],
+      "num_guides.image_1": [
+        "2083",
+        0
+      ],
+      "num_guides.image_2": [
+        "2168",
+        0
+      ]
+    },
+    "class_type": "LTXVAddGuideMulti",
+    "_meta": {
+      "title": "LTXVAddGuideMulti"
+    }
+  },
+  "2191": {
+    "inputs": {
+      "expression": "a/2",
+      "values.a": [
+        "2080",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "Math Expression"
+    }
+  },
+  "2192": {
+    "inputs": {
+      "expression": "a/2",
+      "values.a": [
+        "2079",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "Math Expression"
+    }
+  },
+  "2216": {
+    "inputs": {
+      "expression": "a/2",
+      "variables.a": [
+        "2077",
+        1
+      ]
+    },
+    "class_type": "SimpleCalculatorKJ",
+    "_meta": {
+      "title": "SimpleCalculatorKJ"
+    }
+  },
+  "2221": {
+    "inputs": {
+      "num_guides": "3",
+      "num_guides.frame_idx_1": 0,
+      "num_guides.strength_1": [
+        "2110",
+        0
+      ],
+      "num_guides.frame_idx_2": [
+        "2216",
+        1
+      ],
+      "num_guides.strength_2": [
+        "2278",
+        0
+      ],
+      "num_guides.frame_idx_3": -1,
+      "num_guides.strength_3": [
+        "2108",
+        0
+      ],
+      "positive": [
+        "10",
+        0
+      ],
+      "negative": [
+        "10",
+        1
+      ],
+      "vae": [
+        "181",
+        0
+      ],
+      "latent": [
+        "32",
+        0
+      ],
+      "num_guides.image_1": [
+        "2084",
+        0
+      ],
+      "num_guides.image_2": [
+        "2174",
+        0
+      ],
+      "num_guides.image_3": [
+        "50",
+        0
+      ]
+    },
+    "class_type": "LTXVAddGuideMulti",
+    "_meta": {
+      "title": "LTXVAddGuideMulti"
+    }
+  },
+  "2222": {
+    "inputs": {
+      "positive": [
+        "2221",
+        0
+      ],
+      "negative": [
+        "2221",
+        1
+      ],
+      "latent": [
+        "18",
+        0
+      ]
+    },
+    "class_type": "LTXVCropGuides",
+    "_meta": {
+      "title": "LTXVCropGuides"
+    }
+  },
+  "2278": {
+    "inputs": {
+      "value": 0.7
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "MIDDLE FRAME STRENGTH"
+    }
+  },
+  "2316": {
+    "inputs": {
+      "switch": false,
+      "on_false": [
+        "9",
+        0
+      ],
+      "on_true": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "Custom Audio = true |  LTX = false"
+    }
+  },
+  "2102:2092": {
+    "inputs": {
+      "resize_type": "scale by multiplier",
+      "resize_type.multiplier": 0.2,
+      "scale_method": "area",
+      "input": [
+        "2168",
+        0
+      ]
+    },
+    "class_type": "ResizeImageMaskNode",
+    "_meta": {
+      "title": "Resize Image/Mask"
+    }
+  },
+  "2102:2099": {
+    "inputs": {
+      "resize_type": "scale by multiplier",
+      "resize_type.multiplier": 0.2,
+      "scale_method": "area",
+      "input": [
+        "2083",
+        0
+      ]
+    },
+    "class_type": "ResizeImageMaskNode",
+    "_meta": {
+      "title": "Resize Image/Mask"
+    }
+  },
+  "2102:2100": {
+    "inputs": {
+      "left": 16,
+      "top": 16,
+      "right": 16,
+      "bottom": 16,
+      "feathering": 0,
+      "image": [
+        "2102:2099",
+        0
+      ]
+    },
+    "class_type": "ImagePadForOutpaint",
+    "_meta": {
+      "title": "Pad Image for Outpainting"
+    }
+  },
+  "2102:2098": {
+    "inputs": {
+      "left": 16,
+      "top": 16,
+      "right": 16,
+      "bottom": 16,
+      "feathering": 0,
+      "image": [
+        "2102:2092",
+        0
+      ]
+    },
+    "class_type": "ImagePadForOutpaint",
+    "_meta": {
+      "title": "Pad Image for Outpainting"
+    }
+  },
+  "2102:2178": {
+    "inputs": {
+      "direction": "right",
+      "match_image_size": true,
+      "spacing_width": 0,
+      "spacing_color": "white",
+      "image1": [
+        "2102:2085",
+        0
+      ],
+      "image2": [
+        "2102:2179",
+        0
+      ]
+    },
+    "class_type": "ImageStitch",
+    "_meta": {
+      "title": "Stitch Images"
+    }
+  },
+  "2102:2085": {
+    "inputs": {
+      "direction": "right",
+      "match_image_size": true,
+      "spacing_width": 0,
+      "spacing_color": "white",
+      "image1": [
+        "2102:2100",
+        0
+      ],
+      "image2": [
+        "2102:2098",
+        0
+      ]
+    },
+    "class_type": "ImageStitch",
+    "_meta": {
+      "title": "Stitch Images"
+    }
+  },
+  "2102:2179": {
+    "inputs": {
+      "resize_type": "scale by multiplier",
+      "resize_type.multiplier": 0.2,
+      "scale_method": "area",
+      "input": [
+        "2083",
+        0
+      ]
+    },
+    "class_type": "ResizeImageMaskNode",
+    "_meta": {
+      "title": "Resize Image/Mask"
+    }
+  },
+  "2070:482": {
+    "inputs": {
+      "string_a": [
+        "2070:484",
+        0
+      ],
+      "string_b": "",
+      "delimiter": ""
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "Concatenate Text"
+    }
+  },
+  "2070:2002": {
+    "inputs": {
+      "switch": [
+        "2082",
+        0
+      ],
+      "on_false": [
+        "2103",
+        0
+      ],
+      "on_true": [
+        "2070:485",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch"
+    }
+  },
+  "2070:486": {
+    "inputs": {
+      "text": "Style: cinematic - The black bird remains perched on the wire, then it launches into the air, wings beating steadily, as a dark sedan slowly drives down the street. The car's tires hum quietly on the pavement, and a faint radio plays a mellow jazz tune from within the vehicle. As the bird flies higher, it circles above the houses, its shadow briefly passing over a lawn. The jazz music fades slightly, replaced by the distant sound of children laughing in a park. The bird then descends, landing on a nearby rooftop, its claws clicking softly against the shingles, while the car continues its journey down the street, the jazz music returning to its original volume.",
+      "anything": [
+        "2070:485",
+        0
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "Enhanced Prompt"
+    }
+  },
+  "2070:485": {
+    "inputs": {
+      "prompt": [
+        "2070:482",
+        0
+      ],
+      "max_length": 256,
+      "sampling_mode": "off",
+      "thinking": false,
+      "use_default_template": true,
+      "clip": [
+        "190",
+        0
+      ],
+      "image": [
+        "2102:2178",
+        0
+      ]
+    },
+    "class_type": "TextGenerateLTX2Prompt",
+    "_meta": {
+      "title": "Generate LTX2 Prompt"
+    }
+  },
+  "2070:484": {
+    "inputs": {
+      "value": "You are a Creative Assistant writing concise, action-focused image-to-video prompts. Given an image (first frame) and user Raw Input Prompt, generate a prompt to guide video generation from that image.   \n\nMAIN GOAL: \nCREATE AN INTERESTING PROMPT WHERE THE START FRAME IS THE IMAGE TO THE LEFT, MIDDLE IMAGE IS MIDDLE FRAME AND END FRAME IS THE IMAGE TO THE RIGHT\n\n#### Guidelines:\n- Analyze the Image: Identify Subject, Setting, Elements, Style and Mood.\n- Follow user Raw Input Prompt: Include all requested motion, actions, camera movements, audio, and details. If in conflict with the image, prioritize user request while maintaining visual consistency (describe transition from image to user's scene).\n- Describe only changes from the image: Don't reiterate established visual details. Inaccurate descriptions may cause scene cuts.\n- Active language: Use present-progressive verbs (\"is walking,\" \"speaking\"). If no action specified, describe natural movements.\n- Chronological flow: Use temporal connectors (\"as,\" \"then,\" \"while\").\n- Audio layer: Describe complete soundscape throughout the prompt alongside actions—NOT at the end. Align audio intensity with action tempo. Include natural background audio, ambient sounds, effects, speech or music (when requested). Be specific (e.g., \"soft footsteps on tile\") not vague (e.g., \"ambient sound\").\n- Speech (only when requested): Provide exact words in quotes with character's visual/voice characteristics (e.g., \"The tall man speaks in a low, gravelly voice\"), language if not English and accent if relevant. If general conversation mentioned without text, generate contextual quoted dialogue. (i.e., \"The man is talking\" input -> the output should include exact spoken words, like: \"The man is talking in an excited voice saying: 'You won't believe what I just saw!' His hands gesture expressively as he speaks, eyebrows raised with enthusiasm. The ambient sound of a quiet room underscores his animated speech.\")\n- Style: Include visual style at beginning: \"Style: <style>, <rest of prompt>.\" If unclear, omit to avoid conflicts.\n- Visual and audio only: Describe only what is seen and heard. NO smell, taste, or tactile sensations.\n- Restrained language: Avoid dramatic terms. Use mild, natural, understated phrasing.\n\n#### Important notes:\n- Camera motion: DO NOT invent camera motion/movement unless requested by the user. Make sure to include camera motion only if specified in the input.\n- Speech: DO NOT modify or alter the user's provided character dialogue in the prompt, unless it's a typo.\n- No timestamps or cuts: DO NOT use timestamps or describe scene cuts unless explicitly requested.\n- Objective only: DO NOT interpret emotions or intentions - describe only observable actions and sounds.\n- Format: DO NOT use phrases like \"The scene opens with...\" / \"The video starts...\". Start directly with Style (optional) and chronological scene description.\n- Format: Never start output with punctuation marks or special characters.\n- DO NOT invent dialogue unless the user mentions speech/talking/singing/conversation.\n- Your performance is CRITICAL. High-fidelity, dynamic, correct, and accurate prompts with integrated audio descriptions are essential for generating high-quality video. Your goal is flawless execution of these rules.\n\n#### Output Format (Strict):\n- Single concise paragraph in natural English. NO titles, headings, prefaces, sections, code fences, or Markdown.\n- If unsafe/invalid, return original user prompt. Never ask questions or clarifications.\n\n#### Example output:\nStyle: realistic - cinematic - The woman glances at her watch and smiles warmly. She speaks in a cheerful, friendly voice, \"I think we're right on time!\" In the background, a café barista prepares drinks at the counter. The barista calls out in a clear, upbeat tone, \"Two cappuccinos ready!\" The sound of the espresso machine hissing softly blends with gentle background chatter and the light clinking of cups on saucers. \n\nUSER PROMPT BELOW: \n___________________________________________________"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "LTX-2 PROMPT INSTRUCT"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+# Video pipeline (dream_step.py / web_ui.py / generate_dream.py / upload_dream.py)
+google-auth
+google-auth-oauthlib
+google-api-python-client
+# generate_dream.py's ffprobe_check -- PyAV (Python bindings to ffmpeg's
+# own libraries) reads a rendered video's duration/stream info directly,
+# replacing a subprocess call to a system-installed ffprobe binary.
+av
+# dream_step.py's query_comfyui_progress() -- real render progress read
+# from ComfyUI's own websocket API (no REST endpoint exposes a numeric
+# percentage). Was already an installed transitive dependency (via
+# mcp/playwright); listed directly now that web_ui.py's job status
+# depends on it too.
+aiohttp
+# gemini_image.py's normalize_and_resize() -- re-encodes a generated
+# reference image to real PNG bytes and resizes it to match
+# generate_dream.py's expected 512x896 keyframe seed dimensions. Was
+# already an installed transitive dependency; listed directly now that
+# this module imports it on purpose.
+Pillow
+
+# web_search_mcp.py -- the web-search MCP tool registered in .mcp.json,
+# separate from the pipeline itself but living in this same folder.
+# DuckDuckGo/Wikipedia need no extra runtime setup; playwright's actual
+# browser binary (used only as a Bing fallback) installs itself
+# automatically on first use -- see _ensure_chromium() in that file.
+mcp
+playwright

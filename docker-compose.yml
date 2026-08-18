@@ -1,0 +1,24 @@
+services:
+  dream-pipeline:
+    build: .
+    image: dream-pipeline:latest
+    ports:
+      # Bound to 127.0.0.1 on the HOST side deliberately -- web_ui.py's
+      # whole design is "no auth, single local user" (see its own
+      # module docstring). Docker's network isolation is what makes
+      # --host 0.0.0.0 safe INSIDE the container, but publishing that to
+      # every host interface (a bare "8420:8420") would undo the exact
+      # protection this app was built around. Host port is the only
+      # thing meant to vary per machine -- override with a .env file or
+      # `WEB_UI_PORT=9000 docker compose up`.
+      - "127.0.0.1:${WEB_UI_PORT:-8420}:8420"
+    volumes:
+      # Rendered videos, keyframes, specs, index.json, CREATIVE.md, etc.
+      # (config.json's projects_root points here, set by entrypoint.sh
+      # on first run).
+      - /srv/data/filestash/users/ytProjects/data/projects:/data
+      # config.json + the YouTube OAuth Fernet key/secrets -- kept out
+      # of the image and off the projects volume so a redistributed
+      # image never carries them.
+      - /srv/data/filestash/users/ytProjects/data/state:/state
+    restart: unless-stopped

@@ -1,0 +1,32 @@
+# Excluded from both the build context AND the image itself (Dockerfile
+# now COPYs _pipeline/ in full) -- machine-specific, huge, or private/
+# non-transferable items, same exclusion list established for sharing
+# this folder over SMB (see CLAUDE.md). Secrets specifically must never
+# ship baked into a redistributed image -- they belong in the /state
+# volume only (see entrypoint.sh / secret_store.py's
+# DREAM_PIPELINE_CONFIG_DIR handling), never the image layer.
+_pipeline/.venv
+_pipeline/__pycache__
+_pipeline/browsers
+_pipeline/gemini/*.enc
+_pipeline/youtube/*.enc
+**/*.enc
+_pipeline/model_check_cache.json
+# This machine's own local config (network topology, model choices) --
+# never baked into the image. Unused at runtime anyway once
+# DREAM_PIPELINE_CONFIG_DIR=/state takes over (see Dockerfile), but it
+# doesn't belong in a distributable image regardless of whether it's
+# read.
+_pipeline/config.json
+_pipeline/gemini/usage.json
+
+# Project data (rendered videos, keyframes) -- not needed to BUILD the
+# image at all (it's runtime data, mounted via the /data volume), and
+# can be large enough to slow down sending the build context otherwise.
+ChatAiMals
+dreams
+guitest
+.claude
+data
+
+.git
