@@ -4907,6 +4907,28 @@ function renderPlayerCard() {
       <button data-action="fs-move" title="${sel.location === 'active' ? 'Move to Reviewed' : 'Move to Active'}">${sel.location === 'active' ? '&rarr; Reviewed' : '&rarr; Active'}</button>
       <button data-action="fs-exit" title="Exit fullscreen">Exit fullscreen</button>
     </div>` : '';
+
+  // Replacing player-fs-wrap's own innerHTML (or its parent's, which
+  // destroys and recreates this exact node) immediately exits
+  // fullscreen -- the Fullscreen API ends the instant its element
+  // leaves the DOM, even briefly. While actually fullscreen, update
+  // only player-fs-wrap's CONTENTS in place (same live node, never
+  // replaced) instead of re-rendering the whole card -- this is what
+  // lets prev/next/move stay in fullscreen instead of silently kicking
+  // the user out on every click. The h3/manage row outside
+  // player-fs-wrap aren't visible during fullscreen anyway (the
+  // Fullscreen API only renders the fullscreened element's own
+  // subtree), so nothing is lost by leaving them untouched here.
+  const wrap = document.getElementById('player-fs-wrap');
+  if (wrap && document.fullscreenElement === wrap) {
+    document.getElementById('player').innerHTML =
+      state.playerHtml || '<div class="muted">select a video below to play</div>';
+    const controls = wrap.querySelector('.player-fs-controls');
+    if (controls) controls.outerHTML = fsControls || '';
+    else if (fsControls) wrap.insertAdjacentHTML('beforeend', fsControls);
+    return;
+  }
+
   document.getElementById('sidebar-player-card').innerHTML = `
     <h3>Player
       ${state.playerHtml ? '<button data-action="fullscreen" style="float:right" title="Fullscreen with prev/next/move controls">&#x26F6; Fullscreen</button>' : ''}
