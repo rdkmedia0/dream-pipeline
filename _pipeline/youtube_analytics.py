@@ -376,6 +376,21 @@ def build_style_correlation(cache_videos, video_id_to_workflow):
     }
 
 
+def top_titles(cache_data, n=8):
+    """Ranks cached videos by views, returns the top n as compact
+    {"video_id","title","tags","views"} dicts -- for feeding into a
+    prompt (concept/spec trend mode) without the full per-video stat
+    blob. video_id is included so a caller can look up whether that
+    video's local spec still exists on disk for richer context (see
+    dream_step._project_top_titles) -- callers that don't need it can
+    just ignore or drop the key."""
+    videos = cache_data.get("videos") or []
+    ranked = sorted(videos, key=lambda v: v.get("views", 0), reverse=True)[:n]
+    return [{"video_id": v.get("video_id", ""), "title": v.get("title", ""),
+              "tags": v.get("tags") or [], "views": v.get("views", 0)}
+            for v in ranked]
+
+
 def _empty_cache():
     return {"fetched_at": None, "date_range": None, "videos": [], "correlation": {},
             "daily_trend": [], "ai_review": None}

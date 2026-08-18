@@ -700,10 +700,26 @@ def _namespace_from(body, defaults):
 
 
 
+def h_concepts_trend_availability(qs, body):
+    """Lazily called when the "Use performance trends" checkbox is first
+    ticked -- reports whether this project has its own analytics data yet,
+    and which OTHER projects do, so the GUI can offer including them
+    without a human needing to already know which channels have been
+    refreshed."""
+    project = _project_from_qs(qs)
+    return {
+        "current_has_data": bool(ds._project_top_titles(project)),
+        "other_projects_with_data": ds.list_projects_with_analytics_data(exclude=project),
+    }
+
+
 def h_concepts(qs, body):
     project = _project_from_body(body)
     count = int(body["count"])
-    payload = ds.build_concepts_request_payload(project, count, web_search_available=True)
+    use_trends = bool(body.get("use_trends"))
+    trend_projects = body.get("trend_projects") or []
+    payload = ds.build_concepts_request_payload(project, count, web_search_available=True,
+                                                 use_trends=use_trends, trend_projects=trend_projects)
     # Concepts are title/premise/animal/role/line only -- no positive_prompt
     # involved, so format_rules.md's mechanical prompt-format rules have
     # nothing to compose here.
@@ -1927,6 +1943,7 @@ ROUTES = {
     ("POST", "/api/project/rename"): h_project_rename,
     ("POST", "/api/project/delete"): h_project_delete,
     ("POST", "/api/concepts"): h_concepts,
+    ("GET", "/api/concepts/trend-availability"): h_concepts_trend_availability,
     ("POST", "/api/generate"): lambda qs, body: h_generate_or_rework(qs, body, False),
     ("POST", "/api/rework"): lambda qs, body: h_generate_or_rework(qs, body, True),
     ("GET", "/api/active-jobs"): h_active_jobs,
@@ -3269,6 +3286,12 @@ async function testGeminiKey() {
   }
 }
 
+function updateSpecTrendUI() {
+  const cb = document.getElementById('cfg-spec-trend-mode');
+  const row = document.getElementById('cfg-spec-trend-excerpts-row');
+  if (cb && row) row.style.display = cb.checked ? '' : 'none';
+}
+
 function updateCreativeBackendUI() {
   const sel = document.getElementById('cfg-creative-backend');
   if (!sel) return;
@@ -4033,6 +4056,16 @@ function settingsFormHtml(config) {
         <label class="row" style="gap:0.4rem; width:auto">
           <input type="checkbox" id="cfg-lock-creative-model" ${config.lock_creative_model ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'lock_creative_model','checkbox')">
           Lock chat to this model <span class="mf-help" title="Locks chat to this model, hiding the per-message picker.">?</span>
+        </label>
+      </div>
+      <div class="row" style="gap:0.9rem; margin-top:0.4rem; align-items:center; flex-wrap:wrap">
+        <label class="row" style="gap:0.4rem; width:auto">
+          <input type="checkbox" id="cfg-spec-trend-mode" ${config.spec_trend_mode_enabled ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'spec_trend_mode_enabled','checkbox'); updateSpecTrendUI();">
+          Use performance trends when writing content <span class="mf-help" title="When on, every AI-composed manage-table row (S chip, and the CLI's own generation) quietly checks this project's own YouTube Analytics for top-performing titles/tags and uses that as style/word-choice signal -- it never changes or overrides the row's own concept (title/premise), only informs tone in whatever's already being written. Safe to leave on permanently: if this project has no analytics data yet, generation proceeds completely normally with no error and no trend context.">?</span>
+        </label>
+        <label class="row" id="cfg-spec-trend-excerpts-row" style="gap:0.4rem; width:auto; ${config.spec_trend_mode_enabled ? '' : 'display:none'}">
+          <input type="checkbox" id="cfg-spec-trend-excerpts" ${config.spec_trend_include_script_excerpts ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'spec_trend_include_script_excerpts','checkbox')">
+          Include local script excerpts <span class="mf-help" title="Off (default): top performers are described by title/tags only. On: also pulls each top performer's real premise and an excerpt of its actual rendered script, when that video's render folder is still on disk -- richer signal, but reads more local files per generation.">?</span>
         </label>
       </div>
     </div>
@@ -5506,16 +5539,55 @@ function manageForm() {
         <label style="flex:1">How many <input id="concepts-count" type="number" min="1" value="5" style="width:6rem"></label>
         <button class="btn-primary" onclick="requestMoreConcepts()">Research &amp; add ideas</button>
       </div>
+      <label class="row" style="width:auto;gap:0.4rem;margin-top:0.4rem" title="Feeds this channel's own top-performing video titles/tags (real YouTube Analytics data) into idea generation, and lets the AI merge two well-performing concepts into one new idea when it genuinely fits. Requires at least one project's Analytics tab to have been refreshed at least once.">
+        <input type="checkbox" id="concepts-use-trends" style="width:auto" onchange="onConceptsTrendToggle(this)">
+        Use performance trends (optional)
+      </label>
+      <div id="concepts-trend-panel"></div>
       <div id="concepts-result"></div>
     </div>`;
 }
 
+// Lazy -- only hits the network the first time the checkbox is actually
+// ticked, not on every Manage tab render, since most idea-generation
+// requests won't use trend mode.
+let _conceptsTrendChecked = false;
+async function onConceptsTrendToggle(cb) {
+  const panel = document.getElementById('concepts-trend-panel');
+  if (!cb.checked) { panel.innerHTML = ''; return; }
+  if (_conceptsTrendChecked) return;
+  panel.innerHTML = '<div class="muted">checking available performance data...</div>';
+  try {
+    const data = await api('GET', `/api/concepts/trend-availability?project=${encodeURIComponent(state.project)}`);
+    _conceptsTrendChecked = true;
+    if (!data.current_has_data && !data.other_projects_with_data.length) {
+      panel.innerHTML = '<p class="muted">No performance data available yet for this or any other project -- refresh a project\'s Analytics tab first.</p>';
+      cb.checked = false;
+      return;
+    }
+    const currentNote = data.current_has_data ? '' :
+      '<p class="muted">This project has no analytics data of its own yet -- only the other project(s) selected below will be used.</p>';
+    const others = data.other_projects_with_data.map(p => `
+      <label class="row" style="width:auto;gap:0.3rem">
+        <input type="checkbox" class="concepts-trend-project" value="${esc(p)}" style="width:auto">${esc(p)}
+      </label>`).join('');
+    panel.innerHTML = `${currentNote}${others ? `<p class="muted" style="margin-bottom:0.2rem">Also include best performers from:</p><div class="row" style="flex-wrap:wrap;gap:0.6rem">${others}</div>` : ''}`;
+  } catch (e) {
+    panel.innerHTML = `<p class="muted">Could not check performance data: ${esc(e.message)}</p>`;
+    cb.checked = false;
+  }
+}
+
 async function requestMoreConcepts() {
   const count = parseInt(document.getElementById('concepts-count').value, 10) || 5;
+  const useTrends = document.getElementById('concepts-use-trends')?.checked || false;
+  const trendProjects = [...document.querySelectorAll('.concepts-trend-project:checked')].map(cb => cb.value);
   const result = document.getElementById('concepts-result');
   result.innerHTML = '<div class="muted">researching (real web search, this can take a minute or two)...</div>';
   try {
-    const data = await api('POST', '/api/concepts', { project: state.project, count });
+    const data = await api('POST', '/api/concepts', {
+      project: state.project, count, use_trends: useTrends, trend_projects: trendProjects
+    });
     result.innerHTML = `<pre>Added ${data.count} new concept(s) to the master list.</pre>`;
     state.status = await api('GET', `/api/status?project=${encodeURIComponent(state.project)}`);
   } catch (e) {

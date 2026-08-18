@@ -245,6 +245,25 @@ DEFAULT_CONFIG = {
     # rather than shown-but-pointless. Off by default so the picker
     # stays available (e.g. for comparing models).
     "lock_creative_model": False,
+    # Optional, off by default. When on, every manage-table spec
+    # generation (both "S" per-row AI compose and the CLI --interactive
+    # path) quietly checks this project's own YouTube Analytics cache for
+    # top-performing titles/tags and, if found, gives the model that as
+    # style/tag signal -- never allowed to override the row's own locked
+    # concept (title/premise), only informs tone/word-choice in whatever
+    # it's already writing. "Quiet" specifically means: if no analytics
+    # data exists yet for this project, generation proceeds completely
+    # normally with no trend context and no error -- this is meant to be
+    # left on permanently without needing per-project setup first.
+    "spec_trend_mode_enabled": False,
+    # Only matters when spec_trend_mode_enabled is on. Off by default:
+    # top performers are described by title/tags only. On: also pulls
+    # each top performer's real premise (from index.json, durable) and an
+    # excerpt of its actual rendered script (from that video's own .txt
+    # file, if the render folder hasn't been cleaned up) -- genuinely
+    # richer creative signal, but heavier (more file reads, more prompt
+    # content) than most requests need.
+    "spec_trend_include_script_excerpts": False,
     # vram_guard.py settings -- unified here (was its own separate
     # vram_guard.config.json) so relocating this pipeline to another
     # machine only ever means editing one file.
@@ -1527,6 +1546,8 @@ def build_spec_request_payload(number, note=None, workflow=None):
 
     reviewed_examples = reviewed_spec_examples()
     strong_backend = using_strong_creative_backend()
+    trend_context = _quiet_spec_trend_context()
+    trend_clause = _spec_trend_clause(trend_context)
 
     payload = {
         "workflow": workflow,
@@ -1536,10 +1557,11 @@ def build_spec_request_payload(number, note=None, workflow=None):
         "master_list_entry": concept_entry,
         "recent_titles_for_dedup": recent_titles_for_dedup(),
         "reviewed_examples": reviewed_examples or None,
+        "trend_context": trend_context,
         "schema_hint": schema_hint,
     }
     if strong_backend:
-        payload["instructions"] = lean_spec_instructions(note, concept_entry, reviewed_examples)
+        payload["instructions"] = lean_spec_instructions(note, concept_entry, reviewed_examples) + trend_clause
         return payload
 
     payload["creative_guidance"] = creative_guidance_pointer()
@@ -1568,11 +1590,49 @@ def build_spec_request_payload(number, note=None, workflow=None):
            f"exposition)." if reviewed_examples else
            f"reviewed_examples is empty -- nothing approved yet for this channel, so "
            f"rely on creative_guidance alone.")
+        + trend_clause
     )
     return payload
 
 
 ROW_SPEC_FIELDS = tuple(k for k in SPEC_SCHEMA_HINT if k != "workflow")
+
+
+def _quiet_spec_trend_context():
+    """Shared by build_row_spec_payload and build_spec_request_payload --
+    the config-driven, always-on-if-enabled trend lookup for creative-spec
+    generation (distinct from concepts' explicit, per-request use_trends
+    checkbox). Reads config.json's spec_trend_mode_enabled/
+    spec_trend_include_script_excerpts; returns None whenever the setting
+    is off OR no analytics data exists yet for the current project --
+    NEVER raises, since this is meant to sit on permanently without
+    requiring every project to have analytics set up first."""
+    config = load_config()
+    if not config.get("spec_trend_mode_enabled"):
+        return None
+    if not DREAMS_ROOT:
+        return None
+    return build_trend_context(
+        DREAMS_ROOT.name, trend_projects=None,
+        include_script_excerpts=bool(config.get("spec_trend_include_script_excerpts")))
+
+
+def _spec_trend_clause(trend_context):
+    """Shared instruction text for both spec-generation payload builders
+    -- deliberately framed as STYLE/TAG SIGNAL ONLY: this must never let
+    the model redirect or override the row's own concept (locked_fields,
+    master_list_entry), which are fixed inputs decided before this trend
+    data is even looked up."""
+    if not trend_context:
+        return ""
+    return (
+        f" trend_context lists this channel's own real top-performing video "
+        f"titles/tags (and, when available, their premise/script excerpt) from "
+        f"YouTube Analytics -- use it ONLY as style/tag/word-choice signal for "
+        f"whatever you're already writing. It must NEVER change, redirect, or "
+        f"merge into this row's own concept -- locked_fields/master_list_entry "
+        f"above are the fixed subject of this specific video and always win."
+    )
 
 
 def build_row_spec_payload(number, locked_fields, note, workflow):
@@ -1584,7 +1644,13 @@ def build_row_spec_payload(number, locked_fields, note, workflow):
     and REMOVED from schema_hint entirely. Every base field the human left
     blank goes into schema_hint for the model to compose. Returns None if
     there's nothing left for the model to do (every base field already
-    locked) -- the caller should skip the AI call entirely in that case."""
+    locked) -- the caller should skip the AI call entirely in that case.
+
+    Also quietly attaches trend_context when config.json's
+    spec_trend_mode_enabled is on and this project has analytics data --
+    see _quiet_spec_trend_context. Off by default, and framed strictly as
+    style signal, never allowed to override the concept -- see
+    _spec_trend_clause."""
     schema_hint = {k: v for k, v in SPEC_SCHEMA_HINT.items()
                    if k not in CODE_OWNED_SPEC_FIELDS and k not in locked_fields}
     if using_strong_creative_backend() and "positive_prompt" in schema_hint:
@@ -1618,6 +1684,8 @@ def build_row_spec_payload(number, locked_fields, note, workflow):
     concept_entry = master_list_concept_entry(number) if "title" not in locked_fields else None
     reviewed_examples = reviewed_spec_examples()
     strong_backend = using_strong_creative_backend()
+    trend_context = _quiet_spec_trend_context()
+    trend_clause = _spec_trend_clause(trend_context)
 
     payload = {
         "workflow": workflow,
@@ -1626,11 +1694,12 @@ def build_row_spec_payload(number, locked_fields, note, workflow):
         "master_list_entry": concept_entry,
         "recent_titles_for_dedup": recent_titles_for_dedup(),
         "reviewed_examples": reviewed_examples or None,
+        "trend_context": trend_context,
         "schema_hint": schema_hint,
     }
     if strong_backend:
         payload["instructions"] = lean_spec_instructions(
-            note, concept_entry, reviewed_examples, locked_fields=locked_fields)
+            note, concept_entry, reviewed_examples, locked_fields=locked_fields) + trend_clause
         return payload
 
     payload["creative_guidance"] = creative_guidance_pointer()
@@ -1651,6 +1720,7 @@ def build_row_spec_payload(number, locked_fields, note, workflow):
            f"committed specific voice). " if reviewed_examples else
            f"reviewed_examples is empty -- nothing approved yet for this channel. ") +
         f"Follow creative_guidance."
+        + trend_clause
     )
     return payload
 
@@ -2444,7 +2514,98 @@ def reviewed_spec_examples(limit=3):
     return examples
 
 
-def build_concepts_request_payload(project_name, count, web_search_available):
+def list_projects_with_analytics_data(exclude=None):
+    """Every existing project whose YouTube Analytics cache has actually
+    been refreshed at least once (fetched_at set) -- used to offer trend-
+    mode concept generation the option to pull in other projects' top
+    performers alongside this project's own."""
+    out = []
+    for name in list_existing_projects():
+        if name == exclude:
+            continue
+        cache_path = projects_root() / name / "_data" / "youtube" / "analytics_cache.json"
+        if not cache_path.exists():
+            continue
+        if load_json(cache_path, {}).get("fetched_at"):
+            out.append(name)
+    return sorted(out)
+
+
+def _project_top_titles(project_name, n=8, include_script_excerpts=True):
+    """Top-performing video titles/tags for one project (current or
+    another), or None if that project has no analytics data cached yet.
+    Reads the cache file directly by path rather than through the
+    module-level DATA_DIR global, so this also works for projects other
+    than the currently active one.
+
+    include_script_excerpts controls the heavier enrichment: index.json's
+    own "premise" field (durable, never deleted) plus an excerpt of the
+    actual rendered script's POSITIVE PROMPT section from that video's
+    own .txt file (see generate_dream.write_txt) when that video's render
+    folder hasn't been cleaned up -- spec_NNN.json itself is routinely
+    deleted after upload, so this durable per-video record is the only
+    place genuine past creative writing survives for an already-published
+    video. False skips the index.json/.txt reads entirely and returns
+    title/tags/views only -- for callers that want a lighter, faster
+    check (e.g. spec_trend_mode_enabled's quiet per-generation lookup)."""
+    import youtube_analytics
+    project_dir = projects_root() / project_name
+    cache_path = project_dir / "_data" / "youtube" / "analytics_cache.json"
+    if not cache_path.exists():
+        return None
+    cache = load_json(cache_path, {})
+    if not cache.get("fetched_at") or not cache.get("videos"):
+        return None
+    top = youtube_analytics.top_titles(cache, n=n)
+
+    if include_script_excerpts:
+        index = load_json(project_dir / "_data" / "index.json", [])
+        entry_by_video_id = {e["youtube_video_id"]: e for e in index if e.get("youtube_video_id")}
+        for item in top:
+            entry = entry_by_video_id.get(item.pop("video_id", ""))
+            if not entry:
+                continue
+            if entry.get("premise"):
+                item["premise"] = entry["premise"]
+            folder = entry.get("folder")
+            txt_path = project_dir / folder / f"{folder}.txt" if folder else None
+            if txt_path and txt_path.exists():
+                text = txt_path.read_text(encoding="utf-8")
+                marker = "POSITIVE PROMPT:\n\n"
+                if marker in text:
+                    excerpt = text.split(marker, 1)[1].split("\n\nNEGATIVE PROMPT:", 1)[0]
+                    item["script_excerpt"] = excerpt[:1200]
+    else:
+        for item in top:
+            item.pop("video_id", None)
+
+    return {
+        "project": project_name,
+        "top_titles": top,
+        "by_workflow": (cache.get("correlation") or {}).get("by_workflow", [])[:5],
+        "by_tag": (cache.get("correlation") or {}).get("by_tag", [])[:5],
+    }
+
+
+def build_trend_context(project_name, trend_projects=None, include_script_excerpts=True):
+    """Assembles the trend-mode payload: this project's own top performers
+    plus, optionally, top performers from other projects the human
+    explicitly opted to include. Returns None if nothing usable was found
+    anywhere -- callers that treat trend mode as an explicit, deliberate
+    request (concepts) should refuse outright on None rather than
+    silently proceeding with no real data behind it; callers that treat
+    it as a quiet, always-on enhancement (spec_trend_mode_enabled) should
+    just skip trend context entirely on None, no error."""
+    names = [project_name] + [p for p in (trend_projects or []) if p != project_name]
+    per_project = [ctx for ctx in (_project_top_titles(name, include_script_excerpts=include_script_excerpts)
+                                     for name in names) if ctx]
+    if not per_project:
+        return None
+    return {"projects": per_project}
+
+
+def build_concepts_request_payload(project_name, count, web_search_available,
+                                    use_trends=False, trend_projects=None):
     """Shared by every concepts-research caller (the web UI's "Research &
     add ideas" button and the --interactive new-project flow).
     web_search_available controls whether the instructions ask for
@@ -2456,7 +2617,17 @@ def build_concepts_request_payload(project_name, count, web_search_available):
     available=True is accurate for every current
     caller; the False branch stays available for any future caller that
     genuinely has no tool access. Numbering starts at 1 for a brand-new
-    project, or continues after the highest number already in the list."""
+    project, or continues after the highest number already in the list.
+
+    use_trends (optional, off by default) feeds real YouTube Analytics
+    top-performer data into the request instead of relying purely on
+    external research -- see build_trend_context. trend_projects lets the
+    human also pull in top performers from OTHER projects (each entry
+    stays tagged with its own project name), so a new concept can draw on
+    or even merge ideas across channels, not just within this one. Raises
+    SystemExit if use_trends is set but no project (this one or any
+    selected other) has analytics data yet -- silently falling back to
+    plain research would defeat the point of asking for trend mode."""
     concept_list_path = find_concept_list_path()
     existing_text = concept_list_path.read_text(encoding="utf-8") if concept_list_path.exists() else ""
     existing_numbers = [int(m) for m in re.findall(r"(?m)^Tale #(\d+):", existing_text)]
@@ -2469,11 +2640,35 @@ def build_concepts_request_payload(project_name, count, web_search_available):
     )
     reviewed_examples = reviewed_spec_examples()
 
+    trend_context = None
+    if use_trends:
+        trend_context = build_trend_context(project_name, trend_projects)
+        if trend_context is None:
+            raise SystemExit(
+                "[dream_step] trend mode is on but no performance data is available yet.\n"
+                "EXPECTED: this project (or another project explicitly selected to "
+                "include) needs a YouTube Analytics cache that's actually been refreshed.\n"
+                "TO FIX: open that project's Analytics tab and click Refresh, or turn off "
+                "trend mode for this request.")
+
+    trend_clause = (
+        f" trend_context lists this channel's own real top-performing video titles/tags "
+        f"from YouTube Analytics (and, if selected, other projects' too -- each entry "
+        f"tagged with its source project). Use it to favor patterns that have actually "
+        f"performed well here (subject matter, tag themes, workflow style) instead of "
+        f"guessing blind. When two listed top performers -- from the same project or "
+        f"different ones -- could genuinely combine into one strong new concept, merging "
+        f"them into a single idea is encouraged; only do this when it actually produces "
+        f"something good, never force an awkward mashup just to use two entries."
+        if trend_context else ""
+    )
+
     return {
         "project": project_name, "count": count, "start_at": start_at,
         "existing_list_tail": existing_text[-2000:] if existing_text else None,
         "reviewed_examples": reviewed_examples or None,
         "creative_guidance": creative_guidance_pointer(),
+        "trend_context": trend_context,
         "schema_hint": [{"number": "int", "title": "string", "animal": "string",
                           "role": "string", "line": "string -- one sample line"}],
         "instructions": (
@@ -2495,6 +2690,7 @@ def build_concepts_request_payload(project_name, count, web_search_available):
             f"tone, format, and what kind of concept fits this channel -- research is for "
             f"what performs well in the genre, not for overriding the channel's own "
             f"established style."
+            + trend_clause
         ),
     }
 
