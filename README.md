@@ -17,19 +17,26 @@ docker compose up -d
 No build step — `docker-compose.yml` pulls a pre-built image from GHCR.
 Then open **http://127.0.0.1:8420**.
 
+The image is currently private, so the host running `docker compose pull`
+needs to be logged in first (a one-time `docker login ghcr.io` using a
+GitHub personal access token with `read:packages` scope).
+
 `docker-compose.yml` mounts two volumes outside the repo:
 
 | Volume | Container path | Contents |
 |---|---|---|
-| `.../data/projects` | `/data` | Every project's rendered videos, keyframes, specs, `index.json` |
-| `.../data/state` | `/state` | `config.json` + encrypted secrets (Gemini API key, YouTube OAuth) |
+| `DREAM_PIPELINE_DATA_DIR` (default `./data`) | `/data` | Every project's rendered videos, keyframes, specs, `index.json` |
+| `DREAM_PIPELINE_STATE_DIR` (default `./state`) | `/state` | `config.json` + encrypted secrets (Gemini API key, YouTube OAuth) |
 
-Both are created empty on first run — `entrypoint.sh` seeds a minimal
+The defaults (`./data`, `./state` next to the compose file) work
+out of the box for a quick try, but point them at real, backed-up storage
+for an actual deployment — copy `.env.example` to `.env` and set both. Both
+are created empty on first run either way — `entrypoint.sh` seeds a minimal
 `config.json`, and everything else (backend URLs, model choices, YouTube
 credentials) is set from the GUI's **Settings** screen, not by hand.
 
 The host port defaults to `8420`; override with `WEB_UI_PORT=9000 docker
-compose up` or a `.env` file. It's bound to `127.0.0.1` on the host
+compose up` or the same `.env` file. It's bound to `127.0.0.1` on the host
 deliberately — see the comment in `docker-compose.yml` before changing
 that.
 

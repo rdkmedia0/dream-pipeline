@@ -16,12 +16,18 @@ services:
       # `WEB_UI_PORT=9000 docker compose up`.
       - "127.0.0.1:${WEB_UI_PORT:-8420}:8420"
     volumes:
+      # Host paths default to ./data and ./state (created next to this
+      # file) so a fresh `docker compose up` works out of the box for
+      # anyone pulling the distributable image -- override via .env or
+      # `DREAM_PIPELINE_DATA_DIR=/srv/... DREAM_PIPELINE_STATE_DIR=/srv/...
+      # docker compose up` for a real deployment. See .env.example.
+      #
       # Rendered videos, keyframes, specs, index.json, CREATIVE.md, etc.
       # (config.json's projects_root points here, set by entrypoint.sh
       # on first run).
-      - /srv/data/filestash/users/ytProjects/data/projects:/data
+      - ${DREAM_PIPELINE_DATA_DIR:-./data}:/data
       # config.json + the YouTube OAuth Fernet key/secrets -- kept out
       # of the image and off the projects volume so a redistributed
       # image never carries them.
-      - /srv/data/filestash/users/ytProjects/data/state:/state
+      - ${DREAM_PIPELINE_STATE_DIR:-./state}:/state
     restart: unless-stopped

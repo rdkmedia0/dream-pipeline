@@ -15,14 +15,21 @@ _pipeline/youtube/
 _pipeline/gemini/usage.json
 _pipeline/model_check_cache.json
 
-# Project data (rendered videos, keyframes, specs, index.json) -- lives
-# entirely outside this repo (see docker-compose.yml's /data volume), but
-# ignored here too in case a project folder ever ends up nested alongside
-# _pipeline/ during local testing.
+# Project data (rendered videos, keyframes, specs, index.json) and Docker
+# state (config.json + secrets) -- both live entirely outside this repo in
+# a real deployment, but docker-compose.yml's default volume paths land
+# them here (./data, ./state) when no .env override is set, so ignore
+# both in case that happens during local testing.
 /data/
+/state/
 /ChatAiMals/
 /dreams/
 /guitest/
+
+# Per-host override of docker-compose.yml's default volume paths -- see
+# .env.example for what this can set. Real values are host-specific,
+# never shared/committed.
+.env
 
 # Python
 __pycache__/
