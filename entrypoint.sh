@@ -1,11 +1,20 @@
 #!/bin/sh
 # First-run bootstrap: create a minimal config.json in the mounted state
 # volume if one doesn't exist yet, so project data has somewhere sane to
-# land out of the box. Everything else (ollama_url, comfyui_url,
-# creative/vision models, ...) is left unset on purpose -- the GUI's own
-# Settings screen is where those get defined, same as a bare install
-# (see CLAUDE.md's config.json note: "Edited via the GUI's Settings
-# screen, not by hand").
+# land out of the box. Everything else (creative/vision models, kf_backend,
+# ...) is left unset on purpose -- the GUI's own Settings screen is where
+# those get defined, same as a bare install (see CLAUDE.md's config.json
+# note: "Edited via the GUI's Settings screen, not by hand").
+#
+# OLLAMA_URL/COMFYUI_URL are the one exception: plain non-secret config
+# (just hostnames), unlike the Gemini API key -- see secret_store.py's
+# encrypted-at-rest design, deliberately NOT given an env-var path here,
+# since a plain compose env var would put that key in cleartext in
+# docker-compose.yml/.env, undoing the whole point of encrypting it.
+# When set, these two are applied on EVERY container start (not just
+# first-run), so editing docker-compose.yml and restarting always takes
+# effect -- Settings can still override them afterward for the rest of
+# that container's life, same as any other config.json field.
 set -e
 
 CONFIG_DIR="${DREAM_PIPELINE_CONFIG_DIR:-/state}"
@@ -18,6 +27,28 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "projects_root": "/data"
 }
 EOF
+fi
+
+if [ -n "$OLLAMA_URL" ] || [ -n "$COMFYUI_URL" ]; then
+    python - "$CONFIG_FILE" <<'PYEOF'
+import json
+import os
+import sys
+
+config_file = sys.argv[1]
+with open(config_file, encoding="utf-8") as f:
+    config = json.load(f)
+
+ollama_url = os.environ.get("OLLAMA_URL")
+comfyui_url = os.environ.get("COMFYUI_URL")
+if ollama_url:
+    config["ollama_url"] = ollama_url
+if comfyui_url:
+    config["comfyui_url"] = comfyui_url
+
+with open(config_file, "w", encoding="utf-8") as f:
+    json.dump(config, f, indent=2)
+PYEOF
 fi
 
 exec python dream_step.py --web --host 0.0.0.0 --port 8420

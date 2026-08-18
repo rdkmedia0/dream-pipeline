@@ -30,4 +30,21 @@ services:
       # of the image and off the projects volume so a redistributed
       # image never carries them.
       - ${DREAM_PIPELINE_STATE_DIR:-./state}:/state
+    environment:
+      # Optional -- config.json's ollama_url/comfyui_url can still be set
+      # (or overridden) via the Settings screen after the container's up;
+      # these just save doing that by hand on every fresh install. Applied
+      # by entrypoint.sh on every container start, so editing these and
+      # restarting always takes effect. Leave unset (or delete these two
+      # lines) to configure entirely through Settings instead -- neither
+      # has a default here, on purpose, so an unset one is left alone
+      # rather than getting written as an empty string.
+      #
+      # The Gemini API key has NO env var here, deliberately -- unlike
+      # these two plain URLs, it's a real secret, stored encrypted at
+      # rest (see secret_store.py) rather than in config.json; putting it
+      # in this file would mean the raw key sits in cleartext in
+      # docker-compose.yml/.env instead. Paste it once in Settings > Gemini.
+      - OLLAMA_URL=${OLLAMA_URL:-}
+      - COMFYUI_URL=${COMFYUI_URL:-}
     restart: unless-stopped
