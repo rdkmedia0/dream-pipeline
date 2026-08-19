@@ -7736,9 +7736,29 @@ async function saveManageRowContent(row, tr, verbose) {
 
 // Whether this row's form currently has ANY edit not yet written to
 // disk -- used to warn before an action (like deleteSlotImage) that's
-// about to reload the row from disk and silently discard them.
+// about to reload the row from disk and silently discard them, and to
+// decide the Revert button's visibility.
 function rowHasUnsavedChanges(row, tr) {
   const current = readManageRow(tr);
+  if (!row.exists) {
+    // specFieldsDirty always reports "dirty" for a row with nothing on
+    // disk yet (so Save/Auto-generate still fires for it), even when
+    // the form matches EXACTLY what's already showing -- a never-
+    // generated row still gets concept-list-suggested title/premise/etc
+    // pre-filled into its fields, so "blank" is the wrong baseline to
+    // diff against here. Compare against the row's own suggested
+    // values instead, same field-by-field diff specFieldsDirty uses for
+    // an existing row, just without its exists-gate -- only true if the
+    // user actually changed something away from what's showing.
+    const orig = { title: row.title, premise: row.premise, positive_prompt: row.positive_prompt,
+                   negative_prompt: row.negative_prompt, description: row.description, tags: row.tags };
+    const listFields = new Set(['negative_prompt', 'tags']);
+    const specTouched = Object.keys(orig).some(k => {
+      const a = orig[k] || '', b = current.fields[k] || '';
+      return listFields.has(k) ? normalizedTagList(a) !== normalizedTagList(b) : a !== b;
+    });
+    return specTouched || kfFieldsDirty(row, current);
+  }
   return specFieldsDirty(row, current) || kfFieldsDirty(row, current);
 }
 
