@@ -702,6 +702,17 @@ def h_creative_fields_get(qs, body):
     }
 
 
+def h_concept_list_get(qs, body):
+    _project_from_qs(qs)
+    return {"entries": ds.list_concept_entries()}
+
+
+def h_concept_list_replace(qs, body):
+    _project_from_body(body)
+    ds.replace_concept_entry(int(body["number"]), body.get("text") or "")
+    return {"ok": True}
+
+
 def h_creative_fields_save(qs, body):
     project = _project_from_body(body)
     ds.save_creative_fields(
@@ -2268,6 +2279,8 @@ ROUTES = {
     ("POST", "/api/manage/guide-strengths"): h_manage_guide_strengths_save,
     ("GET", "/api/creative-fields"): h_creative_fields_get,
     ("POST", "/api/creative-fields"): h_creative_fields_save,
+    ("GET", "/api/concept-list"): h_concept_list_get,
+    ("POST", "/api/concept-list/replace"): h_concept_list_replace,
     ("GET", "/api/golden-rules"): h_golden_rules_get,
     ("POST", "/api/golden-rules"): h_golden_rules_save,
     ("POST", "/api/golden-rules/generate"): h_golden_rules_generate,
@@ -6287,7 +6300,8 @@ function renderMenu(activeKey) {
     <div id="results"></div>
     <div class="muted" style="margin-top:1.5em">
       specs: ${fmtRanges(s.specced)} | rendered: ${fmtRanges(s.rendered)} | uploaded: ${fmtRanges(s.uploaded)}<br>
-      master list: ${s.concept_list_path} (${s.concept_list_total} entries, ${s.concept_list_remaining} remaining)
+      master list: <span id="concept-list-stats">${s.concept_list_path} (${s.concept_list_total} entries, ${s.concept_list_remaining} remaining)</span>
+      <button type="button" style="font-size:0.75em;padding:0.15rem 0.5rem;margin-left:0.4rem" onclick="openConceptListModal()">Manage</button>
     </div>`;
   if (activeKey === 'upload') loadUploadTab();
   if (activeKey === 'manage' && localStorage.getItem(manageNumbersKey())) loadManageTable();
@@ -9188,6 +9202,87 @@ async function reviewGoldenRules() {
   const applied = await goldenRulesReviewModal();
   const resultEl = document.getElementById('gr-review-result');
   if (applied && resultEl) resultEl.innerHTML = '<p class="muted">Updated from AI discussion.</p>';
+}
+
+// Master concept-list management -- lets a human review/rewrite raw
+// ideas from concepts.md directly, per explicit request ("how can i
+// manage the master concept list, say i want to delete some ideas").
+// Deliberately edit-in-place only, no delete: these numbers become the
+// actual video/upload numbers once specced, uploaded strictly in
+// order, so removing an entry would leave a permanent gap in a
+// sequence where gaps genuinely matter -- if an idea isn't wanted,
+// type a different one over it instead, keeping the numbering dense
+// with no renumbering ever needed. Defaults to hiding already-specced
+// entries (a toggle shows them) since editing concepts.md text has no
+// effect on a spec/video that already exists -- see
+// replace_concept_entry's own docstring for why that's safe.
+async function openConceptListModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'mf-confirm-overlay';
+  document.body.appendChild(overlay);
+  let entries = [];
+  let showUsed = false;
+  const render = (loading) => {
+    const visible = entries.filter(e => showUsed || !e.has_spec);
+    const rows = visible.map(e => `
+      <tr>
+        <td>#${e.number}${e.has_spec ? ' <span class="badge badge-ok" title="A spec already exists for this number -- editing this list entry has no effect on it.">used</span>' : ''}</td>
+        <td>
+          <input type="text" class="cl-raw" data-number="${e.number}" value="${esc(e.raw)}" style="width:100%;box-sizing:border-box">
+        </td>
+        <td><button type="button" class="cl-save" data-number="${e.number}">Save</button></td>
+      </tr>`).join('');
+    overlay.innerHTML = `
+      <div class="card mf-confirm-card" style="max-width:44rem">
+        <p class="mf-confirm-message">Manage concept list</p>
+        <p class="muted" style="font-size:0.85em">Raw ideas from this project's concepts.md, one row
+          per number. To drop an idea you don't want, type a different one over it -- there's no
+          delete here (these numbers become the actual upload order once specced, so removing one
+          would leave a permanent gap instead of just being reused).</p>
+        <label class="row" style="align-items:center;gap:0.4rem"><input type="checkbox" id="cl-show-used" ${showUsed ? 'checked' : ''}> Show already-specced entries too</label>
+        ${loading ? '<p class="muted"><span class="mf-spinner"></span>Loading...</p>' : (visible.length ? `
+        <div style="max-height:50vh;overflow-y:auto;margin-top:0.4rem">
+          <table style="width:100%">
+            <thead><tr><th>#</th><th>Idea</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>` : `<p class="muted">${entries.length ? 'Nothing to show (all entries are already specced -- check the box above to see them).' : 'No concept-list entries for this project yet.'}</p>`)}
+        <div class="row row-end" style="margin-top:0.8rem">
+          <button type="button" id="cl-close" class="btn-primary">Close</button>
+        </div>
+      </div>`;
+    overlay.querySelector('#cl-close').onclick = () => overlay.remove();
+    overlay.querySelector('#cl-show-used').onchange = (ev) => { showUsed = ev.target.checked; render(false); };
+    if (loading) return;
+    overlay.querySelectorAll('.cl-save').forEach(btn => {
+      btn.onclick = async () => {
+        const number = parseInt(btn.dataset.number, 10);
+        const input = overlay.querySelector(`.cl-raw[data-number="${number}"]`);
+        const text = input.value.trim();
+        if (!text) { alert('Cannot save an empty idea -- type a replacement or leave the original text.'); return; }
+        try {
+          await withSaveButtonFeedback(btn, () =>
+            api('POST', '/api/concept-list/replace', { project: state.project, number, text }));
+          const e = entries.find(x => x.number === number);
+          if (e) e.raw = text;
+        } catch (e) { /* button itself already shows the failure */ }
+      };
+    });
+  };
+  const load = async () => {
+    render(true);
+    try {
+      const data = await api('GET', `/api/concept-list?project=${encodeURIComponent(state.project)}`);
+      entries = data.entries || [];
+    } catch (e) {
+      overlay.innerHTML = `<div class="card mf-confirm-card"><pre>ERROR: ${esc(e.message)}</pre>
+        <div class="row row-end"><button type="button" onclick="this.closest('.mf-confirm-overlay').remove()" class="btn-primary">Close</button></div></div>`;
+      return;
+    }
+    render(false);
+  };
+  overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
+  await load();
 }
 
 async function generateCreativeDraft() {

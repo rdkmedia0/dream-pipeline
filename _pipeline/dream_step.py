@@ -2478,6 +2478,55 @@ def parse_concept_entry(entry_text):
     return title, f"{description}. \"{line}\""
 
 
+def list_concept_entries():
+    """Every entry in this project's master concept list (concepts.md),
+    parsed for the GUI's own management view -- number/title/description
+    (for display) plus raw (everything after 'Tale #N: ', for editing
+    verbatim) and has_spec (whether spec_NNN.json already exists for
+    that number), so a human reviewing the list can see at a glance
+    which ideas are still raw versus already turned into a real
+    spec/video before deciding what to rewrite."""
+    path = find_concept_list_path()
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    specced = {int(p.stem.split("_")[1]) for p in DATA_DIR.glob("spec_*.json")}
+    entries = []
+    for m in re.finditer(r"(?m)^Tale #(\d+):.*$", text):
+        number = int(m.group(1))
+        title, description = parse_concept_entry(m.group(0))
+        entries.append({"number": number, "title": title, "description": description,
+                         "raw": m.group(0).split(":", 1)[1].strip(),
+                         "has_spec": number in specced})
+    entries.sort(key=lambda e: e["number"])
+    return entries
+
+
+def replace_concept_entry(number, raw_text):
+    """Rewrites one concept-list entry's own line IN PLACE -- same
+    number, same position in the file, new content -- rather than
+    deleting it. Deliberately no delete: these numbers become the
+    actual video/upload numbers once specced, uploaded strictly in
+    order, so removing an entry would leave a permanent gap in a
+    sequence where gaps genuinely matter (unlike an arbitrary ID) --
+    replacing keeps the sequence dense with no renumbering ever needed.
+    raw_text is everything after 'Tale #N: ' on that line, saved
+    verbatim (the human's own free text, not re-parsed/re-validated
+    against the normal title/animal/role/line shape). Raises SystemExit
+    if no entry with that number exists."""
+    path = find_concept_list_path()
+    if not path.exists():
+        raise SystemExit(f"[dream_step] no concept list exists for this project yet.")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^Tale #(\d+):", line)
+        if m and int(m.group(1)) == number:
+            lines[i] = f"Tale #{number}: {raw_text.strip()}"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return
+    raise SystemExit(f"[dream_step] no concept-list entry #{number} found to replace.")
+
+
 def get_manage_row(number):
     """One manage-table row's full current state -- the web UI's single
     source of truth for what to pre-fill, built entirely from real files
