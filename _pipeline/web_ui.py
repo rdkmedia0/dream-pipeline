@@ -707,20 +707,42 @@ def h_creative_draft_generate(qs, body):
 
 
 def h_golden_rules_get(qs, body):
-    """golden_rules.md is pipeline-wide, not per-project -- no project
-    param needed, unlike the creative-fields handlers above it."""
-    return {"content": ds.golden_rules_text(), "word_limit": ds.GOLDEN_RULES_WORD_LIMIT}
+    """Per-project golden_rules.md, parsed into its fixed form sections
+    -- see GOLDEN_RULES_SECTION_DEFS in dream_step.py."""
+    _project_from_qs(qs)
+    return {
+        "sections": ds.golden_rules_sections(),
+        "section_defs": [{"key": k, "label": l, "hint": h} for k, l, h in ds.GOLDEN_RULES_SECTION_DEFS],
+        "word_limit": ds.GOLDEN_RULES_WORD_LIMIT,
+    }
 
 
 def h_golden_rules_save(qs, body):
-    content = body.get("content") or ""
-    ds.save_golden_rules_text(content)
+    _project_from_body(body)
+    ds.save_golden_rules_sections(body.get("sections") or {})
     return {"ok": True}
 
 
-def h_golden_rules_review(qs, body):
-    content = body.get("content") or ""
-    return ds.review_golden_rules_text(content)
+def h_golden_rules_generate(qs, body):
+    """AI-drafts this project's rules from the pipeline baseline template
+    + this project's own creative idea -- read-only, returns a draft for
+    the form, never writes anything until the human hits Save."""
+    _project_from_body(body)
+    return {"sections": ds.generate_golden_rules_draft()}
+
+
+def h_golden_rules_discuss(qs, body):
+    """Chat-based propose/discuss step behind the Creative tab's 'Review
+    with AI' -- see ds.discuss_golden_rules. Never writes to disk;
+    h_golden_rules_save (called only when the human hits Accept) is the
+    only place that happens."""
+    _project_from_body(body)
+    sections = body.get("sections") or {}
+    message = (body.get("message") or "").strip()
+    history = body.get("history") or []
+    result, model_label = ds.discuss_golden_rules(sections, message, history)
+    result["model"] = model_label
+    return result
 
 
 def h_chat(qs, body):
@@ -2140,7 +2162,8 @@ ROUTES = {
     ("POST", "/api/creative-fields"): h_creative_fields_save,
     ("GET", "/api/golden-rules"): h_golden_rules_get,
     ("POST", "/api/golden-rules"): h_golden_rules_save,
-    ("POST", "/api/golden-rules/review"): h_golden_rules_review,
+    ("POST", "/api/golden-rules/generate"): h_golden_rules_generate,
+    ("POST", "/api/golden-rules/discuss"): h_golden_rules_discuss,
     ("POST", "/api/creative-draft"): h_creative_draft_generate,
     ("POST", "/api/chat"): h_chat,
     ("GET", "/api/config"): h_config_get,
@@ -8582,26 +8605,44 @@ async function loadCreativeEditor() {
   try {
     [data, goldenRules] = await Promise.all([
       api('GET', `/api/creative-fields?project=${encodeURIComponent(state.project)}`),
-      api('GET', '/api/golden-rules'),
+      api('GET', `/api/golden-rules?project=${encodeURIComponent(state.project)}`),
     ]);
   } catch (e) {
     container.innerHTML = `<pre>ERROR: ${e.message}</pre>`;
     return;
   }
   window.__grWordLimit = goldenRules.word_limit || 1000;
+  window.__grSectionDefs = goldenRules.section_defs || [];
   container.innerHTML = creativeFieldsBody(data, false) + goldenRulesEditorHtml(goldenRules);
   updateGoldenRulesWordCount();
 }
 
 function goldenRulesEditorHtml(gr) {
+  const defs = gr.section_defs || [];
+  const sections = gr.sections || {};
+  const hasAnyContent = defs.some(d => (sections[d.key] || '').trim());
+  const fieldsHtml = defs.map(d => `
+    <div style="margin-bottom:0.9rem">
+      <label for="gr-${d.key}" style="font-weight:600">${esc(d.label)}</label>
+      <div class="muted" style="font-size:0.82em;margin-bottom:0.2rem">${esc(d.hint)}</div>
+      <textarea id="gr-${d.key}" data-gr-key="${esc(d.key)}" rows="3"
+        style="width:100%;box-sizing:border-box;font-size:0.9em"
+        oninput="updateGoldenRulesWordCount()"
+        placeholder="Not set -- leave blank if this doesn't apply to this project">${esc(sections[d.key] || '')}</textarea>
+    </div>`).join('');
   return `
     <hr style="margin:1.5em 0;border-color:var(--border-soft)">
     <h4>Golden rules</h4>
-    <p class="muted">Pipeline-wide mechanical/render rules -- not specific to this project.
-      Edits here apply to every project's generation immediately, and this file is loaded
-      into every single AI call, so keep it strict and short.</p>
-    <textarea id="gr-editor" rows="20" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.85em"
-      oninput="updateGoldenRulesWordCount()">${esc(gr.content || '')}</textarea>
+    <p class="muted">This project's own mechanical/render/style rules -- loaded into every AI
+      generation call for this project. Keep facts about the STORY (species, characters, world)
+      in the fields above instead; this section is only HOW things must be rendered/written, not
+      WHAT the story is about.</p>
+    ${!hasAnyContent ? `<p class="muted">No rules drafted for this project yet.
+      <button type="button" onclick="generateGoldenRules()">Generate with AI</button>
+      drafts a starting point from the pipeline's baseline template and this project's
+      concept above -- nothing is saved until you review and hit Save.</p>` : `
+      <p><button type="button" onclick="generateGoldenRules()">Re-generate with AI</button></p>`}
+    <div id="gr-fields">${fieldsHtml}</div>
     <div class="row" style="margin-top:0.3rem;align-items:center;gap:0.6rem">
       <span class="muted" id="gr-word-count"></span>
       <span style="flex:1"></span>
@@ -8611,21 +8652,53 @@ function goldenRulesEditorHtml(gr) {
     <div id="gr-review-result"></div>`;
 }
 
+function collectGoldenRulesSections() {
+  const sections = {};
+  document.querySelectorAll('#gr-fields textarea[data-gr-key]').forEach(ta => {
+    sections[ta.dataset.grKey] = ta.value;
+  });
+  return sections;
+}
+
 function updateGoldenRulesWordCount() {
-  const ta = document.getElementById('gr-editor');
   const el = document.getElementById('gr-word-count');
-  if (!ta || !el) return;
-  const trimmed = ta.value.trim();
-  const words = trimmed ? trimmed.split(/\s+/).length : 0;
+  if (!el) return;
+  const words = Object.values(collectGoldenRulesSections())
+    .map(v => v.trim()).filter(Boolean)
+    .reduce((sum, v) => sum + v.split(/\s+/).length, 0);
   const limit = window.__grWordLimit || 1000;
   el.textContent = `${words} / ${limit} words`;
   el.style.color = words > limit ? 'var(--danger)' : '';
 }
 
-async function saveGoldenRules() {
-  const content = document.getElementById('gr-editor').value;
+async function generateGoldenRules() {
+  const project = state.pendingNewProject || state.project;
+  const btn = event.target;
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Generating (calls the AI, may take a while)...';
   try {
-    await api('POST', '/api/golden-rules', { content });
+    const result = await api('POST', '/api/golden-rules/generate', { project });
+    (window.__grSectionDefs || []).forEach(d => {
+      const ta = document.getElementById(`gr-${d.key}`);
+      if (ta) ta.value = result.sections[d.key] || '';
+    });
+    updateGoldenRulesWordCount();
+    const resultEl = document.getElementById('gr-review-result');
+    if (resultEl) resultEl.innerHTML =
+      '<p class="muted">Draft filled in below -- review and edit before saving.</p>';
+  } catch (e) {
+    alert(`ERROR: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
+async function saveGoldenRules() {
+  const project = state.pendingNewProject || state.project;
+  try {
+    await api('POST', '/api/golden-rules', { project, sections: collectGoldenRulesSections() });
     const resultEl = document.getElementById('gr-review-result');
     if (resultEl) resultEl.innerHTML = '<p class="muted">Saved.</p>';
   } catch (e) {
@@ -8633,28 +8706,101 @@ async function saveGoldenRules() {
   }
 }
 
+// "Review with AI" opens a propose/discuss/accept conversation, same
+// shape as the video-review feedback flow (feedbackReviewModal above):
+// the AI proposes a rewrite (whole set or, on request, just specific
+// sections -- see discuss_golden_rules's docstring), the human can push
+// back and iterate, and only Accept actually writes anything -- reusing
+// feedbackChatLogHtml/scrollFeedbackChatToBottom/onFeedbackTextareaKeydown
+// since the interaction shape is identical, just against golden_rules.md
+// sections instead of a spec's fields.
+function goldenRulesReviewModal() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'mf-confirm-overlay';
+    document.body.appendChild(overlay);
+    let review = { generating: true, history: [], appliedAny: false };
+    const render = () => {
+      const canAccept = review.kind === 'proposal' && review.sections && Object.keys(review.sections).length;
+      const actionsHtml = !review.generating ? `
+        <div class="row" style="margin-top:0.4rem;gap:0.3rem">
+          <button type="button" id="gr-modal-retry">Try again</button>
+          <button type="button" id="gr-modal-accept" class="btn-primary" ${canAccept ? '' : 'disabled'}
+                  title="${canAccept ? 'Apply the proposed section(s) into the form and save' : 'Nothing to accept yet -- this was advice, not a proposed change. Reply below to ask for an actual change.'}">Accept &amp; save</button>
+        </div>` : '';
+      overlay.innerHTML = `
+        <div class="card mf-confirm-card">
+          <p class="mf-confirm-message">Discuss golden rules with AI</p>
+          <div class="chat-log" id="gr-modal-chat-log">${feedbackChatLogHtml(review, actionsHtml)}</div>
+          ${!review.generating ? `
+            <div class="row row-end" style="margin-top:0.5rem">
+              <button type="button" id="gr-modal-close">Close</button>
+            </div>
+            <div class="row" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
+              <textarea id="gr-modal-reply" rows="2" style="flex:1" spellcheck="true"
+                placeholder="e.g. 'just tighten the tone section', 'why is anatomy so long?', 'do that'..."></textarea>
+              <button type="button" id="gr-modal-reply-btn">${review.kind === 'advice' ? 'Reply' : 'Refine'}</button>
+            </div>` : ''}
+        </div>`;
+      scrollFeedbackChatToBottom('gr-modal-chat-log');
+      if (review.generating) return;
+      overlay.querySelector('#gr-modal-close').onclick = () => { overlay.remove(); resolve(review.appliedAny); };
+      overlay.querySelector('#gr-modal-retry').onclick = () => generate(null);
+      const acceptBtn = overlay.querySelector('#gr-modal-accept');
+      if (acceptBtn) acceptBtn.onclick = accept;
+      const doReply = () => {
+        const input = overlay.querySelector('#gr-modal-reply');
+        const msg = input.value.trim();
+        if (!msg) return;
+        generate(msg);
+      };
+      overlay.querySelector('#gr-modal-reply-btn').onclick = doReply;
+      overlay.querySelector('#gr-modal-reply').addEventListener('keydown', (ev) => onFeedbackTextareaKeydown(ev, doReply));
+    };
+    const generate = async (message) => {
+      const history = review.history || [];
+      const apiHistory = history.map(h => ({ role: h.role, content: h.text }));
+      if (message) history.push({ role: 'user', text: message });
+      review = { generating: true, history, appliedAny: review.appliedAny };
+      render();
+      const project = state.pendingNewProject || state.project;
+      try {
+        const result = await api('POST', '/api/golden-rules/discuss', {
+          project, sections: collectGoldenRulesSections(), message: message || '', history: apiHistory,
+        });
+        const bubbleText = result.kind === 'advice' ? result.text : (result.change_summary || 'The AI proposed changes.');
+        history.push({ role: 'assistant', text: bubbleText, model: result.model });
+        review = { kind: result.kind, sections: result.sections, model: result.model, history, appliedAny: review.appliedAny };
+      } catch (e) {
+        history.push({ role: 'assistant', text: e.message, isError: true });
+        review = { error: e.message, history, appliedAny: review.appliedAny };
+      }
+      render();
+    };
+    const accept = async () => {
+      const proposed = review.sections || {};
+      Object.keys(proposed).forEach(key => {
+        const ta = document.getElementById(`gr-${key}`);
+        if (ta) ta.value = proposed[key];
+      });
+      updateGoldenRulesWordCount();
+      const project = state.pendingNewProject || state.project;
+      try {
+        await api('POST', '/api/golden-rules', { project, sections: collectGoldenRulesSections() });
+        review.appliedAny = true;
+        review.history.push({ role: 'assistant', text: 'Saved to this project\'s golden_rules.md.' });
+        render();
+      } catch (e) { alert(e.message); }
+    };
+    overlay.onclick = (ev) => { if (ev.target === overlay && !review.generating) { overlay.remove(); resolve(review.appliedAny); } };
+    generate(null);
+  });
+}
+
 async function reviewGoldenRules() {
-  const content = document.getElementById('gr-editor').value;
+  const applied = await goldenRulesReviewModal();
   const resultEl = document.getElementById('gr-review-result');
-  const btn = event.target;
-  const originalLabel = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Reviewing...';
-  if (resultEl) resultEl.innerHTML = '<p class="muted">Asking the AI to review...</p>';
-  try {
-    const result = await api('POST', '/api/golden-rules/review', { content });
-    if (resultEl) resultEl.innerHTML = `
-      <div class="card" style="margin-top:0.5rem;padding:0.6rem">
-        <p><span class="badge ${result.compliant ? 'badge-ok' : 'badge-warn'}">${result.compliant ? 'Looks compliant' : 'Issues found'}</span>
-        <span class="muted">${result.word_count} / ${result.word_limit} words</span></p>
-        ${result.notes ? `<p>${esc(result.notes)}</p>` : ''}
-      </div>`;
-  } catch (e) {
-    if (resultEl) resultEl.innerHTML = `<pre>ERROR: ${esc(e.message)}</pre>`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = originalLabel;
-  }
+  if (applied && resultEl) resultEl.innerHTML = '<p class="muted">Updated from AI discussion.</p>';
 }
 
 async function generateCreativeDraft() {

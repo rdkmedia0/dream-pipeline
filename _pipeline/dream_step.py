@@ -958,32 +958,21 @@ def recent_titles_for_dedup(limit=15):
 
 
 def format_rules():
-    """The shared, pipeline-wide mechanical prompt-format rules (bracket
-    beats, camera/shot composition, negative-prompt baseline, etc.) --
-    read from FORMAT_RULES_PATH, one file every project's spec/keyframe
-    requests pull from. Human-edited directly; a rule change here takes
-    effect for every project immediately, no per-project duplication.
-    Returns None if the file is missing (a from-scratch pipeline install
-    before it's been created) so callers degrade gracefully instead of
-    crashing on a request that's otherwise still perfectly usable.
-
-    Only the "## Key guidelines" section onward is sent to the model --
-    golden_rules.md's own top section is a dated CHANGELOG explaining
-    WHY each rule was added (a specific real render failure, a
-    side-by-side test result), genuinely useful for a human maintaining
-    the file later but of zero value to the model, which only needs the
-    current rule, not its history. Measured (2026-08-19): that changelog
-    was ~5,100 of the file's ~12,700 characters (~40%), sent unchanged
-    on every single spec/keyframe/concepts call across every project --
-    stripped here, kept in the file itself for humans reading it
-    directly. Falls back to the WHOLE file if that header is ever
-    missing/renamed, rather than silently sending nothing."""
-    if not FORMAT_RULES_PATH.exists():
+    """This project's golden_rules.md (see GOLDEN_RULES_SECTION_DEFS /
+    golden_rules_sections) if it's been AI-drafted or hand-edited for it
+    yet, else FORMAT_RULES_PATH's pipeline-wide baseline template as a
+    fallback for a project that hasn't customized its own rules -- so
+    every project is always covered by something proven, even brand new
+    ones. Returns None if neither exists (a from-scratch pipeline install)
+    so callers degrade gracefully instead of crashing on a request
+    that's otherwise still perfectly usable."""
+    project_path = _project_golden_rules_path()
+    if project_path.exists():
+        text = project_path.read_text(encoding="utf-8")
+    elif FORMAT_RULES_PATH.exists():
+        text = FORMAT_RULES_PATH.read_text(encoding="utf-8")
+    else:
         return None
-    text = FORMAT_RULES_PATH.read_text(encoding="utf-8")
-    rules_start = text.find("## Key guidelines")
-    if rules_start != -1:
-        text = text[rules_start:]
     _, _, duration_s = project_render_settings()
     if duration_s != 24:
         # format_rules.md's own text hardcodes "00:24" as the (default)
@@ -1418,63 +1407,218 @@ def creative_guidance_pointer():
 
 GOLDEN_RULES_WORD_LIMIT = 1000
 
+# The scaffold the GUI form and AI draft both work from: a fixed set of
+# headers (so the model always has structure to fill rather than
+# inventing its own organization every time), each with a hint telling
+# the model what belongs in that section AND that it must be a
+# mechanical/render/style RULE, never a restatement of a creative FACT
+# (species, world, characters) that already lives in CREATIVE.md --
+# that overlap is exactly what the user asked to eliminate.
+GOLDEN_RULES_SECTION_DEFS = [
+    ("premise_and_humor", "Premise & humor",
+     "The SHAPE of what makes a scene work here (a real complication must "
+     "happen on-screen, vary the kind of complication/closing beat) -- not "
+     "what the premise is ABOUT, that's a creative fact, not a rule."),
+    ("variety_exclusions", "Variety & exclusions",
+     "Rules against repeating species/roles/tropes/closing lines across "
+     "scripts, and any specific banned cliches."),
+    ("tone", "Tone",
+     "Emotional/content boundaries -- what's in bounds and out of bounds "
+     "(e.g. no real peril, no dark humor)."),
+    ("dialogue_style", "Dialogue & voice style",
+     "How lines should sound and deliver -- character energy, banned "
+     "generic-narration patterns, voice tagging."),
+    ("structure", "Structure",
+     "Camera/scene continuity rules (cuts, location changes, shot count)."),
+    ("continuous_action", "Continuous action",
+     "How physical motion must be depicted across beats (not just "
+     "before/after snapshots) and kept in sync with dialogue timing."),
+    ("anatomy", "Anatomy accuracy",
+     "Rules keeping each animal's real anatomy correct through every pose."),
+    ("audio_speech", "Audio & speech",
+     "Caps/punctuation limits, pacing math, mouth-movement/voiceover "
+     "sync rules."),
+    ("timestamps", "Timestamps & beat count",
+     "Required beat count and timing rules."),
+    ("fml2v_prompts", "fml2v prompt structure",
+     "Rules for how first/middle/last delta prompts must be written."),
+    ("negative_prompt_baseline", "Negative-prompt baseline",
+     "A single comma-separated list of default negative-prompt terms."),
+]
 
-def golden_rules_text():
-    """Raw golden_rules.md content for the Creative tab's GUI editor --
-    unlike format_rules() (which slices off the changelog-era header for
-    what's sent to the model), this returns the file verbatim so a human
-    editing it sees exactly what's on disk, including its own stated
-    constraints."""
-    if not FORMAT_RULES_PATH.exists():
-        return ""
-    return FORMAT_RULES_PATH.read_text(encoding="utf-8")
+
+def _project_golden_rules_path():
+    return DATA_DIR / "golden_rules.md"
 
 
-def save_golden_rules_text(text):
-    """Writes golden_rules.md verbatim. Enforces the file's own stated
-    word-limit constraint here, the one place all edits funnel through
-    (human or AI-assisted), so it can't be silently violated by a save
-    that skipped reading the header -- this file is loaded into every
-    single generation call pipeline-wide, so its size is a real ongoing
-    cost, not a one-time one."""
+def _assemble_golden_rules_text(sections):
+    """sections: {key: body}. Renders the fixed header order into one
+    markdown file -- the inverse of _parse_golden_rules_sections."""
+    parts = ["# Golden Rules\n"]
+    for key, label, _hint in GOLDEN_RULES_SECTION_DEFS:
+        body = (sections.get(key) or "").strip()
+        if body:
+            parts.append(f"## {label}\n\n{body}\n")
+    return "\n".join(parts)
+
+
+def _parse_golden_rules_sections(text):
+    """Best-effort split of a golden_rules.md file back into
+    {key: body} by matching '## <label>' headers against
+    GOLDEN_RULES_SECTION_DEFS -- the inverse of _assemble_golden_rules_text.
+    Unrecognized/legacy content (e.g. a pre-migration file) is dropped
+    rather than crashing; the form just starts from an empty section."""
+    label_to_key = {label: key for key, label, _hint in GOLDEN_RULES_SECTION_DEFS}
+    sections = {}
+    current_key = None
+    buf = []
+    for line in (text or "").splitlines():
+        if line.startswith("## "):
+            if current_key:
+                sections[current_key] = "\n".join(buf).strip()
+            current_key = label_to_key.get(line[3:].strip())
+            buf = []
+        elif current_key:
+            buf.append(line)
+    if current_key:
+        sections[current_key] = "\n".join(buf).strip()
+    return sections
+
+
+def golden_rules_sections():
+    """This project's golden_rules.md, parsed into the fixed sections the
+    GUI form renders. New/legacy projects with no file yet get all-empty
+    sections rather than an error -- 'Generate with AI' is how they get
+    filled the first time."""
+    path = _project_golden_rules_path()
+    if not path.exists():
+        return {key: "" for key, _label, _hint in GOLDEN_RULES_SECTION_DEFS}
+    parsed = _parse_golden_rules_sections(path.read_text(encoding="utf-8"))
+    return {key: parsed.get(key, "") for key, _label, _hint in GOLDEN_RULES_SECTION_DEFS}
+
+
+def save_golden_rules_sections(sections):
+    """Assembles and writes this project's golden_rules.md. Enforces the
+    word-limit constraint here, the one place all saves funnel through
+    (human-edited or AI-drafted-then-accepted), so it can't be silently
+    violated -- this file is loaded into every single generation call for
+    this project, so its size is a real ongoing cost, not a one-time one."""
+    text = _assemble_golden_rules_text(sections)
     word_count = len(text.split())
     if word_count > GOLDEN_RULES_WORD_LIMIT:
         raise SystemExit(
             f"golden_rules.md would be {word_count} words -- over its own stated "
             f"{GOLDEN_RULES_WORD_LIMIT}-word ceiling. Trim or cut an existing rule before "
             f"adding a new one.")
-    FORMAT_RULES_PATH.write_text(text, encoding="utf-8")
+    _project_golden_rules_path().write_text(text, encoding="utf-8")
 
 
-def review_golden_rules_text(text):
-    """Read-only AI compliance check for a proposed golden_rules.md edit
-    -- never writes anything. Judges the draft against the file's own
-    header constraints (strict rules only, no changelog/examples, exact
-    and specific claims, word ceiling) so an editor gets a second opinion
-    before saving rather than only finding out a rule reads as vague
-    once it's already live and affecting every generation."""
-    word_count = len(text.split())
+def generate_golden_rules_draft():
+    """AI-drafts this project's golden_rules.md as a first pass, using the
+    pipeline's baseline template (FORMAT_RULES_PATH, the proven-necessary
+    mechanical constraints every project starts from) plus this project's
+    own creative idea (CREATIVE.md, via creative_guidance_pointer()) as
+    the two inputs -- never writes anything, the GUI form is where a human
+    reviews/edits/saves it. Returns {key: body} for the same fixed
+    sections the form renders, so the result drops straight into it."""
+    baseline = FORMAT_RULES_PATH.read_text(encoding="utf-8") if FORMAT_RULES_PATH.exists() else ""
+    creative = creative_guidance_pointer() or ""
+    section_hints = "\n".join(f"- {label} ({key}): {hint}"
+                               for key, label, hint in GOLDEN_RULES_SECTION_DEFS)
     prompt = (
-        "You are reviewing a proposed edit to golden_rules.md, a pipeline-wide rules file "
-        "loaded into every single AI generation call in a video pipeline. It must contain "
-        "STRICT RULES ONLY -- no changelog, no dated evidence trail, no worked examples, "
-        "state the requirement itself. Every claim must be exact and specific, never vague. "
-        f"It has a hard ceiling of {GOLDEN_RULES_WORD_LIMIT} words (this draft is "
-        f"{word_count} words).\n\n"
-        "Proposed content:\n---\n" + text + "\n---\n\n"
-        "Reply with ONLY a JSON object: "
-        '{"compliant": true|false, "notes": "specific, actionable feedback naming which '
-        'line/rule has the issue -- vague wording, changelog/example content that should not '
-        'be there, redundant rules, anything unclear or unenforceable; empty string if '
-        'compliant"}'
+        "Draft golden_rules.md for one project in a video pipeline -- a rules file loaded "
+        "into every single AI generation call for THIS project. It must contain STRICT "
+        "MECHANICAL/RENDER/STYLE RULES ONLY: no changelog, no worked examples, no restating "
+        "of creative facts (species, characters, world details, genre) that already live in "
+        "the project's own CREATIVE.md below -- a rule says HOW something must be done, a "
+        "creative fact says WHAT the story is about; do not duplicate the latter.\n\n"
+        "Baseline template this pipeline has already proven necessary (use as a starting "
+        "point, tailor and trim to fit this project's genre, don't just copy verbatim):\n"
+        "---\n" + baseline + "\n---\n\n"
+        "This project's creative idea (CREATIVE.md):\n---\n" + creative + "\n---\n\n"
+        "Fill exactly these sections, each a rule body (not a restatement of the creative "
+        "idea itself):\n" + section_hints + "\n\n"
+        f"Total across all sections must stay under {GOLDEN_RULES_WORD_LIMIT} words -- prefer "
+        "fewer, sharper rules over exhaustive coverage. Reply with ONLY a JSON object mapping "
+        "each section key above to its body string (empty string if a section genuinely "
+        "doesn't apply)."
     )
     parsed, _history = _creative_completion(prompt)
-    return {
-        "compliant": bool(parsed.get("compliant")),
-        "notes": parsed.get("notes") or "",
-        "word_count": word_count,
-        "word_limit": GOLDEN_RULES_WORD_LIMIT,
-    }
+    return {key: (parsed.get(key) or "").strip() for key, _label, _hint in GOLDEN_RULES_SECTION_DEFS}
+
+
+def discuss_golden_rules(sections, message, history):
+    """Chat-based propose/discuss step for a project's golden_rules.md --
+    mirrors generate_feedback_revision's advice-vs-proposal split (same
+    reasoning: without that split, a genuine question like "why is this
+    here?" would get forced through the rewrite path instead of actually
+    answered). Never writes to disk -- save_golden_rules_sections (called
+    from the GUI's own Accept action) is the only place that happens, so
+    the human can push back on a proposal ("just the tone section", "no,
+    keep the banned-cliche line") before anything is committed.
+
+    sections: the form's CURRENT (possibly unsaved) values, so the AI is
+    discussing what the human is actually looking at right now, not
+    whatever's last saved to disk.
+    history: [{"role": "user"|"assistant", "content": str}, ...] so far.
+
+    Returns (result, model_label). result is one of:
+      {"kind": "advice", "text": str}
+      {"kind": "proposal", "sections": {key: str, ...only sections it
+        chose to revise, omitted keys mean "leave as-is"...},
+        "change_summary": str}"""
+    config = load_config()
+    backend = config.get("creative_backend", "ollama")
+    model = config.get("gemini_text_model") if backend == "gemini" else config.get("creative_model")
+    model_label = f"{backend}:{model}" if model else backend
+
+    creative = creative_guidance_pointer() or ""
+    section_hints = "\n".join(f"- {label} ({key}): {hint}"
+                               for key, label, hint in GOLDEN_RULES_SECTION_DEFS)
+    valid_keys = {key for key, _label, _hint in GOLDEN_RULES_SECTION_DEFS}
+    history_text = "\n".join(
+        f"{'Human' if h.get('role') == 'user' else 'Assistant'}: {h.get('content', '')}"
+        for h in (history or [])) or "(nothing yet -- this is the first message)"
+
+    prompt = (
+        "You are discussing a proposed golden_rules.md with the human who owns this project "
+        "in a video pipeline -- this file is loaded into every AI generation call for this "
+        "project. Rules must be strict, mechanical/render/style only (no changelog, no worked "
+        "examples, state the requirement itself), exact and specific, never vague, and must "
+        "NEVER restate a creative fact (species/characters/world/genre) that belongs in "
+        f"this project's own CREATIVE.md instead -- that's a different file. Sections:\n"
+        f"{section_hints}\nTotal across all sections must stay under "
+        f"{GOLDEN_RULES_WORD_LIMIT} words.\n\n"
+        "First classify the human's latest message: \"advice\" if it's a question / asking "
+        "for an opinion (judge by grammatical form, same rule as anywhere else -- a question "
+        "mark or how/what/should/why means advice), \"proposal\" if it's an instruction to "
+        "change something, OR this is the very first message with no prior conversation (in "
+        "that case always propose a first draft/improvement pass rather than asking what to "
+        "do). When genuinely unsure, prefer advice.\n\n"
+        "Current form state (what the human is looking at right now):\n"
+        + json.dumps(sections, indent=2) + "\n\n"
+        "This project's CREATIVE.md (for overlap-checking, never restate its facts here):\n"
+        "---\n" + creative + "\n---\n\n"
+        "Conversation so far:\n" + history_text + "\n\n"
+        "Human's latest message: " + (message or "(no message -- generate an initial "
+                                                   "review/proposal)") + "\n\n"
+        "Reply with ONLY a JSON object: "
+        '{"response_type": "advice"|"proposal", '
+        '"advice": "REQUIRED when advice, else empty string -- conversational answer", '
+        '"sections": {"<section_key>": "<new full body text>", ...REQUIRED when proposal, '
+        'else omit -- ONLY the section keys you are actually changing, valid keys are '
+        + ", ".join(sorted(valid_keys)) + '}, '
+        '"change_summary": "REQUIRED when proposal, else empty string -- 1-3 sentences, plain '
+        'prose, what changed and why, addressed to the human"}'
+    )
+    parsed, _history = _creative_completion(prompt)
+    response_type = (parsed.get("response_type") or "").strip().lower()
+    if response_type == "advice":
+        return {"kind": "advice", "text": parsed.get("advice") or
+                 "(the model marked this as advice but returned no text)"}, model_label
+    proposed = {k: v for k, v in (parsed.get("sections") or {}).items() if k in valid_keys}
+    return {"kind": "proposal", "sections": proposed,
+            "change_summary": parsed.get("change_summary") or None}, model_label
 
 
 SPEC_SCHEMA_HINT = {
