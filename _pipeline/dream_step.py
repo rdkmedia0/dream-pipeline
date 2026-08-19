@@ -1600,6 +1600,16 @@ def discuss_golden_rules(sections, message, history):
         "no corresponding edit -- pure explanation of what a rule does/why it exists, with "
         "nothing to actually change. When it IS a proposal, change ONLY the section(s) "
         "relevant to what they said -- never expand scope beyond that.\n\n"
+        "CRITICAL -- nothing you write here has happened yet: \"sections\" is only ever a "
+        "DRAFT the human reviews and must explicitly click Accept on before anything is "
+        "saved. Never phrase change_summary as something already done (\"I've moved...\", "
+        "\"I have updated...\", \"I moved the X back...\") -- that is a lie, nothing has been "
+        "moved, saved, or applied. Always phrase it as a proposal awaiting their decision "
+        "(\"I'm proposing to move...\", \"This would tighten...\"). Also never claim the human "
+        "asked for something they didn't -- if you're correcting an earlier proposal they "
+        "rejected or pushed back on, say exactly that (\"Reverting my last proposal since it "
+        "wasn't what you wanted\"), never \"as you requested\" unless they literally requested "
+        "it in this conversation.\n\n"
         "Current form state (what the human is looking at right now):\n"
         + json.dumps(sections, indent=2) + "\n\n"
         "This project's CREATIVE.md (for overlap-checking, never restate its facts here):\n"
@@ -1614,7 +1624,9 @@ def discuss_golden_rules(sections, message, history):
         'valid keys are '
         + ", ".join(sorted(valid_keys)) + '}, '
         '"change_summary": "REQUIRED when proposal, else empty string -- 1-3 sentences, plain '
-        'prose, what changed and why, addressed to the human"}'
+        "prose, phrased as a PROPOSAL awaiting the human's Accept click, never as something "
+        'already done (say I am proposing to.../this would..., never I have moved.../'
+        'I moved... back...)"}'
     )
     parsed, _history = _creative_completion(prompt)
     response_type = (parsed.get("response_type") or "").strip().lower()
