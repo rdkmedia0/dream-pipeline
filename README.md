@@ -157,7 +157,7 @@ Inside `_pipeline/`:
 | `youtube_analytics.py` | YouTube Analytics tab — channel stats, trend charts, AI review |
 | `secret_store.py` | Fernet-encrypted secrets at rest |
 | `setup_installer.py` / `install_manifest.py` | Dependency + model-file detection |
-| `golden_rules.md` | House style/format guide for this project's own docs |
+| `golden_rules_sections.json` | The fixed section structure (key/label/hint) every project's own `golden_rules.md` is drafted/edited against — see the Creative tab |
 
 For AI-agent-facing architecture notes (skill routing, knowledge-file
 conventions, lifecycle detail), see this repo's own `CLAUDE.md` if
@@ -183,6 +183,25 @@ ground truth.
 
 None of the above are hardcoded — `ollama_url`/`comfyui_url` are plain
 config values, local or remote, set from Settings.
+
+## Tested models
+
+Ratings below are qualitative, from actually running each model against
+real content in this pipeline — not a formal benchmark. **N/A** means it
+hasn't been directly compared against an alternative for that role, not
+that it's untested; blank/default means it's what's actually shipped as
+this tool's own out-of-the-box choice.
+
+| Backend | Use case | Model | Rating (1–10) | Notes |
+|---|---|---|---|---|
+| Ollama | Script/spec writing, chat, golden rules | `gemma4:12b` | 7 | Coherent, follows structured-JSON schemas reliably; the one confirmed weakness is tool-calling — sometimes describes an action in prose instead of actually invoking the tool (see `_ollama_tool_completion`'s own docs). Gemini is more reliable here if tool use matters more than cost. |
+| Ollama | Script/spec writing (early default, since replaced) | `gemma4:E4B` | 3 | Technically schema-compliant but consistently weak/generic prose no matter how much prompt guidance it was given — the reason `creative_backend: gemini` was added as an alternative. |
+| Ollama | Vision QC (reviewing rendered/generated images) | `qwen3-vl:8b` | 8 | Default `vision_model`. Consistent, specific species/detail identification. Needs `num_predict`/`num_ctx` headroom (see `VISION_OPTIONS`) — it's a "thinking" model whose reasoning trace silently eats the token budget on default Ollama settings, returning empty otherwise. |
+| Ollama | Vision QC (alternative) | `minicpm-v` | 3 | Inconsistent — named a different animal per frame for the same actual images in side-by-side testing. |
+| Ollama | Tool-calling (chat, concept research) | `minicpm` | N/A | Not a quality issue — genuinely incompatible. Returns a plain HTTP 400 the instant a request includes a `tools` param at all; falls back to plain chat automatically (see `_ollama_tool_completion`), but never gets real tool access with this model. |
+| Gemini | Script/spec writing, chat | `gemini-flash-latest` | N/A | Default when `creative_backend: gemini`. Not directly graded against Ollama's models in this table, but was the fix for `gemma4:E4B`'s weak prose — noticeably stronger creative writing, at real per-call cost instead of free/local. |
+| Gemini | Reference-image generation (keyframes) | `gemini-3.1-flash-image` | N/A | Only image-generation option currently wired in — no local alternative exists for this specific role (ComfyUI needs a *rendered* reference image as input, not text-to-image itself). |
+| ComfyUI | Video/image rendering | *(your own checkpoint)* | N/A | Entirely your own installed checkpoint + `workflow_api_*.json` — this pipeline orchestrates ComfyUI's API but has no opinion on or comparative data across checkpoints. |
 
 ## Security notes
 

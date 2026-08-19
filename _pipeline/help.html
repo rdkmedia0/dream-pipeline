@@ -481,6 +481,30 @@
            is describing, run for real against your machine.</p>
       </div>
 
+      <h3>Tested models</h3>
+      <p>Ratings are qualitative, from actually running each model against real content in this
+         pipeline — not a formal benchmark. <strong>N/A</strong> means it hasn't been directly
+         compared against an alternative for that role, not that it's untested.</p>
+      <table>
+        <tr><th>Backend</th><th>Use case</th><th>Model</th><th>Rating</th><th>Notes</th></tr>
+        <tr><td>Ollama</td><td>Script/spec writing, chat, golden rules</td><td><code>gemma4:12b</code></td><td>7/10</td>
+            <td>Coherent, follows structured-JSON schemas reliably. Confirmed weakness: sometimes describes an action in prose instead of actually calling a tool.</td></tr>
+        <tr><td>Ollama</td><td>Script/spec writing (earlier default)</td><td><code>gemma4:E4B</code></td><td>3/10</td>
+            <td>Schema-compliant but consistently weak/generic prose — the reason the Gemini creative backend option was added.</td></tr>
+        <tr><td>Ollama</td><td>Vision QC (reviewing rendered/generated images)</td><td><code>qwen3-vl:8b</code></td><td>8/10</td>
+            <td>Default vision model. Consistent, specific identification. Needs generous <code>num_predict</code>/<code>num_ctx</code> — its hidden "thinking" trace otherwise eats the token budget and it returns empty.</td></tr>
+        <tr><td>Ollama</td><td>Vision QC (alternative)</td><td><code>minicpm-v</code></td><td>3/10</td>
+            <td>Inconsistent — named a different animal per frame for the same actual images in side-by-side testing.</td></tr>
+        <tr><td>Ollama</td><td>Tool-calling (chat, concept research)</td><td><code>minicpm</code></td><td>N/A</td>
+            <td>Not a quality issue — genuinely incompatible. Returns HTTP 400 the instant a request includes tools; falls back to plain chat automatically, never gets real tool access.</td></tr>
+        <tr><td>Gemini</td><td>Script/spec writing, chat</td><td><code>gemini-flash-latest</code></td><td>N/A</td>
+            <td>Noticeably stronger creative writing than the weak local default it replaced, at real per-call cost instead of free/local.</td></tr>
+        <tr><td>Gemini</td><td>Reference-image generation (keyframes)</td><td><code>gemini-3.1-flash-image</code></td><td>N/A</td>
+            <td>Only image-generation option currently wired in — no local alternative for this specific role.</td></tr>
+        <tr><td>ComfyUI</td><td>Video/image rendering</td><td><em>(your own checkpoint)</em></td><td>N/A</td>
+            <td>Entirely your own installed checkpoint + workflow file — this pipeline has no comparative data across checkpoints.</td></tr>
+      </table>
+
       <h3>Exposing Ollama/ComfyUI on your network</h3>
       <p>By default, both Ollama and ComfyUI only listen on <code>localhost</code> — fine when
          everything runs on one machine, but if this pipeline runs on a <em>different</em> machine
