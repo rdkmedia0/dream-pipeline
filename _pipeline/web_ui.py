@@ -5794,6 +5794,7 @@ function applyChatProposals(msgIndex) {
     else skipped.push(`#${p.number} ${p.field}`);
   });
   updateManagePrimaryButton();
+  updateManageRevertButtons();
   alert(`Applied ${applied} field(s) into the table.${skipped.length ? '\n\nSkipped: ' + skipped.join(', ') : ''}\n\nReview the changes in the table below, then click the button under it to save.`);
 }
 
@@ -6962,6 +6963,7 @@ function renderManageTable() {
     </div>
     <div id="manage-results"></div>`;
   updateManagePrimaryButton();
+  updateManageRevertButtons();
 
   // The filter row's inputs live inside `wrap`'s innerHTML, which gets
   // rebuilt by every renderManageTable() call (e.g. after the primary
@@ -6973,10 +6975,12 @@ function renderManageTable() {
     wrap.addEventListener('input', (ev) => {
       if (ev.target.classList.contains('mf-filter')) applyManageFilters();
       updateManagePrimaryButton();
+  updateManageRevertButtons();
     });
     wrap.addEventListener('change', (ev) => {
       if (ev.target.classList.contains('mf-filter')) applyManageFilters();
       updateManagePrimaryButton();
+  updateManageRevertButtons();
     });
     wrap.dataset.filterBound = '1';
   }
@@ -7063,7 +7067,7 @@ function manageRowHtml(row) {
       <td><input type="checkbox" class="mf-select" ${manageIsDeselected(n) ? '' : 'checked'}
                   onchange="setManageRowSelected(${n}, this.checked)"></td>
       <td>#${n}<br>${badges}<br>
-        <button type="button" style="font-size:0.7em;padding:0 0.35em;margin-top:0.2rem" onclick="reloadManageRow(${n})"
+        <button type="button" class="mf-revert-btn" data-number="${n}" style="font-size:0.7em;padding:0 0.35em;margin-top:0.2rem;display:${state.manageRowSnapshots && state.manageRowSnapshots[n] ? '' : 'none'}" onclick="reloadManageRow(${n})"
                 title="Reload just THIS row from what's actually saved on disk, discarding any unsaved edits to it -- other rows are untouched. Use this to back out of a generate/edit you didn't want, without losing work on other rows.">Revert row</button>
       </td>
       ${manageCellHtml('title', row.title)}
@@ -7785,6 +7789,7 @@ async function reloadManageRowFromDisk(number, tr) {
     if (idx >= 0) state.manageRows[idx] = freshRow;
     tr.outerHTML = manageRowHtml(freshRow);
     updateManagePrimaryButton();
+  updateManageRevertButtons();
   } catch (e) { alert(e.message); }
 }
 
@@ -7794,18 +7799,31 @@ async function reloadManageRowFromDisk(number, tr) {
 // then reloads from disk and clears the snapshot -- one level of undo,
 // not a full history; restoring again later needs a NEW save to have
 // happened first.
+//
+// snapshot.exists === false means this row never had a spec before the
+// save being undone -- e.g. the very first Auto-generate on a brand-new
+// row. Writing an all-blank fields object through /api/manage/spec
+// would NOT restore emptiness; write_row_spec treats blank fields as
+// "please AI-compose these," so it would just trigger ANOTHER
+// generation instead of actually undoing the first one. The real
+// "undo" for that case is Clear content (wipes the spec back to
+// genuinely nothing), not a save.
 async function restoreManageRowSnapshot(number, snapshot, tr) {
   try {
-    const type = workflowToType(snapshot.workflow);
-    const fields = { title: snapshot.title, premise: snapshot.premise, positive_prompt: snapshot.positive_prompt,
-                      negative_prompt: snapshot.negative_prompt, description: snapshot.description, tags: snapshot.tags };
-    await api('POST', '/api/manage/spec', { project: state.project, number, type, fields, note: '', verbose: false });
-    if (type === 'i2v') {
-      await api('POST', '/api/manage/keyframes', {
-        project: state.project, number, type, fields: { i2v_generate_image_prompt: snapshot.i2v_prompt }, verbose: false });
-    } else if (type === 'fml') {
-      await api('POST', '/api/manage/keyframes', {
-        project: state.project, number, type, fields: snapshot.fml_prompts, verbose: false });
+    if (!snapshot.exists) {
+      await api('POST', '/api/manage/clear-content', { project: state.project, numbers: [number] });
+    } else {
+      const type = workflowToType(snapshot.workflow);
+      const fields = { title: snapshot.title, premise: snapshot.premise, positive_prompt: snapshot.positive_prompt,
+                        negative_prompt: snapshot.negative_prompt, description: snapshot.description, tags: snapshot.tags };
+      await api('POST', '/api/manage/spec', { project: state.project, number, type, fields, note: '', verbose: false });
+      if (type === 'i2v') {
+        await api('POST', '/api/manage/keyframes', {
+          project: state.project, number, type, fields: { i2v_generate_image_prompt: snapshot.i2v_prompt }, verbose: false });
+      } else if (type === 'fml') {
+        await api('POST', '/api/manage/keyframes', {
+          project: state.project, number, type, fields: snapshot.fml_prompts, verbose: false });
+      }
     }
   } catch (e) { alert(e.message); return; }
   delete state.manageRowSnapshots[number];
@@ -7863,6 +7881,27 @@ function manageSelectionIsComplete(selected) {
 // stale mode. Never overrides an active-job Cancel state (pollManageJobs
 // owns the button entirely while a job is running -- see its own
 // dataset.activeJobIds check).
+//
+// Shows/hides each row's own "Revert row" button based on whether
+// there's actually anything to revert right now -- per explicit
+// feedback, a visible button that just alerts "nothing to revert" is
+// worse than no button at all. Recomputed on the same triggers as
+// updateManagePrimaryButton (every table render, every checkbox/filter/
+// cell-edit event) so it never shows a stale state -- e.g. right after
+// a fresh Auto-generate it appears (a snapshot now exists), and right
+// after Revert restores/reloads it disappears again (nothing left to
+// undo until the next save).
+function updateManageRevertButtons() {
+  document.querySelectorAll('.mf-revert-btn').forEach(btn => {
+    const number = parseInt(btn.dataset.number, 10);
+    const tr = btn.closest('tr');
+    const row = state.manageRows.find(r => r.number === number);
+    const dirty = row && tr && rowHasUnsavedChanges(row, tr);
+    const hasSnapshot = !!(state.manageRowSnapshots && state.manageRowSnapshots[number]);
+    btn.style.display = (dirty || hasSnapshot) ? '' : 'none';
+  });
+}
+
 function updateManagePrimaryButton() {
   const btn = document.getElementById('manage-run-video-btn');
   if (!btn || btn.dataset.activeJobIds) return;
