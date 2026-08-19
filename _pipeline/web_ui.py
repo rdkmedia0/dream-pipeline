@@ -8008,6 +8008,13 @@ async function runManageClearContent() {
   btn.textContent = 'Clearing...';
   try {
     await api('POST', '/api/manage/clear-content', { project: state.project, numbers });
+    // "Cannot be undone" above is a real promise -- any save-snapshot
+    // recorded for these rows is now stale (it would just re-clear an
+    // already-blank row if used, which is exactly the "Revert row stays
+    // visible but doing nothing" bug this fixes), so drop it here too.
+    if (state.manageRowSnapshots) {
+      numbers.forEach(n => { delete state.manageRowSnapshots[n]; });
+    }
   } catch (e) {
     alert(e.message);
   } finally {
