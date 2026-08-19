@@ -7651,21 +7651,31 @@ function kfFieldsDirty(row, current) {
   return false;
 }
 
+// Whether a required spec field is still genuinely blank -- distinct
+// from "dirty" (edited but filled in). Used both by specNeedsSave (any
+// blank field means Save must reach the server, to auto-compose it) and
+// by the primary button's label logic (only an ACTUALLY missing field
+// should call itself "Auto-generate missing content" -- an edited-but-
+// complete row still needs saving before it can render, but nothing
+// about that save is "generating missing content").
+function specHasMissingContent(current) {
+  return Object.values(current.fields).some(v => !(v || '').trim());
+}
+
 // Broader than specFieldsDirty -- also true when a required field is
 // still blank, even if that exactly matches what's on disk, so Save
 // reaches the server to auto-compose it (see write_row_spec's own
 // field-locking: blank fields are always AI-composed now, no chip).
 function specNeedsSave(row, current) {
   if (specFieldsDirty(row, current)) return true;
-  return Object.values(current.fields).some(v => !(v || '').trim());
+  return specHasMissingContent(current);
 }
 
-// Same idea as specNeedsSave, but a blank keyframe slot only needs
-// saving if it ALSO has no image yet -- an image alone already
-// satisfies the workflow (see write_row_keyframes's own "already
-// satisfied, nothing new to record" early return).
-function kfNeedsSave(row, current) {
-  if (kfFieldsDirty(row, current)) return true;
+// Same idea as specHasMissingContent, for keyframes -- a blank slot
+// only counts as missing if it ALSO has no image yet (an image alone
+// already satisfies the workflow, see write_row_keyframes's own
+// "already satisfied" early return).
+function kfHasMissingContent(row, current) {
   if (current.type === 'i2v') {
     return !(current.kfFields.i2v_generate_image_prompt || '').trim() && !row.image_status.single;
   }
@@ -7674,6 +7684,15 @@ function kfNeedsSave(row, current) {
     return ['first', 'middle', 'last'].some(k => !(current.kfFields[k] || '').trim() && !slotHas[k]);
   }
   return false;
+}
+
+// Same idea as specNeedsSave, but a blank keyframe slot only needs
+// saving if it ALSO has no image yet -- an image alone already
+// satisfies the workflow (see write_row_keyframes's own "already
+// satisfied, nothing new to record" early return).
+function kfNeedsSave(row, current) {
+  if (kfFieldsDirty(row, current)) return true;
+  return kfHasMissingContent(row, current);
 }
 
 // One-level undo, keyed by row number -- captures the row's state
@@ -7894,6 +7913,24 @@ function manageSelectionIsComplete(selected) {
   });
 }
 
+// Whether ANY row in the selection has a genuinely blank required field
+// -- as opposed to manageSelectionIsComplete's broader "needs saving at
+// all" check, which also trips on a row that's fully filled in but has
+// an unsaved manual edit. That distinction is exactly what the primary
+// button's label needs: an edited-but-complete selection still has to
+// go through Save before it can render (Render reads the saved spec off
+// disk, not the live form), but it must NOT say "Auto-generate missing
+// content" while doing it -- nothing is actually missing, and nothing
+// will actually be AI-composed.
+function manageSelectionHasMissingContent(selected) {
+  return selected.some(row => {
+    const tr = document.querySelector(`tr[data-number="${row.number}"]`);
+    if (!tr) return false;
+    const current = readManageRow(tr);
+    return specHasMissingContent(current) || kfHasMissingContent(row, current);
+  });
+}
+
 // Recomputes the primary button's label/mode from the CURRENT selection
 // and form state -- called after every table (re)render and, via the
 // delegated input/change listener in renderManageTable, after every
@@ -7929,14 +7966,25 @@ function updateManagePrimaryButton() {
     const selected = manageSelectedRows();
     // Empty selection reads as "render" (the neutral/default label,
     // matches this button's pre-consolidation default) rather than
-    // "generate" -- selected.length as the leading operand of the old
-    // `selected.length && manageSelectionIsComplete(selected)` check
-    // meant an empty selection (0, falsy) short-circuited straight to
-    // 'generate' with nothing to actually act on, misleading label for
-    // a state where clicking it just alerts "no rows selected" anyway.
-    const mode = (selected.length > 0 && manageSelectionIsComplete(selected)) ? 'render' : (selected.length ? 'generate' : 'render');
+    // "generate"/"save" -- selected.length===0 short-circuiting to
+    // either of those would be a misleading label for a state where
+    // clicking it just alerts "no rows selected" anyway.
+    //
+    // Three modes, not two: a selection can be (1) complete and saved
+    // -> render, (2) missing a genuinely blank field somewhere -> needs
+    // AI generation, or (3) fully filled in but with an unsaved manual
+    // edit -> needs a plain save, NOT generation (nothing's missing,
+    // nothing gets AI-composed). Collapsing (2) and (3) into one
+    // "generate" mode used to mislabel a manual edit as content needing
+    // to be auto-generated, right after the user had already filled it
+    // in themselves.
+    let mode;
+    if (selected.length === 0) mode = 'render';
+    else if (manageSelectionIsComplete(selected)) mode = 'render';
+    else if (manageSelectionHasMissingContent(selected)) mode = 'generate';
+    else mode = 'save';
     btn.dataset.mode = mode;
-    btn.textContent = mode === 'render' ? 'Render video' : 'Auto-generate missing content';
+    btn.textContent = mode === 'render' ? 'Render video' : mode === 'save' ? 'Save changes' : 'Auto-generate missing content';
   } catch (e) {
     // Never leave the button silently stuck on a stale label if this
     // throws for some row shape not anticipated here -- surface it in
@@ -7963,6 +8011,13 @@ async function handleManagePrimaryClick() {
       `Auto-generate missing content for #${numbers}? Fields you've already filled in are used ` +
       `exactly as-is and left untouched -- only fields still blank are composed by AI. Nothing ` +
       `renders yet; review the result after, then click Render video.`)) return;
+    await runManageSave(selected);
+  } else if (btn.dataset.mode === 'save') {
+    const numbers = fmtRanges(selected.map(r => r.number));
+    if (!await confirmModal(
+      `Save your edits for #${numbers}? Nothing is missing here, so nothing gets AI-generated -- ` +
+      `this just writes what's currently in the form to disk. Nothing renders yet; click Render ` +
+      `video after.`)) return;
     await runManageSave(selected);
   } else {
     await runManageVideoGen(selected);
