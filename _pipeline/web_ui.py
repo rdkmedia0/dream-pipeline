@@ -706,6 +706,23 @@ def h_creative_draft_generate(qs, body):
     return ds.draft_creative_fields(project, concept)
 
 
+def h_golden_rules_get(qs, body):
+    """golden_rules.md is pipeline-wide, not per-project -- no project
+    param needed, unlike the creative-fields handlers above it."""
+    return {"content": ds.golden_rules_text(), "word_limit": ds.GOLDEN_RULES_WORD_LIMIT}
+
+
+def h_golden_rules_save(qs, body):
+    content = body.get("content") or ""
+    ds.save_golden_rules_text(content)
+    return {"ok": True}
+
+
+def h_golden_rules_review(qs, body):
+    content = body.get("content") or ""
+    return ds.review_golden_rules_text(content)
+
+
 def h_chat(qs, body):
     project = _project_from_body(body)
     message = (body.get("message") or "").strip()
@@ -2121,6 +2138,9 @@ ROUTES = {
     ("POST", "/api/manage/guide-strengths"): h_manage_guide_strengths_save,
     ("GET", "/api/creative-fields"): h_creative_fields_get,
     ("POST", "/api/creative-fields"): h_creative_fields_save,
+    ("GET", "/api/golden-rules"): h_golden_rules_get,
+    ("POST", "/api/golden-rules"): h_golden_rules_save,
+    ("POST", "/api/golden-rules/review"): h_golden_rules_review,
     ("POST", "/api/creative-draft"): h_creative_draft_generate,
     ("POST", "/api/chat"): h_chat,
     ("GET", "/api/config"): h_config_get,
@@ -8558,14 +8578,83 @@ async function runAiReview() {
 async function loadCreativeEditor() {
   const container = document.getElementById('creative-editor-content');
   if (!container) return;
-  let data;
+  let data, goldenRules;
   try {
-    data = await api('GET', `/api/creative-fields?project=${encodeURIComponent(state.project)}`);
+    [data, goldenRules] = await Promise.all([
+      api('GET', `/api/creative-fields?project=${encodeURIComponent(state.project)}`),
+      api('GET', '/api/golden-rules'),
+    ]);
   } catch (e) {
     container.innerHTML = `<pre>ERROR: ${e.message}</pre>`;
     return;
   }
-  container.innerHTML = creativeFieldsBody(data, false);
+  window.__grWordLimit = goldenRules.word_limit || 1000;
+  container.innerHTML = creativeFieldsBody(data, false) + goldenRulesEditorHtml(goldenRules);
+  updateGoldenRulesWordCount();
+}
+
+function goldenRulesEditorHtml(gr) {
+  return `
+    <hr style="margin:1.5em 0;border-color:var(--border-soft)">
+    <h4>Golden rules</h4>
+    <p class="muted">Pipeline-wide mechanical/render rules -- not specific to this project.
+      Edits here apply to every project's generation immediately, and this file is loaded
+      into every single AI call, so keep it strict and short.</p>
+    <textarea id="gr-editor" rows="20" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.85em"
+      oninput="updateGoldenRulesWordCount()">${esc(gr.content || '')}</textarea>
+    <div class="row" style="margin-top:0.3rem;align-items:center;gap:0.6rem">
+      <span class="muted" id="gr-word-count"></span>
+      <span style="flex:1"></span>
+      <button type="button" onclick="reviewGoldenRules()">Review with AI</button>
+      <button type="button" class="btn-primary" onclick="saveGoldenRules()">Save</button>
+    </div>
+    <div id="gr-review-result"></div>`;
+}
+
+function updateGoldenRulesWordCount() {
+  const ta = document.getElementById('gr-editor');
+  const el = document.getElementById('gr-word-count');
+  if (!ta || !el) return;
+  const trimmed = ta.value.trim();
+  const words = trimmed ? trimmed.split(/\s+/).length : 0;
+  const limit = window.__grWordLimit || 1000;
+  el.textContent = `${words} / ${limit} words`;
+  el.style.color = words > limit ? 'var(--danger)' : '';
+}
+
+async function saveGoldenRules() {
+  const content = document.getElementById('gr-editor').value;
+  try {
+    await api('POST', '/api/golden-rules', { content });
+    const resultEl = document.getElementById('gr-review-result');
+    if (resultEl) resultEl.innerHTML = '<p class="muted">Saved.</p>';
+  } catch (e) {
+    alert(`ERROR: ${e.message}`);
+  }
+}
+
+async function reviewGoldenRules() {
+  const content = document.getElementById('gr-editor').value;
+  const resultEl = document.getElementById('gr-review-result');
+  const btn = event.target;
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Reviewing...';
+  if (resultEl) resultEl.innerHTML = '<p class="muted">Asking the AI to review...</p>';
+  try {
+    const result = await api('POST', '/api/golden-rules/review', { content });
+    if (resultEl) resultEl.innerHTML = `
+      <div class="card" style="margin-top:0.5rem;padding:0.6rem">
+        <p><span class="badge ${result.compliant ? 'badge-ok' : 'badge-warn'}">${result.compliant ? 'Looks compliant' : 'Issues found'}</span>
+        <span class="muted">${result.word_count} / ${result.word_limit} words</span></p>
+        ${result.notes ? `<p>${esc(result.notes)}</p>` : ''}
+      </div>`;
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<pre>ERROR: ${esc(e.message)}</pre>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
 }
 
 async function generateCreativeDraft() {

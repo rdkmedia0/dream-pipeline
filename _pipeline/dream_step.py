@@ -965,10 +965,25 @@ def format_rules():
     effect for every project immediately, no per-project duplication.
     Returns None if the file is missing (a from-scratch pipeline install
     before it's been created) so callers degrade gracefully instead of
-    crashing on a request that's otherwise still perfectly usable."""
+    crashing on a request that's otherwise still perfectly usable.
+
+    Only the "## Key guidelines" section onward is sent to the model --
+    golden_rules.md's own top section is a dated CHANGELOG explaining
+    WHY each rule was added (a specific real render failure, a
+    side-by-side test result), genuinely useful for a human maintaining
+    the file later but of zero value to the model, which only needs the
+    current rule, not its history. Measured (2026-08-19): that changelog
+    was ~5,100 of the file's ~12,700 characters (~40%), sent unchanged
+    on every single spec/keyframe/concepts call across every project --
+    stripped here, kept in the file itself for humans reading it
+    directly. Falls back to the WHOLE file if that header is ever
+    missing/renamed, rather than silently sending nothing."""
     if not FORMAT_RULES_PATH.exists():
         return None
     text = FORMAT_RULES_PATH.read_text(encoding="utf-8")
+    rules_start = text.find("## Key guidelines")
+    if rules_start != -1:
+        text = text[rules_start:]
     _, _, duration_s = project_render_settings()
     if duration_s != 24:
         # format_rules.md's own text hardcodes "00:24" as the (default)
@@ -1399,6 +1414,67 @@ def creative_guidance_pointer():
         return None
     text = path.read_text(encoding="utf-8")
     return text[:60000]
+
+
+GOLDEN_RULES_WORD_LIMIT = 1000
+
+
+def golden_rules_text():
+    """Raw golden_rules.md content for the Creative tab's GUI editor --
+    unlike format_rules() (which slices off the changelog-era header for
+    what's sent to the model), this returns the file verbatim so a human
+    editing it sees exactly what's on disk, including its own stated
+    constraints."""
+    if not FORMAT_RULES_PATH.exists():
+        return ""
+    return FORMAT_RULES_PATH.read_text(encoding="utf-8")
+
+
+def save_golden_rules_text(text):
+    """Writes golden_rules.md verbatim. Enforces the file's own stated
+    word-limit constraint here, the one place all edits funnel through
+    (human or AI-assisted), so it can't be silently violated by a save
+    that skipped reading the header -- this file is loaded into every
+    single generation call pipeline-wide, so its size is a real ongoing
+    cost, not a one-time one."""
+    word_count = len(text.split())
+    if word_count > GOLDEN_RULES_WORD_LIMIT:
+        raise SystemExit(
+            f"golden_rules.md would be {word_count} words -- over its own stated "
+            f"{GOLDEN_RULES_WORD_LIMIT}-word ceiling. Trim or cut an existing rule before "
+            f"adding a new one.")
+    FORMAT_RULES_PATH.write_text(text, encoding="utf-8")
+
+
+def review_golden_rules_text(text):
+    """Read-only AI compliance check for a proposed golden_rules.md edit
+    -- never writes anything. Judges the draft against the file's own
+    header constraints (strict rules only, no changelog/examples, exact
+    and specific claims, word ceiling) so an editor gets a second opinion
+    before saving rather than only finding out a rule reads as vague
+    once it's already live and affecting every generation."""
+    word_count = len(text.split())
+    prompt = (
+        "You are reviewing a proposed edit to golden_rules.md, a pipeline-wide rules file "
+        "loaded into every single AI generation call in a video pipeline. It must contain "
+        "STRICT RULES ONLY -- no changelog, no dated evidence trail, no worked examples, "
+        "state the requirement itself. Every claim must be exact and specific, never vague. "
+        f"It has a hard ceiling of {GOLDEN_RULES_WORD_LIMIT} words (this draft is "
+        f"{word_count} words).\n\n"
+        "Proposed content:\n---\n" + text + "\n---\n\n"
+        "Reply with ONLY a JSON object: "
+        '{"compliant": true|false, "notes": "specific, actionable feedback naming which '
+        'line/rule has the issue -- vague wording, changelog/example content that should not '
+        'be there, redundant rules, anything unclear or unenforceable; empty string if '
+        'compliant"}'
+    )
+    parsed, _history = _creative_completion(prompt)
+    return {
+        "compliant": bool(parsed.get("compliant")),
+        "notes": parsed.get("notes") or "",
+        "word_count": word_count,
+        "word_limit": GOLDEN_RULES_WORD_LIMIT,
+    }
 
 
 SPEC_SCHEMA_HINT = {
@@ -2965,15 +3041,29 @@ def _validate_and_normalize_spec(number, spec, allow_custom_beats=False, positiv
         # unrelated targeted fix. A prompt-level reminder alone didn't
         # reliably prevent this (confirmed via a live retest that still
         # failed after adding one) -- enforced mechanically here
-        # instead, the same way beat count/structure already is. Checks
-        # for "mouth" anywhere in the beat (not just the Video: line
-        # specifically) to also accept the voiceover phrasing ("keeps
-        # its mouth closed/still").
+        # instead, the same way beat count/structure already is.
+        #
+        # Gated on the rule actually being PRESENT in this project's own
+        # active rules, not hardcoded as a universal requirement --
+        # checks golden_rules.md (where this rule happens to live today,
+        # shared pipeline-wide) AND this project's own CREATIVE.md (in
+        # case a project's own style notes state it, or a future project
+        # explicitly opts out by not mentioning it), so a project that
+        # genuinely doesn't use this convention isn't force-validated
+        # against a rule that was never actually asked of it here. Reads
+        # from the same two sources the model's own prompt already gets
+        # (format_rules()/creative_guidance_pointer()) rather than a
+        # second, independent copy of the requirement baked into this
+        # function -- if those files stop mentioning "mouth", this check
+        # stops applying too, automatically.
+        project_requires_mouth_rule = "mouth" in (
+            (format_rules() or "") + (creative_guidance_pointer() or "")
+        ).lower()
         beats_with_dialogue_missing_mouth = [
             i + 1 for i, seg in enumerate(segments)
             if re.search(r'(?<![A-Za-z])[\'"‘’“”].{3,}[\'"‘’“”](?![A-Za-z])', seg)
             and "mouth" not in seg.lower()
-        ]
+        ] if project_requires_mouth_rule else []
 
         if missing_headers or len(segments) < 2:
             problem = (f"missing required section header(s): {missing_headers}"
