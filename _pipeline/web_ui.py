@@ -2621,9 +2621,19 @@ INDEX_HTML = r"""<!doctype html>
      + border here makes the log and the reply box read as ONE enclosed
      window, the log naturally at the top of it and the input at the
      bottom, rather than two disconnected floating pieces. */
+  /* max-height (NOT just the chat-log's own inner cap) is the real
+     fix for the panel growing into the video -- .chat-log's 14rem cap
+     only bounded the LOG; the reply textarea itself had no height cap
+     at all and (confirmed via screenshot) a human had dragged it via
+     its native resize handle to roughly half the screen, which grew
+     the whole column-flex panel upward past the video regardless of
+     the log's own bound. This caps the PANEL as a fixed box -- resize
+     disabled on its textareas below closes the other way a human could
+     still grow it, and the log's own overflow:auto is what actually
+     handles a conversation longer than the fixed box allows. */
   .player-fs-feedback {
     display: none; position: absolute; left: 0.6rem; right: 0.6rem; bottom: 0.6rem;
-    padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff;
+    max-height: 60%; padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff;
     flex-direction: column; align-items: stretch;
     background: rgba(20,20,20,0.92); border: 1px solid rgba(255,255,255,0.18);
     border-radius: var(--radius);
@@ -2636,13 +2646,16 @@ INDEX_HTML = r"""<!doctype html>
      plain text left the bubbles themselves nearly illegible (white
      text on a light bubble). Forcing dark bubble text here specifically
      is safe regardless of the app's current light/dark theme, since
-     both bubble backgrounds stay light-toned either way. Taller than
-     chat-log's own 260px default (14rem here) -- this IS the review
-     interface now, not a small addendum, so it gets real room; still
-     capped well short of the full video height, scrolling within its
-     own bounds for a longer back-and-forth instead of growing forever. */
-  .player-fs-feedback .chat-log { max-height: 14rem; }
+     both bubble backgrounds stay light-toned either way. */
+  .player-fs-feedback .chat-log { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
   .player-fs-feedback .chat-msg { color: #111; }
+  /* --accent-soft is only ~12% alpha (a light TINT, meant to sit on a
+     normal light card background) -- confirmed via screenshot: against
+     this panel's dark background that read as barely-there dark text on
+     an almost fully transparent bubble, functionally illegible. A solid
+     light color here, not the theme's translucent one, matches
+     .chat-assistant's already-solid --border-soft treatment. */
+  .player-fs-feedback .chat-user { background: rgba(255,255,255,0.85); }
   /* More specific than .player-fs-feedback .muted above (two classes
      vs one), so this correctly wins for the "via <model>" line inside a
      bubble -- that line is a DIRECT match for both rules (equal
@@ -2655,7 +2668,7 @@ INDEX_HTML = r"""<!doctype html>
   .player-fs-wrap:fullscreen .player-fs-feedback { display: flex; }
   .player-fs-feedback textarea {
     background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
-    border-radius: var(--radius-sm); padding: 0.4rem 0.5rem;
+    border-radius: var(--radius-sm); padding: 0.4rem 0.5rem; resize: none;
   }
   .player-fs-feedback textarea::placeholder { color: rgba(255,255,255,0.65); }
   .player-fs-feedback button {
@@ -4853,9 +4866,7 @@ function promptModal(message, placeholder) {
     overlay.querySelector('#prompt-modal-ok').onclick = submit;
     overlay.querySelector('#prompt-modal-cancel').onclick = () => finish(null);
     overlay.onclick = (ev) => { if (ev.target === overlay) finish(null); };
-    input.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) submit();
-    });
+    input.addEventListener('keydown', (ev) => onFeedbackTextareaKeydown(ev, submit));
   });
 }
 
@@ -5282,12 +5293,14 @@ function buildFsOverlayHtml() {
       ${!state.fsFeedbackReview.generating ? `
         <div class="row" style="gap:0.3rem;align-items:flex-start">
           <textarea id="fs-review-refine-input" rows="2" style="flex:1;font-size:0.85em" spellcheck="true"
+                    onkeydown="onFeedbackTextareaKeydown(event, submitInlineRefine)"
                     placeholder="${state.fsFeedbackReview.kind === 'advice' ? 'Reply -- e.g. \'do that\' to have it make the change...' : 'Not quite -- add more direction and try again...'}"></textarea>
           <button data-action="fs-review-refine" type="button">${state.fsFeedbackReview.kind === 'advice' ? 'Reply' : 'Refine'}</button>
         </div>` : ''}`
     : `
       <div class="row" style="gap:0.3rem;align-items:flex-start">
-        <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical" spellcheck="true"
+        <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em" spellcheck="true"
+                  onkeydown="onFeedbackTextareaKeydown(event, submitInlineFeedback)"
                   placeholder="What didn't work about this video? The AI will propose a revision for you to review before anything renders."></textarea>
         <button data-action="fs-feedback-submit" title="Ask the AI to propose a revision -- nothing renders until you review and Accept it.">Submit</button>
       </div>`;
@@ -5581,13 +5594,7 @@ sidebar.addEventListener('click', (ev) => {
     else if (action === 'fs-review-toggle') { state.reviewMode = !state.reviewMode; updateFsOverlay(); }
     else if (action === 'fs-feedback-submit') submitInlineFeedback();
     else if (action === 'fs-review-retry') runInlineFeedbackPreview(state.fsFeedbackReview.note, null);
-    else if (action === 'fs-review-refine') {
-      const refineInput = document.getElementById('fs-review-refine-input');
-      const extra = (refineInput?.value || '').trim();
-      if (!extra) return;
-      if (refineInput) refineInput.value = '';
-      runInlineFeedbackPreview(`${state.fsFeedbackReview.note}\n\nAdditional direction: ${extra}`, extra);
-    }
+    else if (action === 'fs-review-refine') submitInlineRefine();
     else if (action === 'fs-review-accept') acceptInlineFeedback();
     else if (action === 'fullscreen') {
       const wrap = document.getElementById('player-fs-wrap');
@@ -5774,12 +5781,15 @@ function feedbackReviewModal(number, initialNote) {
       overlay.querySelector('#fr-modal-cancel').onclick = () => { overlay.remove(); resolve(false); };
       overlay.querySelector('#fr-modal-retry').onclick = () => generate(review.note, null);
       overlay.querySelector('#fr-modal-accept').onclick = accept;
-      overlay.querySelector('#fr-modal-refine-btn').onclick = () => {
+      const doRefine = () => {
         const refineInput = overlay.querySelector('#fr-modal-refine');
         const extra = refineInput.value.trim();
         if (!extra) return;
         generate(`${review.note}\n\nAdditional direction: ${extra}`, extra);
       };
+      overlay.querySelector('#fr-modal-refine-btn').onclick = doRefine;
+      overlay.querySelector('#fr-modal-refine').addEventListener(
+        'keydown', (ev) => onFeedbackTextareaKeydown(ev, doRefine));
     };
     // apiNote is what actually gets sent (the full accumulated note);
     // displayNote is what shows as a new chat bubble -- null for Try
@@ -5837,6 +5847,29 @@ async function submitInlineFeedback() {
   const note = input ? input.value.trim() : '';
   if (!note) { if (input) input.focus(); return; }
   await runInlineFeedbackPreview(note, note, v.number);
+}
+
+// Extracted from the "Refine"/"Reply" button's own click handler so
+// the Enter-to-send keydown binding (see onFeedbackTextareaKeydown) can
+// call the exact same logic instead of duplicating it.
+function submitInlineRefine() {
+  const refineInput = document.getElementById('fs-review-refine-input');
+  const extra = (refineInput?.value || '').trim();
+  if (!extra) return;
+  if (refineInput) refineInput.value = '';
+  runInlineFeedbackPreview(`${state.fsFeedbackReview.note}\n\nAdditional direction: ${extra}`, extra);
+}
+
+// Shared Enter-to-send / Shift+Enter-for-newline binding for every
+// feedback textarea (fullscreen's note/refine boxes, the small
+// player's modal equivalents) -- same convention the Concepts chat box
+// already uses (onChatInputKeydown), applied consistently here instead
+// of promptModal's old Cmd/Ctrl+Enter-only binding.
+function onFeedbackTextareaKeydown(ev, fn) {
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    fn();
+  }
 }
 
 // Generates (or regenerates, for Try again/Refine) a proposal into
