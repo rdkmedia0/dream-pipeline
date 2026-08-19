@@ -1724,7 +1724,16 @@ def build_row_spec_payload(number, locked_fields, note, workflow, show_existing_
         f"what didn't work. REVISE existing_content accordingly: keep whatever the "
         f"note doesn't call out as a problem, change what it does. This is a targeted "
         f"fix, not a fresh unrelated idea -- stay recognizably the same story/subject "
-        f"unless the note itself explicitly asks for something completely different."
+        f"unless the note itself explicitly asks for something completely different. "
+        f"IMPORTANT: a targeted fix still has to fully comply with every rule above "
+        f"(format/golden rules, this project's own creative guidance) in EVERY beat "
+        f"of your final answer, not just the one beat the note is actually about -- "
+        f"confirmed failure mode: rewriting one beat's physical action while losing "
+        f"an unrelated required detail elsewhere (e.g. the mouth-moving/lip-sync "
+        f"rule on a beat you didn't even mean to touch, or the negative-prompt "
+        f"baseline) because attention was on the note's specific complaint. Before "
+        f"answering, re-check every beat you're returning -- including ones the note "
+        f"never mentioned -- against those same rules, not just the one you revised."
         if existing_content else ""
     )
 
@@ -2946,6 +2955,25 @@ def _validate_and_normalize_spec(number, spec, allow_custom_beats=False, positiv
         # piece silent). ceil(0.6n) reduces to the original 3-of-4 ratio
         # exactly at n=4, and scales from there instead of staying fixed.
         required_dialogue_beats = -(-6 * len(segments) // 10) if segments else 0
+        # Confirmed failure (2026-08-19, a feedback-driven revision):
+        # dialogue beats existed and passed every check above, but none
+        # of them described the mouth moving at all -- golden_rules.md's
+        # lip-sync rule (character dialogue needs the mouth explicitly
+        # moving in the Video: line; voiceover needs it explicitly kept
+        # closed/still) had been silently dropped from beats the note
+        # never even asked to touch, because attention was on an
+        # unrelated targeted fix. A prompt-level reminder alone didn't
+        # reliably prevent this (confirmed via a live retest that still
+        # failed after adding one) -- enforced mechanically here
+        # instead, the same way beat count/structure already is. Checks
+        # for "mouth" anywhere in the beat (not just the Video: line
+        # specifically) to also accept the voiceover phrasing ("keeps
+        # its mouth closed/still").
+        beats_with_dialogue_missing_mouth = [
+            i + 1 for i, seg in enumerate(segments)
+            if re.search(r'(?<![A-Za-z])[\'"‘’“”].{3,}[\'"‘’“”](?![A-Za-z])', seg)
+            and "mouth" not in seg.lower()
+        ]
 
         if missing_headers or len(segments) < 2:
             problem = (f"missing required section header(s): {missing_headers}"
@@ -3017,6 +3045,26 @@ def _validate_and_normalize_spec(number, spec, allow_custom_beats=False, positiv
                 f"across beats rather than compressing it into one -- see how "
                 f"each beat below carries its own piece of the "
                 f"line:\n{BEAT_FORMAT_EXAMPLE}\n"
+                f"Pass --allow-custom-beats only if this specific rework has a "
+                f"documented reason to skip this.")
+            if positive_prompt_is_human:
+                print(f"[dream_step] WARNING (proceeding -- positive_prompt was "
+                      f"typed directly, not AI-composed): {message}", flush=True)
+            else:
+                raise SystemExit(f"[dream_step] {message}")
+        elif beats_with_dialogue_missing_mouth:
+            message = (
+                f"positive_prompt has real dialogue in beat(s) "
+                f"{beats_with_dialogue_missing_mouth} (counting from 1, in order), "
+                f"but the word \"mouth\" doesn't appear anywhere in those beats -- "
+                f"golden_rules.md requires every beat with spoken dialogue to "
+                f"explicitly describe the mouth moving in the Video: line (or, for "
+                f"voiceover, explicitly keep the mouth closed/still) -- never mixed "
+                f"in the same clip. Confirmed to get silently dropped during a "
+                f"targeted revision that was focused on something else entirely.\n"
+                f"REQUIRED: for each beat listed above, either add \"mouth moving\" "
+                f"(or equivalent) to its Video: line if the dialogue is on-camera, "
+                f"or make clear the mouth stays closed/still if it's voiceover.\n"
                 f"Pass --allow-custom-beats only if this specific rework has a "
                 f"documented reason to skip this.")
             if positive_prompt_is_human:
