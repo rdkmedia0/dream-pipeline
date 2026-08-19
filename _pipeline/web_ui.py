@@ -2625,12 +2625,22 @@ INDEX_HTML = r"""<!doctype html>
      plain text left the bubbles themselves nearly illegible (white
      text on a light bubble). Forcing dark bubble text here specifically
      is safe regardless of the app's current light/dark theme, since
-     both bubble backgrounds stay light-toned either way. Capped
-     max-height (vs chat-log's own 260px default) so a several-turn
-     conversation doesn't grow to cover most of the video -- it scrolls
-     within its own bounds instead. */
-  .player-fs-feedback .chat-log { max-height: 9rem; }
+     both bubble backgrounds stay light-toned either way. Taller than
+     chat-log's own 260px default (14rem here) -- this IS the review
+     interface now, not a small addendum, so it gets real room; still
+     capped well short of the full video height, scrolling within its
+     own bounds for a longer back-and-forth instead of growing forever. */
+  .player-fs-feedback .chat-log { max-height: 14rem; }
   .player-fs-feedback .chat-msg { color: #111; }
+  /* More specific than .player-fs-feedback .muted above (two classes
+     vs one), so this correctly wins for the "via <model>" line inside a
+     bubble -- that line is a DIRECT match for both rules (equal
+     specificity would fall to source order, fragile), and the white-ish
+     color meant for bare text on the dark video backdrop was nearly
+     invisible against the SAME light bubble background .chat-msg above
+     was just fixed for. */
+  .player-fs-feedback .chat-msg .muted { color: rgba(0,0,0,0.55); }
+  .player-fs-feedback .chat-msg .row { margin-top: 0.4rem; }
   .player-fs-wrap:fullscreen .player-fs-feedback { display: flex; }
   .player-fs-feedback textarea {
     background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
@@ -4818,7 +4828,7 @@ function promptModal(message, placeholder) {
     overlay.innerHTML = `
       <div class="card mf-confirm-card">
         <p class="mf-confirm-message">${esc(message)}</p>
-        <textarea id="prompt-modal-input" rows="3" style="width:100%" placeholder="${esc(placeholder || '')}"></textarea>
+        <textarea id="prompt-modal-input" rows="3" style="width:100%" spellcheck="true" placeholder="${esc(placeholder || '')}"></textarea>
         <div class="row row-end" style="margin-top:0.5rem">
           <button type="button" id="prompt-modal-cancel">Cancel</button>
           <button type="button" id="prompt-modal-ok" class="btn-primary">Submit</button>
@@ -5251,21 +5261,22 @@ function buildFsOverlayHtml() {
   // which was fragile: a plain-flex nested layout collapsed to a tiny
   // unstyled corner blob during the very first "generating" render
   // (confirmed via screenshot) instead of the intended full-width panel.
+  const fsReviewActionsHtml = (state.fsFeedbackReview && !state.fsFeedbackReview.generating) ? `
+    <div class="row" style="gap:0.3rem">
+      <button data-action="fs-review-retry" type="button">Try again</button>
+      <button data-action="fs-review-accept" type="button" class="btn-primary" ${state.fsFeedbackReview.content ? '' : 'disabled'}>Accept</button>
+    </div>` : '';
   const feedbackReviewBody = state.fsFeedbackReview ? `
-      <div class="chat-log" id="fs-review-chat-log">${feedbackChatLogHtml(state.fsFeedbackReview)}</div>
+      <div class="chat-log" id="fs-review-chat-log">${feedbackChatLogHtml(state.fsFeedbackReview, fsReviewActionsHtml)}</div>
       ${!state.fsFeedbackReview.generating ? `
-        <div class="row" style="gap:0.3rem">
-          <button data-action="fs-review-retry" type="button">Try again</button>
-          <button data-action="fs-review-accept" type="button" class="btn-primary" ${state.fsFeedbackReview.content ? '' : 'disabled'}>Accept</button>
-        </div>
         <div class="row" style="gap:0.3rem;align-items:flex-start">
-          <textarea id="fs-review-refine-input" rows="2" style="flex:1;font-size:0.85em"
+          <textarea id="fs-review-refine-input" rows="2" style="flex:1;font-size:0.85em" spellcheck="true"
                     placeholder="${state.fsFeedbackReview.kind === 'advice' ? 'Reply -- e.g. \'do that\' to have it make the change...' : 'Not quite -- add more direction and try again...'}"></textarea>
           <button data-action="fs-review-refine" type="button">${state.fsFeedbackReview.kind === 'advice' ? 'Reply' : 'Refine'}</button>
         </div>` : ''}`
     : `
       <div class="row" style="gap:0.3rem;align-items:flex-start">
-        <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical"
+        <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical" spellcheck="true"
                   placeholder="What didn't work about this video? The AI will propose a revision for you to review before anything renders."></textarea>
         <button data-action="fs-feedback-submit" title="Ask the AI to propose a revision -- nothing renders until you review and Accept it.">Submit</button>
       </div>`;
@@ -5644,9 +5655,19 @@ async function deleteVideo(folder, location) {
 // since both show the exact same review STATE shape
 // ({generating}/{error}/{content, summary, model}), just wrapped in
 // different surrounding markup (a modal card vs an overlay bar).
-function feedbackChatLogHtml(review) {
-  const bubbles = (review.history || []).map(msg => `
-    <div class="chat-msg ${msg.role === 'user' ? 'chat-user' : 'chat-assistant'}"${msg.isError ? ' style="color:var(--danger, #c0392b)"' : ''}>${esc(msg.text)}${msg.model ? `<div class="muted" style="font-size:0.8em;margin-top:0.2rem">via ${esc(msg.model)}</div>` : ''}</div>`).join('');
+// actionsHtml (Try again/Accept -- built by each caller, since the
+// button data-action values differ between the modal and fullscreen
+// versions) renders INSIDE the LATEST assistant bubble specifically,
+// not as a separate row below the whole log -- keeps the actions
+// visually attached to the response they act on, especially once the
+// log has scrolled past earlier turns.
+function feedbackChatLogHtml(review, actionsHtml) {
+  const history = review.history || [];
+  const bubbles = history.map((msg, i) => {
+    const isLastAssistant = !review.generating && msg.role === 'assistant' && i === history.length - 1;
+    return `
+    <div class="chat-msg ${msg.role === 'user' ? 'chat-user' : 'chat-assistant'}"${msg.isError ? ' style="color:var(--danger, #c0392b)"' : ''}>${esc(msg.text)}${msg.model ? `<div class="muted" style="font-size:0.8em;margin-top:0.2rem">via ${esc(msg.model)}</div>` : ''}${isLastAssistant && actionsHtml ? actionsHtml : ''}</div>`;
+  }).join('');
   const generatingBubble = review.generating
     ? `<div class="chat-msg chat-assistant"><span class="mf-spinner"></span>Asking the AI to revise this...</div>` : '';
   return bubbles + generatingBubble;
@@ -5715,18 +5736,25 @@ function feedbackReviewModal(number, initialNote) {
     document.body.appendChild(overlay);
     let review = { generating: true, note: initialNote, history: [{ role: 'user', text: initialNote }] };
     const render = () => {
+      // Try again/Accept render INSIDE the latest assistant bubble (see
+      // feedbackChatLogHtml's actionsHtml param) -- Cancel stays its
+      // own row since it's a modal-only concept, not an action on any
+      // particular response.
+      const actionsHtml = !review.generating ? `
+        <div class="row" style="margin-top:0.4rem;gap:0.3rem">
+          <button type="button" id="fr-modal-retry">Try again</button>
+          <button type="button" id="fr-modal-accept" class="btn-primary" ${review.content ? '' : 'disabled'}>Accept</button>
+        </div>` : '';
       overlay.innerHTML = `
         <div class="card mf-confirm-card">
           <p class="mf-confirm-message">Feedback for #${number}</p>
-          <div class="chat-log" id="fr-modal-chat-log">${feedbackChatLogHtml(review)}</div>
+          <div class="chat-log" id="fr-modal-chat-log">${feedbackChatLogHtml(review, actionsHtml)}</div>
           ${!review.generating ? `
             <div class="row row-end" style="margin-top:0.5rem">
               <button type="button" id="fr-modal-cancel">Cancel</button>
-              <button type="button" id="fr-modal-retry">Try again</button>
-              <button type="button" id="fr-modal-accept" class="btn-primary" ${review.content ? '' : 'disabled'}>Accept</button>
             </div>
             <div class="row" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
-              <textarea id="fr-modal-refine" rows="2" style="flex:1" placeholder="${review.kind === 'advice' ? 'Reply -- e.g. \'do that\' to have it make the change...' : 'Not quite -- add more direction and try again...'}"></textarea>
+              <textarea id="fr-modal-refine" rows="2" style="flex:1" spellcheck="true" placeholder="${review.kind === 'advice' ? 'Reply -- e.g. \'do that\' to have it make the change...' : 'Not quite -- add more direction and try again...'}"></textarea>
               <button type="button" id="fr-modal-refine-btn">${review.kind === 'advice' ? 'Reply' : 'Refine'}</button>
             </div>` : ''}
         </div>`;
