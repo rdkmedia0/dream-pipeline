@@ -2902,6 +2902,12 @@ INDEX_HTML = r"""<!doctype html>
     display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
   }
   .settings-section h4 .badge { margin-right: 0; }
+  /* Same title+status-pill row shape as .settings-section h4 above, for
+     section headers outside the Settings modal (Creative fields, golden
+     rules) that want the identical convention: OK/NOK pill flush right,
+     adjacent to the title, detail on hover -- not a bespoke layout per
+     form. */
+  h4.pill-h4 { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
   /* Same title-left/pill-right convention as h4, for a sub-field within
      a section that has its own independent status (e.g. "Model files"
      within the ComfyUI section, which already has its own URL-
@@ -8076,9 +8082,8 @@ function creativeFieldsStatusHtml(fields) {
   if (!(fields.style1 || '').trim()) missing.push('Visual style');
   if (!fields.duration_s) missing.push('Duration');
   if (!fields.resolution) missing.push('Resolution');
-  return missing.length
-    ? `<span class="badge badge-danger" title="Still needed: ${esc(missing.join(', '))}">NOK -- ${missing.length} missing</span>`
-    : `<span class="badge badge-ok">OK -- ready to save</span>`;
+  return settingsPill(!missing.length,
+    missing.length ? `Still needed: ${missing.join(', ')}` : 'Genre, visual style, duration, and resolution are all filled in.');
 }
 
 // Recomputes from the DOM's CURRENT (possibly unsaved) values -- called
@@ -8134,6 +8139,7 @@ function creativeFieldsBody(f, isOnboarding) {
       from the concept above -- it doesn't touch Duration/Resolution/Concept directive/Prompt
       template.</p>
     <hr style="margin:1em 0;border-color:var(--border-soft)">
+    <h4 class="pill-h4"><span>Creative fields</span><span id="cf-status-pill">${creativeFieldsStatusHtml(f)}</span></h4>
     <label>Genre <input id="cf-genre" list="cf-genre-options" value="${esc(f.genre || '')}" oninput="updateCreativeFieldsStatus()"></label>
     <datalist id="cf-genre-options">${(f.genre_options || []).map(g => `<option value="${esc(g)}">`).join('')}</datalist>
     <label>Visual style <input id="cf-style1" list="cf-style-options" value="${esc(f.style1 || '')}" oninput="updateCreativeFieldsStatus()"></label>
@@ -8156,9 +8162,8 @@ function creativeFieldsBody(f, isOnboarding) {
     <label>Prompt template <span class="mf-help" title="The actual prompt sent to the AI for each story. Tweak freely -- just keep the placeholders (genre/title/duration/style/direction/rules/exclusions/negative_baseline) intact, they're filled in automatically each call.">?</span>
       <textarea id="cf-template" rows="16" style="font-family:monospace;font-size:0.85em">${esc(f.template || '')}</textarea>
     </label>
-    <div class="row" style="align-items:center">
+    <div class="row">
       <button class="btn-primary" onclick="saveCreativeFields(event)">Save</button>
-      <span id="cf-status-pill">${creativeFieldsStatusHtml(f)}</span>
     </div>`;
 }
 
@@ -8899,7 +8904,7 @@ function goldenRulesEditorHtml(gr) {
     </div>`).join('');
   return `
     <hr style="margin:1.5em 0;border-color:var(--border-soft)">
-    <h4>Golden rules</h4>
+    <h4 class="pill-h4"><span>Golden rules</span><span id="gr-word-count"></span></h4>
     <p class="muted">This project's own mechanical/render/style rules -- loaded into every AI
       generation call for this project. Keep facts about the STORY (species, characters, world)
       in the fields above instead; this section is only HOW things must be rendered/written, not
@@ -8907,8 +8912,6 @@ function goldenRulesEditorHtml(gr) {
     ${hasAnyContent ? `<p><button type="button" onclick="generateGoldenRules()">Re-generate with AI</button></p>` : ''}
     <div id="gr-fields">${fieldsHtml}</div>
     <div class="row" style="margin-top:0.3rem;align-items:center;gap:0.6rem">
-      <span id="gr-word-count"></span>
-      <span style="flex:1"></span>
       <button type="button" onclick="reviewGoldenRules()">Review with AI</button>
       <button type="button" class="btn-primary" onclick="saveGoldenRules(event)">Save</button>
     </div>
@@ -8934,9 +8937,9 @@ function updateGoldenRulesWordCount() {
     .reduce((sum, v) => sum + v.split(/\s+/).length, 0);
   const limit = window.__grWordLimit || 1000;
   const overLimit = words > limit;
-  el.innerHTML = overLimit
-    ? `<span class="badge badge-danger" title="Over the ${limit}-word ceiling -- trim before saving">NOK -- ${words} / ${limit} words</span>`
-    : `<span class="badge badge-ok">OK -- ${filled}/${total} sections, ${words} / ${limit} words</span>`;
+  el.innerHTML = settingsPill(!overLimit,
+    overLimit ? `Over the ${limit}-word ceiling (${words} words) -- trim before saving.`
+              : `${filled}/${total} sections filled, ${words} / ${limit} words.`);
 }
 
 async function generateGoldenRules() {
