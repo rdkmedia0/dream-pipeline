@@ -8978,9 +8978,21 @@ function goldenRulesReviewModal() {
         <div class="row" style="margin-top:0.4rem;gap:0.3rem">
           <button type="button" id="gr-modal-retry">Try again</button>
         </div>` : '';
+      // Persistent status line -- lives OUTSIDE the scrolling chat-log,
+      // so an Accept click's effect is visible without having to scroll
+      // back to find the button that was just clicked (that was the
+      // whole complaint: the only prior signal was the button itself
+      // flipping to "Applied ✓", easy to scroll past and lose track of).
+      const statusHtml = review.status ? `
+        <div class="row" style="align-items:center;gap:0.4rem;margin:0.3rem 0;padding:0.4rem 0.6rem;
+             border-radius:var(--radius);background:${review.status.error ? 'var(--danger)' : 'var(--success)'};color:#fff">
+          <span>${review.status.error ? '⚠' : '✓'}</span>
+          <span>${esc(review.status.text)}</span>
+        </div>` : '';
       overlay.innerHTML = `
         <div class="card mf-confirm-card">
           <p class="mf-confirm-message">Discuss golden rules with AI</p>
+          ${statusHtml}
           <div class="chat-log" id="gr-modal-chat-log">${feedbackChatLogHtml(review, actionsHtml)}</div>
           ${!review.generating ? `
             <div class="row row-end" style="margin-top:0.5rem">
@@ -9040,6 +9052,7 @@ function goldenRulesReviewModal() {
     const acceptOneSection = async (msgIndex, key) => {
       const msg = review.history[msgIndex];
       if (!msg || !msg.proposedSections || !(key in msg.proposedSections)) return;
+      const label = ((window.__grSectionDefs || []).find(d => d.key === key) || {}).label || key;
       const ta = document.getElementById(`gr-${key}`);
       if (ta) ta.value = msg.proposedSections[key] || '';
       updateGoldenRulesWordCount();
@@ -9048,7 +9061,10 @@ function goldenRulesReviewModal() {
         await api('POST', '/api/golden-rules', { project, sections: collectGoldenRulesSections() });
         msg.acceptedKeys = { ...(msg.acceptedKeys || {}), [key]: true };
         review.appliedAny = true;
-      } catch (e) { alert(e.message); }
+        review.status = { text: `Applied "${label}" -- saved to golden_rules.md.` };
+      } catch (e) {
+        review.status = { text: `Couldn't save "${label}": ${e.message}`, error: true };
+      }
       render();
     };
     overlay.onclick = (ev) => { if (ev.target === overlay && !review.generating) { overlay.remove(); resolve(review.appliedAny); } };
