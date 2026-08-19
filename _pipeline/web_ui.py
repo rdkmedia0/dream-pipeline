@@ -354,11 +354,16 @@ def h_preview_feedback(qs, body):
     existing = json.loads(spec_path.read_text(encoding="utf-8"))
     workflow = existing.get("workflow", "fp8_t2v")
     fields = {k: existing.get(k, "") for k in ds.ROW_SPEC_FIELDS}
-    content, change_summary, model = ds.generate_feedback_revision(number, workflow, fields, note)
-    if content is None:
-        raise ValueError("the AI couldn't produce a usable revision -- see the server "
-                          "log, or try rephrasing the feedback.")
-    return {"ok": True, "content": content, "change_summary": change_summary, "model": model}
+    result, model = ds.generate_feedback_revision(number, workflow, fields, note)
+    if result is None:
+        raise ValueError("nothing left for the AI to revise -- every field is already "
+                          "locked/unchanged.")
+    if result["kind"] == "error":
+        raise ValueError(result["text"])
+    if result["kind"] == "advice":
+        return {"ok": True, "kind": "advice", "text": result["text"], "model": model}
+    return {"ok": True, "kind": "revision", "content": result["content"],
+            "change_summary": result["change_summary"], "model": model}
 
 
 def h_accept_feedback(qs, body):
@@ -2608,9 +2613,11 @@ INDEX_HTML = r"""<!doctype html>
      a single button row. */
   .player-fs-feedback {
     display: none; position: absolute; left: 0; right: 0; bottom: 0;
-    padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff; align-items: flex-start;
+    padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff;
+    flex-direction: column; align-items: stretch;
     background: linear-gradient(transparent, rgba(0,0,0,0.75));
   }
+  .player-fs-feedback > .row { width: 100%; box-sizing: border-box; }
   .player-fs-feedback .muted { color: rgba(255,255,255,0.7); }
   /* .chat-msg bubbles (chat-user/chat-assistant) use theme-derived
      LIGHT background colors (--accent-soft/--border-soft), meant for a
@@ -5239,24 +5246,29 @@ function buildFsOverlayHtml() {
   // buttons AND a refine box all at once -- this is a proper (if
   // compact) chat panel instead, scrolling within its own bounded
   // height rather than fighting the video/controls for space.
+  // Direct children of .player-fs-feedback (a column flex container --
+  // see its own CSS) instead of an extra row-inside-column wrapper div,
+  // which was fragile: a plain-flex nested layout collapsed to a tiny
+  // unstyled corner blob during the very first "generating" render
+  // (confirmed via screenshot) instead of the intended full-width panel.
   const feedbackReviewBody = state.fsFeedbackReview ? `
-      <div style="flex:1;display:flex;flex-direction:column;gap:0.4rem;min-width:0">
-        <div class="chat-log" id="fs-review-chat-log">${feedbackChatLogHtml(state.fsFeedbackReview)}</div>
-        ${!state.fsFeedbackReview.generating ? `
-          <div class="row" style="gap:0.3rem">
-            <button data-action="fs-review-retry" type="button">Try again</button>
-            <button data-action="fs-review-accept" type="button" class="btn-primary" ${state.fsFeedbackReview.error ? 'disabled' : ''}>Accept</button>
-          </div>
-          <div class="row" style="gap:0.3rem;align-items:flex-start">
-            <textarea id="fs-review-refine-input" rows="2" style="flex:1;font-size:0.85em"
-                      placeholder="Not quite -- add more direction and try again..."></textarea>
-            <button data-action="fs-review-refine" type="button">Refine</button>
-          </div>` : ''}
-      </div>`
+      <div class="chat-log" id="fs-review-chat-log">${feedbackChatLogHtml(state.fsFeedbackReview)}</div>
+      ${!state.fsFeedbackReview.generating ? `
+        <div class="row" style="gap:0.3rem">
+          <button data-action="fs-review-retry" type="button">Try again</button>
+          <button data-action="fs-review-accept" type="button" class="btn-primary" ${state.fsFeedbackReview.content ? '' : 'disabled'}>Accept</button>
+        </div>
+        <div class="row" style="gap:0.3rem;align-items:flex-start">
+          <textarea id="fs-review-refine-input" rows="2" style="flex:1;font-size:0.85em"
+                    placeholder="${state.fsFeedbackReview.kind === 'advice' ? 'Reply -- e.g. \'do that\' to have it make the change...' : 'Not quite -- add more direction and try again...'}"></textarea>
+          <button data-action="fs-review-refine" type="button">${state.fsFeedbackReview.kind === 'advice' ? 'Reply' : 'Refine'}</button>
+        </div>` : ''}`
     : `
-      <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical"
-                placeholder="What didn't work about this video? The AI will propose a revision for you to review before anything renders."></textarea>
-      <button data-action="fs-feedback-submit" title="Ask the AI to propose a revision -- nothing renders until you review and Accept it.">Submit</button>`;
+      <div class="row" style="gap:0.3rem;align-items:flex-start">
+        <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em;resize:vertical"
+                  placeholder="What didn't work about this video? The AI will propose a revision for you to review before anything renders."></textarea>
+        <button data-action="fs-feedback-submit" title="Ask the AI to propose a revision -- nothing renders until you review and Accept it.">Submit</button>
+      </div>`;
   const feedbackInline = (sel && state.playerHtml && state.reviewMode) ? `
     <div class="player-fs-feedback" id="fs-feedback-inline">${feedbackReviewBody}</div>` : '';
   // Empty/hidden placeholder, filled in and shown/hidden by
@@ -5711,11 +5723,11 @@ function feedbackReviewModal(number, initialNote) {
             <div class="row row-end" style="margin-top:0.5rem">
               <button type="button" id="fr-modal-cancel">Cancel</button>
               <button type="button" id="fr-modal-retry">Try again</button>
-              <button type="button" id="fr-modal-accept" class="btn-primary" ${review.error ? 'disabled' : ''}>Accept</button>
+              <button type="button" id="fr-modal-accept" class="btn-primary" ${review.content ? '' : 'disabled'}>Accept</button>
             </div>
             <div class="row" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
-              <textarea id="fr-modal-refine" rows="2" style="flex:1" placeholder="Not quite -- add more direction and try again..."></textarea>
-              <button type="button" id="fr-modal-refine-btn">Refine</button>
+              <textarea id="fr-modal-refine" rows="2" style="flex:1" placeholder="${review.kind === 'advice' ? 'Reply -- e.g. \'do that\' to have it make the change...' : 'Not quite -- add more direction and try again...'}"></textarea>
+              <button type="button" id="fr-modal-refine-btn">${review.kind === 'advice' ? 'Reply' : 'Refine'}</button>
             </div>` : ''}
         </div>`;
       scrollFeedbackChatToBottom('fr-modal-chat-log');
@@ -5740,8 +5752,13 @@ function feedbackReviewModal(number, initialNote) {
       render();
       try {
         const result = await api('POST', '/api/manage/preview-feedback', { project: state.project, number, note: apiNote });
-        history.push({ role: 'assistant', text: result.change_summary || 'The AI proposed a revision.', model: result.model });
-        review = { note: apiNote, content: result.content, model: result.model, history };
+        // "advice": a question/discussion, not a change request -- there's
+        // no content to accept, just an answer to read. Reply in the box
+        // below (e.g. "do that") to actually request a revision.
+        const bubbleText = result.kind === 'advice' ? result.text
+          : (result.change_summary || 'The AI proposed a revision.');
+        history.push({ role: 'assistant', text: bubbleText, model: result.model });
+        review = { note: apiNote, kind: result.kind, content: result.content, model: result.model, history };
       } catch (e) {
         history.push({ role: 'assistant', text: e.message, isError: true });
         review = { note: apiNote, error: e.message, history };
@@ -5805,8 +5822,13 @@ async function runInlineFeedbackPreview(apiNote, displayNote, number) {
   scrollFeedbackChatToBottom('fs-review-chat-log');
   try {
     const result = await api('POST', '/api/manage/preview-feedback', { project: state.project, number: num, note: apiNote });
-    history.push({ role: 'assistant', text: result.change_summary || 'The AI proposed a revision.', model: result.model });
-    state.fsFeedbackReview = { note: apiNote, number: num, content: result.content, model: result.model, history };
+    // "advice": a question/discussion, not a change request -- there's
+    // no content to accept, just an answer to read. Reply below (e.g.
+    // "do that") to actually request a revision.
+    const bubbleText = result.kind === 'advice' ? result.text
+      : (result.change_summary || 'The AI proposed a revision.');
+    history.push({ role: 'assistant', text: bubbleText, model: result.model });
+    state.fsFeedbackReview = { note: apiNote, number: num, kind: result.kind, content: result.content, model: result.model, history };
   } catch (e) {
     history.push({ role: 'assistant', text: e.message, isError: true });
     state.fsFeedbackReview = { note: apiNote, number: num, error: e.message, history };

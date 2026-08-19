@@ -1848,29 +1848,36 @@ def write_row_spec(number, workflow, fields, note, verbose=False, show_existing_
                           f"direction, or fill in the field(s) yourself instead.")
 
 
-def generate_feedback_revision(number, workflow, fields, note, verbose=False):
+def generate_feedback_revision(number, workflow, fields, note, verbose=False, max_validation_retries=3):
     """Feedback-review preview step for the video-review "Provide
     feedback" flow -- generates a proposed revision WITHOUT writing to
     disk, so the human can see (and approve, or ask for another attempt
     on) what the AI intends before anything renders. Reuses
-    write_row_spec's exact machinery (build_row_spec_payload with
-    show_existing_for_note=True, _generate_spec_content) but stops short
-    of the write -- accept_feedback_revision below is the actual write,
-    called only once the human has approved this in the review UI.
+    build_row_spec_payload(show_existing_for_note=True) but does its own
+    generation/validation instead of calling _generate_spec_content --
+    that function ALWAYS demands a fully-validated spec back, which
+    doesn't fit this call's other real outcome (see response_type
+    below). accept_feedback_revision is the actual write, called only
+    once the human has approved a "revision" result in the review UI.
 
-    Also asks for a human-readable "change_summary" -- 1-3 sentences
-    explaining what changed and why, addressed directly to the human
-    and referencing their feedback note (e.g. "Since you mentioned the
-    melon joke didn't land, I rewrote the second beat's dialogue and
-    removed the melon prop entirely.") rather than a generic restatement
-    of the diff. Popped out of the returned content before it's treated
-    as spec fields -- it's not a real spec field and must never persist
-    into spec_NNN.json.
+    The model first classifies the human's message as "advice" (a
+    question / asking for a recommendation -- "what would you suggest?")
+    or "revision" (an actual instruction to change something). Confirmed
+    (2026-08-19) this distinction matters: without it, EVERY message was
+    forced through the "propose a full content revision" path regardless
+    of phrasing, so asking "what do you advise" got back an unrequested
+    revision instead of an actual answer to the question. "advice"
+    responses skip spec validation entirely (there's no content to
+    validate) and are meant to be read, not accepted -- the human
+    replies back in the same conversation (e.g. "do that") to actually
+    request a revision once they've decided what they want.
 
-    Returns (content, change_summary, model_label). content is None if
-    there was nothing left for the AI to propose (every base field
-    already human-locked/unchanged) or generation failed validation
-    after every retry -- change_summary is None in either case too.
+    Returns (result, model_label). result is one of:
+      {"kind": "advice", "text": str}
+      {"kind": "revision", "content": dict, "change_summary": str|None}
+      {"kind": "error", "text": str}
+      None -- nothing left for the AI to propose (every base field
+        already human-locked/unchanged)
     model_label is "<backend>:<model>" read straight from config.json
     (e.g. "gemini:gemini-3.1-flash", "ollama:gemma4:12b") so it's
     always accurate to whatever's actually configured, never a
@@ -1891,23 +1898,77 @@ def generate_feedback_revision(number, workflow, fields, note, verbose=False):
 
     payload = build_row_spec_payload(number, locked_fields, note, workflow, show_existing_for_note=True)
     if payload is None:
-        return None, None, model_label
-    payload["schema_hint"]["change_summary"] = (
-        "1-3 sentences, plain human-readable prose (NOT spec/story content) "
-        "explaining what you changed and why, written directly to the human "
-        "who gave the feedback -- e.g. \"Since you mentioned the melon joke "
-        "didn't land, I rewrote the second beat's dialogue and removed the "
-        "melon prop entirely.\" Address the feedback note's actual complaint "
-        "specifically, don't just restate that you made changes."
-    )
+        return None, model_label
+    field_schema_hint = payload["schema_hint"]
+    payload["schema_hint"] = {
+        "response_type": (
+            "REQUIRED, must be exactly \"advice\" or \"revision\". \"advice\" if "
+            "human_direction reads as a QUESTION or a request for your opinion/"
+            "recommendation/discussion (e.g. \"what would you suggest?\", \"what's "
+            "wrong with this?\") -- \"revision\" if it's an actual instruction to "
+            "change something (e.g. \"the joke didn't land, fix it\"). When "
+            "genuinely ambiguous, prefer \"advice\" -- only use \"revision\" for a "
+            "clear directive to make a change."),
+        "advice": (
+            "REQUIRED when response_type is \"advice\", otherwise an empty string. "
+            "Your conversational answer/recommendation, plain prose, addressed "
+            "directly to the human, specific to what they actually asked and "
+            "informed by existing_content -- not a generic restatement."),
+        **{k: f"REQUIRED when response_type is \"revision\", otherwise omit this key. {v}"
+           for k, v in field_schema_hint.items()},
+        "change_summary": (
+            "REQUIRED when response_type is \"revision\", otherwise an empty "
+            "string. 1-3 sentences, plain human-readable prose (NOT spec/story "
+            "content) explaining what you changed and why, written directly to "
+            "the human -- e.g. \"Since you mentioned the melon joke didn't land, "
+            "I rewrote the second beat's dialogue and removed the melon prop "
+            "entirely.\" Address the feedback note's actual complaint "
+            "specifically, don't just restate that you made changes."),
+    }
     prompt = _render_creative_prompt(payload)
     if verbose:
         print(f"[dream_step] #{number}: feedback-preview prompt:\n{prompt}\n")
-    content = _generate_spec_content(number, prompt, code_owned, extra_locked_fields=locked_fields, verbose=verbose)
-    if content is None:
-        return None, None, model_label
-    change_summary = content.pop("change_summary", None)
-    return content, change_summary, model_label
+
+    attempt_prompt = prompt
+    for attempt in range(1, max_validation_retries + 1):
+        try:
+            parsed, _history = _creative_completion(attempt_prompt)
+        except RuntimeError as e:
+            return {"kind": "error", "text": str(e)}, model_label
+        response_type = (parsed.get("response_type") or "").strip().lower()
+        if response_type == "advice":
+            return {"kind": "advice", "text": parsed.get("advice") or
+                     "(the model marked this as advice but returned no text)"}, model_label
+        # Anything other than a clean "advice" is treated as a revision
+        # attempt -- including a missing/garbled response_type, since a
+        # model that skipped it entirely almost always still answered
+        # with real content fields, and silently discarding a genuine
+        # revision because of one malformed classification field would
+        # be a worse failure mode than just validating what it gave us.
+        content = {k: v for k, v in parsed.items()
+                   if k not in ("response_type", "advice", "change_summary")}
+        content = {**existing_on_disk, **content}
+        for field in CODE_OWNED_SPEC_FIELDS:
+            content.pop(field, None)
+        if locked_fields:
+            content.update(locked_fields)
+        content.update(code_owned)
+        positive_prompt_is_human = bool(locked_fields and "positive_prompt" in locked_fields)
+        try:
+            content = _validate_and_normalize_spec(number, content, positive_prompt_is_human=positive_prompt_is_human)
+            change_summary = parsed.get("change_summary") or None
+            return {"kind": "revision", "content": content, "change_summary": change_summary}, model_label
+        except SystemExit as e:
+            if attempt == max_validation_retries:
+                return {"kind": "error", "text": f"the model's revision failed validation after "
+                                                  f"{max_validation_retries} attempts: {e}"}, model_label
+            if verbose:
+                print(f"[dream_step] #{number}: attempt {attempt} failed validation, "
+                      f"retrying with the error fed back...", flush=True)
+            attempt_prompt = (f"{prompt}\n\nYour previous answer failed validation with this "
+                               f"exact error -- fix it and answer again, full JSON object, same "
+                               f"schema:\n{e}")
+    return {"kind": "error", "text": "the model never produced a usable answer"}, model_label
 
 
 def accept_feedback_revision(number, content):
