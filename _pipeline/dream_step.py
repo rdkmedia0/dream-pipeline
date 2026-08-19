@@ -56,9 +56,10 @@ invites exactly the kind of drift a deterministic menu prevents.
 `--generate` and `--rework` only ever touch the EXACT numbers passed
 to them -- there is no stale/carried-over range state anywhere.
 AI-composed creative content (spec fields, keyframe prompts) is written
-via the manage table's Run updates (see write_row_spec/
-write_row_keyframes) -- `--write-spec` on the CLI is direct-content-only
-(--spec-json/--spec-json-stdin) for scripted/manual use.
+via the manage table's own primary button ("Auto-generate missing
+content" -- see write_row_spec/write_row_keyframes) -- `--write-spec`
+on the CLI is direct-content-only (--spec-json/--spec-json-stdin) for
+scripted/manual use.
 
 GENERATE MODE -- --generate N[,N...|N-N|all]:
   Renders EXACTLY the listed numbers (or all specced-but-unrendered ones
@@ -1770,8 +1771,8 @@ def build_spec_request_payload(number, note=None, workflow=None):
             # motion verbs a single still frame can't depict ("stalking
             # across the snow"), which then fails its own post-generation
             # review every attempt, no matter how many retries run. Matches
-            # build_keyframes_request_payload's schema_hint (the K chip's
-            # own path to this same field) -- still POSE, never animation.
+            # build_keyframes_request_payload's schema_hint (the manage
+            # table's own path to this same field) -- still POSE, never animation.
             schema_hint[field] = (f"required for workflow={workflow!r} -- an OBJECT "
                                    f"with keys \"first\", \"middle\", \"last\" (never a "
                                    f"plain string). Each is a STILL-IMAGE description of "
@@ -2032,8 +2033,8 @@ def write_row_spec(number, workflow, fields, note, verbose=False, show_existing_
     building the new spec dict from scratch (just naive_locked_fields +
     code_owned) would silently drop any field not in ROW_SPEC_FIELDS or
     CODE_OWNED_SPEC_FIELDS (e.g. fml2v_guide_strengths, saved separately
-    via its own per-slot weight input) the instant "Save content" ran for
-    any other reason. Starting from the existing on-disk spec and
+    via its own per-slot weight input) the instant "Auto-generate missing
+    content" ran for any other reason. Starting from the existing on-disk spec and
     layering locked fields + code_owned on top preserves anything this
     function doesn't itself know or care about.
 
@@ -2701,14 +2702,16 @@ CONCEPTS:
 
 TABLE MECHANICS (field-locking -- the most important rule to explain if asked):
 - Any field the human typed content into is used VERBATIM, always -- never touched by AI,
-  never inferred to be "probably fine to overwrite."
-- Blank fields are AI-composed only if that row's AI chip is ticked (S = spec fields, K =
-  keyframe/image prompts). If AI is off and a field is blank, saving it fails with a clear
-  error telling the human to fill it in or turn AI on.
-- "Run updates" writes spec/keyframe content for selected rows -- it never renders anything.
-- "Run video gen" is the separate, explicit, GPU-spending step -- renders for the first time
-  if a number has no video yet, or RE-RENDERS (overwriting the current file) if it does.
-  Always asks for confirmation first.
+  never inferred to be "probably fine to overwrite." Any field still blank is AI-composed
+  automatically -- no manual on/off switch, this is unconditional.
+- The Manage tab has ONE primary button whose label/action depends on the current selection:
+  "Auto-generate missing content" while any selected row still has a blank field (writes
+  spec/keyframe content -- never renders anything), or "Render video" once every selected row
+  is fully filled in (the separate, explicit, GPU-spending step -- renders for the first time
+  if a number has no video yet, or RE-RENDERS/overwrites if it does). Always asks for
+  confirmation before either action.
+- "Clear content" wipes a selected row's spec content back to blank for a fresh generation --
+  never touches an already-rendered video.
 - Uploading to YouTube is its own separate tab, never bundled into the above.
 
 YOUR OWN TOOLS -- use a REAL tool call for these, never just describe the action in prose or
@@ -5684,7 +5687,7 @@ def do_status(project_name):
     if s["image_workflow_specs"]:
         print(f"  {opt}. Gen keyframe images -- (re)generate reference image(s) for "
               f"i2v/fml specs: {format_number_ranges(s['image_workflow_specs'])}. Done "
-              f"through the web UI's manage table (Run updates, K chip) -- run:")
+              f"through the web UI's manage table (Auto-generate missing content) -- run:")
         print(f"       python dream_step.py --project {project_name} --web")
         opt += 1
     if s["rendered_not_uploaded"]:
@@ -5766,8 +5769,8 @@ def ensure_workflow_type(number, spec, type_arg, kind):
     fields, returns True (nothing to do). Otherwise returns False --
     caller should skip this number (so a batch with a mix of numbers
     still processes the ones that ARE ready) and report that the missing
-    fields need to be composed first via the manage table's "Run
-    updates" (AI-composed with the K/S chip, or typed in directly), not
+    fields need to be composed first via the manage table's
+    "Auto-generate missing content" (or typed in directly), not
     silently rendered with stale/wrong-type content."""
     if type_arg == "keep":
         return True
@@ -5780,8 +5783,8 @@ def ensure_workflow_type(number, spec, type_arg, kind):
 
     print(f"[dream_step] >>> #{number}: switching to {type_arg} needs {needed_fields}, "
           f"not yet set. TO FIX: load #{number} into the manage table, fill those "
-          f"fields in (or tick the K/S AI chip to compose them), click Run updates, "
-          f"then retry this render.", flush=True)
+          f"fields in (or leave them blank to have AI compose them), click "
+          f"Auto-generate missing content, then retry this render.", flush=True)
     return False
 
 
@@ -5988,7 +5991,7 @@ def _generate_spec_content(number, prompt, code_owned, max_validation_retries=3,
     is specific and actionable enough for the model to fix on its own.
 
     Does NOT write anything to disk -- see _generate_and_write_spec (the
-    real 'Save content' path, the only thing that calls this).
+    real "Auto-generate missing content" path, the only thing that calls this).
 
     extra_locked_fields: manage-table fields the human typed in directly
     (build_row_spec_payload already excluded these from what the model
@@ -5997,9 +6000,9 @@ def _generate_spec_content(number, prompt, code_owned, max_validation_retries=3,
 
     Returns the validated content dict on success, None if every attempt
     failed -- callers that need to distinguish "produced something" from
-    "gave up" (the web table's Run updates, which otherwise reported
-    ok:true even when nothing was actually written) should check this
-    rather than assume a normal return means success."""
+    "gave up" (the web table's "Auto-generate missing content", which
+    otherwise reported ok:true even when nothing was actually written)
+    should check this rather than assume a normal return means success."""
     # Same fix as write_row_spec, same reason (2026-08-17): the model's
     # JSON answer only ever covers the base fields it was asked to write
     # -- anything else already on disk (fml2v_guide_strengths, saved
@@ -6049,7 +6052,7 @@ def _generate_spec_content(number, prompt, code_owned, max_validation_retries=3,
 
 def _generate_and_write_spec(number, prompt, code_owned, max_validation_retries=3,
                               extra_locked_fields=None, verbose=False):
-    """The real 'Save content' path -- generates via _generate_spec_content,
+    """The real "Auto-generate missing content" path -- generates via _generate_spec_content,
     then writes to disk. Returns True on a real write, False if every
     attempt failed validation (see _generate_spec_content)."""
     content = _generate_spec_content(number, prompt, code_owned, max_validation_retries,
@@ -6087,7 +6090,7 @@ def determine_code_owned_spec_fields(number, workflow):
     Calling find_reference_images straight away, without migrating first,
     would -- like migrate_uploaded_images' own docstring explains --
     ignore the uploads staging dir entirely once the real Dream folder
-    already has SOME image for that slot. "Save content" (write_row_spec)
+    already has SOME image for that slot. "Auto-generate missing content" (write_row_spec)
     then does a full spec replace using these fields, so that would
     silently overwrite a correctly-migrated fml2v_first_image/middle
     back to whatever the STALE folder contents implied -- from the
@@ -6158,7 +6161,7 @@ def _generate_keyframes_content(number, prompt, max_validation_retries=3,
     """Same self-correcting retry pattern as _generate_spec_content, for
     keyframe prompt fields -- shared by the CLI and the web UI. Does NOT
     write anything to disk; see _generate_and_write_keyframes (the real
-    'Save content' path).
+    "Auto-generate missing content" path).
 
     extra_locked_fields: manage-table sub-fields (e.g. fml2v_keyframe_prompts'
     "first"/"middle") the human typed in directly -- merged into whichever
@@ -6203,7 +6206,7 @@ def _generate_keyframes_content(number, prompt, max_validation_retries=3,
 
 def _generate_and_write_keyframes(number, prompt, max_validation_retries=3,
                                    extra_locked_fields=None, verbose=False):
-    """The real 'Save content' path for keyframes -- generates via
+    """The real "Auto-generate missing content" path for keyframes -- generates via
     _generate_keyframes_content, then writes to disk. Returns True on a
     real write, False if every attempt failed validation."""
     merged, update_fields = _generate_keyframes_content(
@@ -6397,7 +6400,7 @@ def main():
                          help="Number to write/overwrite spec_{N:03d}.json for, with "
                               "--spec-json/--spec-json-stdin supplying the content directly "
                               "(single number only). For AI-composed content, use the manage "
-                              "table's Run updates instead -- this flag is for direct/scripted "
+                              "table's Auto-generate missing content instead -- this flag is for direct/scripted "
                               "content only.")
     parser.add_argument("--spec-json", type=str, default=None,
                          help="JSON object with the spec's fields, as a single-quoted shell "
@@ -6427,7 +6430,7 @@ def main():
                               "to use whatever the spec's 'workflow' field already says (the "
                               "default -- decided when the spec itself was written). If the "
                               "target type's fields aren't set yet, compose them first via the "
-                              "manage table's Run updates.")
+                              "manage table's Auto-generate missing content.")
     parser.add_argument("--rework", type=str, default=None,
                          help="Number(s) to re-render from their CURRENT spec content -- 'x', "
                               "'x-y', comma-mix, or 'all' (all rendered numbers). Does NOT "
@@ -6523,7 +6526,7 @@ def main():
             raise SystemExit(
                 "[dream_step] --write-spec needs --spec-json or --spec-json-stdin.\n"
                 "EXPECTED: direct spec content for scripted/manual writes -- for "
-                "AI-composed content, use the manage table's Run updates instead.\n"
+                "AI-composed content, use the manage table's Auto-generate missing content instead.\n"
                 "TO FIX: add --spec-json-stdin with a heredoc, or --spec-json '<json>'.")
         numbers = parse_number_spec(args.write_spec)
         if numbers is ALL_NUMBERS or len(numbers) != 1:

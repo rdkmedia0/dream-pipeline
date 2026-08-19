@@ -4488,7 +4488,7 @@ function settingsFormHtml(config) {
       <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:0.4rem">
         <label class="row" style="gap:0.4rem; width:auto">
           <input type="checkbox" id="cfg-spec-trend-mode" ${config.spec_trend_mode_enabled ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'spec_trend_mode_enabled','checkbox'); updateSpecTrendUI();">
-          Use performance trends when writing content <span class="mf-help" title="When on, every AI-composed manage-table row (S chip, and the CLI's own generation) quietly checks this project's own YouTube Analytics for top-performing titles/tags and uses that as style/word-choice signal -- it never changes or overrides the row's own concept (title/premise), only informs tone in whatever's already being written. Safe to leave on permanently: if this project has no analytics data yet, generation proceeds completely normally with no error and no trend context.">?</span>
+          Use performance trends when writing content <span class="mf-help" title="When on, every AI-composed manage-table row (blank fields via Auto-generate missing content, and the CLI's own generation) quietly checks this project's own YouTube Analytics for top-performing titles/tags and uses that as style/word-choice signal -- it never changes or overrides the row's own concept (title/premise), only informs tone in whatever's already being written. Safe to leave on permanently: if this project has no analytics data yet, generation proceeds completely normally with no error and no trend context.">?</span>
         </label>
         <label class="row" id="cfg-spec-trend-excerpts-row" style="gap:0.4rem; width:auto; ${config.spec_trend_mode_enabled ? '' : 'display:none'}">
           <input type="checkbox" id="cfg-spec-trend-excerpts" ${config.spec_trend_include_script_excerpts ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'spec_trend_include_script_excerpts','checkbox')">
@@ -5637,8 +5637,9 @@ function renderListCard() {
 // below is the only path that actually runs one. Spec-field "proposals"
 // are the oldest/lowest-risk case of the same idea: they only ever
 // populate the matching row's cells after an explicit Apply click, never
-// written to disk directly -- Run updates (already the only thing that
-// writes specs) is still required afterward, same as any other edit.
+// written to disk directly -- the Manage tab's own primary button
+// (already the only thing that writes specs) is still required
+// afterward, same as any other edit.
 if (state.chatHistory === undefined) state.chatHistory = [];
 
 async function renderChatCard() {
@@ -5778,7 +5779,9 @@ async function sendChatMessage() {
 
 // Applies one message's proposals into the manage table's live cells --
 // exactly as if the human had typed them. Nothing here writes to disk;
-// Run updates (unchanged) is still the only path that does.
+// the Manage tab's own primary button (Auto-generate missing content /
+// Render video, see updateManagePrimaryButton) is still the only path
+// that does.
 function applyChatProposals(msgIndex) {
   const msg = state.chatHistory[msgIndex];
   if (!msg || !msg.proposals) return;
@@ -5790,7 +5793,8 @@ function applyChatProposals(msgIndex) {
     if (applyFieldToRow(tr, p.field, p.value)) applied++;
     else skipped.push(`#${p.number} ${p.field}`);
   });
-  alert(`Applied ${applied} field(s) into the table.${skipped.length ? '\n\nSkipped: ' + skipped.join(', ') : ''}\n\nReview the changes, then click Run updates to actually save.`);
+  updateManagePrimaryButton();
+  alert(`Applied ${applied} field(s) into the table.${skipped.length ? '\n\nSkipped: ' + skipped.join(', ') : ''}\n\nReview the changes in the table below, then click the button under it to save.`);
 }
 
 function applyFieldToRow(tr, field, value) {
@@ -6887,9 +6891,11 @@ function setSlotPromptValue(tr, field, value) {
 // Filters live INSIDE each header cell (Excel-style), not in a separate
 // row below -- one sticky header row instead of two, and the header cells
 // (which had empty space under the label anyway once every column got a
-// fixed width) now actually use that space. Save content/Render video
-// always act on everything SELECTED (checkbox column), not just what's
-// currently visible under a filter.
+// fixed width) now actually use that space. The primary button (Auto-
+// generate missing content/Render video) acts on rows that are BOTH
+// selected (checkbox column) AND currently visible under any active
+// filter -- see manageSelectedRows's own comment on why filtered-out
+// rows are excluded even if their checkbox is still checked.
 function renderManageTable() {
   const wrap = document.getElementById('manage-table-wrap');
   if (!state.manageRows || !state.manageRows.length) { wrap.innerHTML = '<div class="muted">no rows</div>'; return; }
@@ -6915,7 +6921,7 @@ function renderManageTable() {
       </colgroup>
       <thead>
         <tr>
-          <th title="Select which rows Save content / Render video act on.">
+          <th title="Select which rows Auto-generate missing content / Render video act on.">
             <input type="checkbox" id="manage-select-all" ${manageAnyDeselected() ? '' : 'checked'}
                    onchange="toggleManageSelectAll(this.checked)">
           </th>
@@ -6935,7 +6941,7 @@ function renderManageTable() {
                 <option value="i2v">i2v</option>
                 <option value="fml">fml</option>
               </select>
-              <button type="button" style="font-size:0.75em;padding:0 0.4em" title="Set the Graph type column for every SELECTED row (checkbox column) to the value above. Doesn't save -- click Save content after."
+              <button type="button" style="font-size:0.75em;padding:0 0.4em" title="Set the Graph type column for every SELECTED row (checkbox column) to the value above. Doesn't save on its own -- click the button below (Auto-generate missing content / Render video) after."
                       onclick="applyBulkGraphType()">Set</button>
             </div>
           </th>
@@ -6958,10 +6964,11 @@ function renderManageTable() {
   updateManagePrimaryButton();
 
   // The filter row's inputs live inside `wrap`'s innerHTML, which gets
-  // rebuilt by every renderManageTable() call (e.g. after Run updates
-  // reloads) -- a plain addEventListener here would stack up a fresh
-  // duplicate listener on `wrap` (which itself persists) each time this
-  // runs. Guard so the delegated listener attaches exactly once.
+  // rebuilt by every renderManageTable() call (e.g. after the primary
+  // button's own generate/render reloads) -- a plain addEventListener
+  // here would stack up a fresh duplicate listener on `wrap` (which
+  // itself persists) each time this runs. Guard so the delegated
+  // listener attaches exactly once.
   if (!wrap.dataset.filterBound) {
     wrap.addEventListener('input', (ev) => {
       if (ev.target.classList.contains('mf-filter')) applyManageFilters();
@@ -7055,7 +7062,10 @@ function manageRowHtml(row) {
     <tr data-number="${n}">
       <td><input type="checkbox" class="mf-select" ${manageIsDeselected(n) ? '' : 'checked'}
                   onchange="setManageRowSelected(${n}, this.checked)"></td>
-      <td>#${n}<br>${badges}</td>
+      <td>#${n}<br>${badges}<br>
+        <button type="button" style="font-size:0.7em;padding:0 0.35em;margin-top:0.2rem" onclick="reloadManageRow(${n})"
+                title="Reload just THIS row from what's actually saved on disk, discarding any unsaved edits to it -- other rows are untouched. Use this to back out of a generate/edit you didn't want, without losing work on other rows.">Revert row</button>
+      </td>
       ${manageCellHtml('title', row.title)}
       ${manageCellHtml('premise', row.premise)}
       ${manageCellHtml('positive_prompt', row.positive_prompt)}
@@ -7080,7 +7090,7 @@ function applyBulkGraphType() {
     if (!cb || !cb.checked) return;
     if (applyFieldToRow(tr, 'type', value)) applied++;
   });
-  alert(`Set Graph type to "${value}" on ${applied} selected row(s). Click Save content to write it.`);
+  alert(`Set Graph type to "${value}" on ${applied} selected row(s). Click the button below (Auto-generate missing content / Render video) to write it.`);
 }
 
 // Every currently-populated image slot for one row, in the shape
@@ -7561,8 +7571,8 @@ async function uploadSlotImage(number, slot, input) {
 }
 
 // Uploading is instant and non-destructive (unlike spec/keyframe writes)
-// -- refreshes just this row from disk right away rather than waiting for
-// "Run updates".
+// -- refreshes just this row from disk right away rather than waiting
+// for the primary button's own generate/render cycle.
 function uploadSlotImageFile(number, slot, file) {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -7642,11 +7652,12 @@ function kfNeedsSave(row, current) {
   return false;
 }
 
-// 'Save content' -- writes exactly what's currently in the form to
-// spec_{number}.json, verbatim, EXCEPT any still-blank required field,
-// which the server auto-composes via AI (see write_row_spec/
-// write_row_keyframes). No manual on/off switch and no separate preview
-// step -- review the result after it saves, or edit and Save again.
+// "Auto-generate missing content" mode of the primary button -- writes
+// exactly what's currently in the form to spec_{number}.json, verbatim,
+// EXCEPT any still-blank required field, which the server auto-composes
+// via AI (see write_row_spec/write_row_keyframes). No manual on/off
+// switch and no separate preview step -- review the result after it
+// saves, or edit and generate again.
 // Shared by runManageSave's loop and deleteSlotImage's "save first"
 // path (see rowHasUnsavedChanges) -- writes exactly one row's current
 // form fields to disk, verbatim, no AI. Returns a results array (0-2
@@ -7688,6 +7699,38 @@ async function saveManageRowContent(row, tr, verbose) {
 function rowHasUnsavedChanges(row, tr) {
   const current = readManageRow(tr);
   return specFieldsDirty(row, current) || kfFieldsDirty(row, current);
+}
+
+// "Revert row" -- reloads ONE row from what's actually saved on disk
+// right now, discarding any in-progress edits (typed OR just
+// auto-generated-but-not-reviewed-as-wanted) to that row specifically.
+// Every OTHER row's own in-progress edits are completely untouched --
+// this replaces only that one <tr>'s DOM node, not the whole table, and
+// only patches state.manageRows at that row's own index. The natural
+// answer to "I changed a lot of rows and only want to back one of them
+// out": since Auto-generate missing content already always writes
+// straight to disk (no separate unsaved-draft state to discard), this
+// is really "reload what's on disk," same idea as a hard refresh but
+// scoped to one row instead of losing every other row's progress too.
+async function reloadManageRow(number) {
+  const tr = document.querySelector(`tr[data-number="${number}"]`);
+  if (!tr) return;
+  const row = state.manageRows.find(r => r.number === number);
+  const dirty = row && rowHasUnsavedChanges(row, tr);
+  const message = dirty
+    ? `Revert #${number} to what's actually saved on disk right now? Unsaved edits to THIS row ` +
+      `are discarded -- other rows are not affected.`
+    : `Reload #${number} from disk? (No unsaved edits detected on this row -- this just confirms ` +
+      `the table matches what's actually saved.)`;
+  if (!await confirmModal(message)) return;
+  try {
+    const data = await api('GET', `/api/manage-rows?project=${encodeURIComponent(state.project)}&numbers=${number}`);
+    const freshRow = data.rows[0];
+    const idx = state.manageRows.findIndex(r => r.number === number);
+    if (idx >= 0) state.manageRows[idx] = freshRow;
+    tr.outerHTML = manageRowHtml(freshRow);
+    updateManagePrimaryButton();
+  } catch (e) { alert(e.message); }
 }
 
 async function runManageSave(selected) {

@@ -217,9 +217,10 @@
            the tone, style, or direction. If you want the AI to rewrite something, you must
            clear that field first.</p>
       </div>
-      <p>Blank fields are only AI-composed if that row's AI chip (<strong>S</strong> for spec
-         fields, <strong>K</strong> for keyframe/image prompts) is turned on. If AI is off and a
-         field is blank, saving fails with a clear error telling you to fill it in or turn AI on.</p>
+      <p>Any field still blank is AI-composed automatically — no manual on/off switch, this is
+         unconditional. Click <strong>Auto-generate missing content</strong> to fill in whatever's
+         still blank across the selected rows; fields you've already typed stay exactly as they
+         are.</p>
 
       <h3>Workflow types</h3>
       <table>
@@ -283,15 +284,16 @@
         <dt>Negative prompt / Tags</dt><dd>Comma-separated, shown as removable pills — type a term and press Enter or comma to add it.</dd>
         <dt>Description</dt><dd>The public-facing YouTube description text.</dd>
         <dt>Graph type</dt><dd>t2v / i2v / fml — see workflow types above.</dd>
-        <dt>AI direction</dt><dd>Free-text creative guidance for the AI, used only for fields left blank with AI on. Does nothing to fields you've already filled in — see the field-locking rule.</dd>
-        <dt>AI chips (S / K)</dt><dd>S = compose blank spec fields. K = compose blank keyframe/image prompts. Toggle per-row, or use the header chip to toggle every row at once.</dd>
-        <dt>Image(s)</dt><dd>Shows whether a reference image already exists for this number (for i2v/fml).</dd>
+        <dt>AI direction</dt><dd>Free-text creative guidance for the AI, used only for fields still blank. Does nothing to fields you've already filled in — see the field-locking rule.</dd>
+        <dt>Image(s)</dt><dd>Reference image slot(s) for i2v/fml. Auto-generate missing content only writes each blank slot's <em>prompt</em> text — the actual image (and the video itself) is only produced during Render video, using whatever prompt is saved at that point. A slot with a prompt but no image yet already counts as ready to render.</dd>
       </div>
 
       <h3>Running things</h3>
+      <p>One button does double duty, depending on the selected rows:</p>
       <ul>
-        <li><strong>Save content</strong> — writes spec/keyframe content for selected rows. Never renders anything.</li>
-        <li><strong>Render video</strong> — the separate, explicit render step. Renders for the first time, or re-renders (overwriting the current file) if one already exists. Always asks for confirmation.</li>
+        <li><strong>Auto-generate missing content</strong> — shown while any selected row still has a blank field. Writes spec/keyframe content for those rows (fields already filled in stay exactly as-is). Never renders anything, and the table refreshes afterward so you can review the result.</li>
+        <li><strong>Render video</strong> — shown once every selected row is fully filled in. The separate, explicit render step: renders for the first time, or re-renders (overwriting the current file) if one already exists. Always asks for confirmation.</li>
+        <li><strong>Clear content</strong> — wipes spec content (and any staged reference images) for the selected rows back to blank, ready for a completely fresh generation. Never touches an already-rendered video.</li>
       </ul>
       <div class="card tip">
         <p>Every cell with content has a small <strong>×</strong> button to clear just that
@@ -312,7 +314,7 @@
       <h3>Performance trends in spec/script generation</h3>
       <p>Separate from the idea-generation checkbox above: <strong>Settings → Creative writing →
          "Use performance trends when writing content"</strong> quietly applies the same kind of
-         trend data to every AI-composed row (the S chip, and the CLI's own generation), off by
+         trend data to every AI-composed row (blank fields via the manage table, and the CLI's own generation), off by
          default. It's deliberately framed as style/word-choice signal only — it can never change
          or override a row's own locked title/premise — and safely no-ops with no error if this
          project has no analytics data yet. A second Settings sub-toggle controls whether it goes
@@ -328,8 +330,8 @@
          a render starts, so Ollama and ComfyUI don't fight over the same GPU.</p>
       <p>If a render fails right after switching a number to a new graph type, it's almost always
          because that type's extra fields (image, i2v/fml prompts) haven't been filled in yet —
-         go back to Manage and fill them in, or just leave them blank and click Save content,
-         which composes them automatically, then retry.</p>
+         go back to Manage and fill them in, or just leave them blank and click Auto-generate
+         missing content, which composes them automatically, then retry.</p>
     </section>
 
     <section id="video-review">
@@ -368,14 +370,17 @@
     <section id="chat">
       <h2>Chat assistant</h2>
       <p>A help chat lives in its own sidebar tab, next to Videos. It can answer questions about
-         how the tool works and, for numbers already loaded in the Manage table, propose field
-         content — but it can never write a file or run code, and nothing it says is saved
-         automatically.</p>
+         how the tool works, read/save Creative-tab fields and golden rules directly, list this
+         project's videos, and — for numbers already loaded in the Manage table — propose spec
+         field content. Deleting a video or starting a render always requires your own explicit
+         Confirm click in the chat; nothing destructive or GPU-spending ever happens from a chat
+         reply alone.</p>
       <div class="card">
-        <p><strong>Reviewing proposals:</strong> when the assistant suggests field content,
-           you'll see an Apply option. Clicking it fills the matching cells in the table — exactly
-           as if you'd typed it yourself — but you still have to click <strong>Save content</strong>
-           afterward for anything to actually be saved.</p>
+        <p><strong>Reviewing spec-field proposals:</strong> when the assistant suggests spec field
+           content for a Manage-table row, you'll see an Apply option. Clicking it fills the
+           matching cells in the table — exactly as if you'd typed it yourself — but you still
+           have to click <strong>Auto-generate missing content</strong> (or just save it as-is if
+           every field is filled) afterward for anything to actually be saved.</p>
       </div>
 
       <h3>Chat model</h3>
@@ -527,17 +532,8 @@
         <div class="body">
           <p>This is almost always the field-locking rule: any field with existing content is
              used verbatim, regardless of what you type into AI direction. Clear the field(s)
-             you want rewritten first (the <strong>×</strong> button on that cell), make sure the
-             row's AI chip is on, then run updates again.</p>
-        </div>
-      </details>
-
-      <details class="faq">
-        <summary>"AI is off for this row, and these fields are still blank"</summary>
-        <div class="body">
-          <p>Exactly what it says — either type content into the listed fields directly, or tick
-             the S (spec) or K (keyframes) AI chip for that row so the model fills in whatever's
-             left blank.</p>
+             you want rewritten first (the <strong>×</strong> button on that cell), then click
+             <strong>Auto-generate missing content</strong> again.</p>
         </div>
       </details>
 
@@ -546,8 +542,8 @@
         <div class="body">
           <p>Changing a number's graph type (e.g. t2v → i2v) requires that type's extra fields
              (an image, or i2v/fml-specific prompts) to already exist. Load that number into
-             Manage, fill those fields in — or tick the AI chip to compose them — click
-             <strong>Save content</strong>, then retry the render.</p>
+             Manage, fill those fields in — or leave them blank — click
+             <strong>Auto-generate missing content</strong>, then retry the render.</p>
         </div>
       </details>
 
@@ -584,10 +580,14 @@
       <details class="faq">
         <summary>What does the AI chat actually have access to?</summary>
         <div class="body">
-          <p>Nothing beyond answering questions and, when relevant, proposing field content for
-             numbers already loaded in your table. It cannot write files, run code, or save
-             anything on its own — every proposal needs an explicit Apply click from you, and
-             <strong>Save content</strong> is still the only thing that writes to disk.</p>
+          <p>It can read this project's spec content, Creative-tab fields, and golden rules, and
+             save changes directly to the latter two (reversible by editing again, same as any
+             other saved content). It can also list this project's videos. For a Manage-table
+             row, it can only ever <em>propose</em> spec field content — that needs an explicit
+             Apply click from you, then <strong>Auto-generate missing content</strong>/render as
+             normal to actually save it. Deleting a video or starting a render always requires
+             its own separate explicit Confirm click in the chat itself; nothing destructive or
+             GPU-spending happens from a chat reply alone.</p>
         </div>
       </details>
     </section>
