@@ -1173,6 +1173,18 @@ def h_spec_row_save(qs, body):
     return {"ok": ok, "log": log}
 
 
+def h_manage_clear_content(qs, body):
+    """Wipes spec content for every given row number -- see
+    clear_spec_content's own docstring for exactly what that touches
+    (spec + staged images) and what it deliberately never touches
+    (an already-rendered video)."""
+    _project_from_body(body)
+    numbers = [int(n) for n in (body.get("numbers") or [])]
+    for n in numbers:
+        ds.clear_spec_content(n)
+    return {"ok": True, "cleared": len(numbers)}
+
+
 def h_keyframes_row_save(qs, body):
     """Writes this row's keyframe prompt(s) -- non-blank fields save
     verbatim, any still-needed blank prompt is composed by AI
@@ -2269,6 +2281,7 @@ ROUTES = {
     ("POST", "/api/youtube/analytics-ai-review"): h_youtube_analytics_ai_review,
     ("GET", "/api/manage-rows"): h_manage_rows,
     ("POST", "/api/manage/spec"): h_spec_row_save,
+    ("POST", "/api/manage/clear-content"): h_manage_clear_content,
     ("POST", "/api/manage/keyframes"): h_keyframes_row_save,
     ("POST", "/api/manage/image"): h_image_upload,
     ("POST", "/api/manage/reference-photo"): h_manage_reference_photo,
@@ -6933,15 +6946,16 @@ function renderManageTable() {
       <tbody>${state.manageRows.map(manageRowHtml).join('')}</tbody>
     </table></div>
     <div class="row" style="margin:0.5rem 0">
-      <button id="manage-run-updates-btn" class="btn-primary" onclick="runManageSaveClick()">Save content</button>
-      <span class="mf-help" title="Writes exactly what's in the form for every selected row whose fields changed, verbatim -- except any field still blank, which is composed by AI automatically. Never triggers a render.">?</span>
-      <button id="manage-run-video-btn" class="btn-primary" onclick="handleRunVideoGenClick()">Render video</button>
-      <span class="mf-help" title="For every SELECTED row: renders it for the first time if it has no video yet, or RE-RENDERS and overwrites the existing one if it does. Uses whatever is currently saved on disk -- click 'Save content' first if you just edited fields. Asks for confirmation before it starts.">?</span>
+      <button id="manage-run-video-btn" class="btn-primary" onclick="handleManagePrimaryClick()">Render video</button>
+      <span class="mf-help" title="One button, two modes depending on the SELECTED+visible rows: if any of them still has a blank field, this reads 'Auto-generate missing content' -- fields you've already filled in are used exactly as-is, only blanks get AI-composed, then the table refreshes so you can review before rendering. Once every selected row is fully filled in, it reads 'Render video' -- renders for the first time if a row has no video yet, or RE-RENDERS and overwrites the existing one if it does. Always confirms what it's about to do first.">?</span>
+      <button id="manage-clear-btn" class="btn-danger" onclick="runManageClearContent()">Clear content</button>
+      <span class="mf-help" title="Wipes spec content (and any staged reference images) for every selected+visible row back to a blank 'new' state, ready for a completely fresh generation. Never touches an already-rendered video -- use Delete video for that.">?</span>
       <label class="row" style="width:auto;gap:0.3rem;margin-left:auto" title="Also show the exact prompt sent to the AI and its raw response, for every attempt.">
         <input type="checkbox" id="manage-verbose" style="width:auto">Verbose
       </label>
     </div>
     <div id="manage-results"></div>`;
+  updateManagePrimaryButton();
 
   // The filter row's inputs live inside `wrap`'s innerHTML, which gets
   // rebuilt by every renderManageTable() call (e.g. after Run updates
@@ -6951,8 +6965,12 @@ function renderManageTable() {
   if (!wrap.dataset.filterBound) {
     wrap.addEventListener('input', (ev) => {
       if (ev.target.classList.contains('mf-filter')) applyManageFilters();
+      updateManagePrimaryButton();
     });
-    wrap.addEventListener('change', (ev) => { if (ev.target.classList.contains('mf-filter')) applyManageFilters(); });
+    wrap.addEventListener('change', (ev) => {
+      if (ev.target.classList.contains('mf-filter')) applyManageFilters();
+      updateManagePrimaryButton();
+    });
     wrap.dataset.filterBound = '1';
   }
 }
@@ -6989,9 +7007,17 @@ function toggleManageSelectAll(checked) {
   }
 }
 
+// Selected AND currently visible -- a filtered-out row's checkbox stays
+// checked under the hood (applyManageFilters only toggles tr.style.display,
+// see its own code), so without the display check here a hidden row
+// would silently get swept into every bulk action even though the human
+// can't currently see it's selected. Also naturally excludes unloaded
+// rows, since state.manageRows only ever contains what's actually loaded.
 function manageSelectedRows() {
   return state.manageRows.filter(r => {
-    const cb = document.querySelector(`tr[data-number="${r.number}"] .mf-select`);
+    const tr = document.querySelector(`tr[data-number="${r.number}"]`);
+    if (!tr || tr.style.display === 'none') return false;
+    const cb = tr.querySelector('.mf-select');
     return cb && cb.checked;
   });
 }
@@ -7616,12 +7642,6 @@ function kfNeedsSave(row, current) {
   return false;
 }
 
-async function runManageSaveClick() {
-  const selected = manageSelectedRows();
-  if (!selected.length) { alert('No rows selected (untick the header checkbox to deselect all, or tick at least one row).'); return; }
-  await runManageSave(selected);
-}
-
 // 'Save content' -- writes exactly what's currently in the form to
 // spec_{number}.json, verbatim, EXCEPT any still-blank required field,
 // which the server auto-composes via AI (see write_row_spec/
@@ -7671,11 +7691,11 @@ function rowHasUnsavedChanges(row, tr) {
 }
 
 async function runManageSave(selected) {
-  const btn = document.getElementById('manage-run-updates-btn');
+  const btn = document.getElementById('manage-run-video-btn');
   const verbose = document.getElementById('manage-verbose').checked;
   btn.disabled = true;
   const originalLabel = btn.textContent;
-  btn.textContent = 'Saving...';
+  btn.textContent = 'Generating...';
   document.getElementById('manage-results').innerHTML =
     `<div class="card"><span class="mf-spinner"></span><span class="badge">working</span> saving ${selected.length} row(s)...</div>`;
   const results = [];
@@ -7688,9 +7708,11 @@ async function runManageSave(selected) {
     btn.disabled = false;
     btn.textContent = originalLabel;
   }
-  // loadManageTable() rebuilds the whole wrap (including #manage-results)
-  // from fresh disk state -- set the summary message AFTER that reload,
-  // not before, or the reload immediately wipes it.
+  // loadManageTable() rebuilds the whole wrap (including #manage-results
+  // AND the primary button, re-evaluated fresh against the just-saved
+  // content -- see updateManagePrimaryButton at the end of
+  // renderManageTable) from fresh disk state -- set the summary message
+  // AFTER that reload, not before, or the reload immediately wipes it.
   await loadManageTable();
   const resultsEl = document.getElementById('manage-results');
   if (resultsEl) resultsEl.innerHTML =
@@ -7698,16 +7720,56 @@ async function runManageSave(selected) {
   state.status = await api('GET', `/api/status?project=${encodeURIComponent(state.project)}`);
 }
 
-// The one button does double duty: "Render video" when idle, "Cancel"
-// while a job it started is active (see pollManageJobs, which flips its
-// text/data-active-job-ids while active) -- dispatches to whichever
-// action actually applies right now instead of two separate buttons.
-async function handleRunVideoGenClick() {
+// Whether every row in a selection is already fully content-complete --
+// the primary button's whole decision: "Auto-generate missing content"
+// (some field somewhere is still blank) vs "Render video" (nothing left
+// to fill in). Mirrors specNeedsSave/kfNeedsSave's own "still blank"
+// rule per row, just evaluated across the whole selection at once.
+function manageSelectionIsComplete(selected) {
+  return selected.every(row => {
+    const tr = document.querySelector(`tr[data-number="${row.number}"]`);
+    if (!tr) return false;
+    const current = readManageRow(tr);
+    return !specNeedsSave(row, current) && !kfNeedsSave(row, current);
+  });
+}
+
+// Recomputes the primary button's label/mode from the CURRENT selection
+// and form state -- called after every table (re)render and, via the
+// delegated input/change listener in renderManageTable, after every
+// checkbox toggle, filter change, or cell edit, so it never shows a
+// stale mode. Never overrides an active-job Cancel state (pollManageJobs
+// owns the button entirely while a job is running -- see its own
+// dataset.activeJobIds check).
+function updateManagePrimaryButton() {
   const btn = document.getElementById('manage-run-video-btn');
-  if (btn.dataset.activeJobIds) {
-    await cancelVideoGenJobs();
+  if (!btn || btn.dataset.activeJobIds) return;
+  const selected = manageSelectedRows();
+  const mode = selected.length && manageSelectionIsComplete(selected) ? 'render' : 'generate';
+  btn.dataset.mode = mode;
+  btn.textContent = mode === 'render' ? 'Render video' : 'Auto-generate missing content';
+}
+
+// The one button does triple duty: "Auto-generate missing content" or
+// "Render video" depending on manageSelectionIsComplete (see
+// updateManagePrimaryButton), or "Cancel" while a job it started is
+// active (pollManageJobs flips its text/data-active-job-ids while
+// active) -- dispatches to whichever action actually applies right now
+// instead of separate buttons for each.
+async function handleManagePrimaryClick() {
+  const btn = document.getElementById('manage-run-video-btn');
+  if (btn.dataset.activeJobIds) { await cancelVideoGenJobs(); return; }
+  const selected = manageSelectedRows();
+  if (!selected.length) { alert('No rows selected (untick the header checkbox to deselect all, or tick at least one row).'); return; }
+  if (btn.dataset.mode === 'generate') {
+    const numbers = fmtRanges(selected.map(r => r.number));
+    if (!await confirmModal(
+      `Auto-generate missing content for #${numbers}? Fields you've already filled in are used ` +
+      `exactly as-is and left untouched -- only fields still blank are composed by AI. Nothing ` +
+      `renders yet; review the result after, then click Render video.`)) return;
+    await runManageSave(selected);
   } else {
-    await runManageVideoGen();
+    await runManageVideoGen(selected);
   }
 }
 
@@ -7723,21 +7785,19 @@ async function cancelVideoGenJobs() {
   await Promise.all(jobIds.map(id => api('POST', `/api/job/${id}/cancel`, {}).catch(() => {})));
 }
 
-async function runManageVideoGen() {
-  const selected = manageSelectedRows();
+async function runManageVideoGen(selected) {
   const numbers = selected.map(r => r.number);
-  if (!numbers.length) { alert('No rows selected.'); return; }
-  // Confirmation exists to warn about a DESTRUCTIVE action (overwriting
-  // an existing video) -- a pure first-time render destroys nothing, so
-  // it proceeds straight away with no popup at all, not even a no-op
-  // "Continue?" click.
+  // Always confirms what's about to happen, not just the destructive
+  // (re-render) case -- explicit requirement: "On click a prompt for
+  // what will be done and accept / cancel," for every render, not only
+  // ones that overwrite something.
   const alreadyRendered = selected.filter(r => r.rendered).map(r => r.number);
-  if (alreadyRendered.length) {
-    const message = `Render video for #${fmtRanges(numbers)}? #${fmtRanges(alreadyRendered)} already ` +
+  const message = alreadyRendered.length
+    ? `Render video for #${fmtRanges(numbers)}? #${fmtRanges(alreadyRendered)} already ` +
       `${alreadyRendered.length === 1 ? 'has' : 'have'} a video and will be RE-RENDERED, ` +
-      `overwriting the current one; any others render for the first time. Continue?`;
-    if (!await confirmModal(message)) return;
-  }
+      `overwriting the current one; any others render for the first time. Continue?`
+    : `Render video for #${fmtRanges(numbers)}? This starts real GPU rendering. Continue?`;
+  if (!await confirmModal(message)) return;
   const btn = document.getElementById('manage-run-video-btn');
   btn.disabled = true;
   const originalLabel = btn.textContent;
@@ -7750,6 +7810,35 @@ async function runManageVideoGen() {
   try { jobIds.push((await api('POST', '/api/generate', { project: state.project, numbers: numbersStr, type: '', verbose })).job_id); } catch (e) {}
   try { jobIds.push((await api('POST', '/api/rework', { project: state.project, numbers: numbersStr, type: '', verbose })).job_id); } catch (e) {}
   pollManageJobs(jobIds, btn, originalLabel);
+}
+
+// "Clear content" -- wipes spec content for the selected+visible rows
+// back to blank, ready for a completely fresh generation next time
+// "Auto-generate missing content" runs on them. Never touches an
+// already-rendered video (see clear_spec_content's own docstring) --
+// always confirms first regardless, since it's still discarding
+// whatever content is currently there.
+async function runManageClearContent() {
+  const selected = manageSelectedRows();
+  if (!selected.length) { alert('No rows selected (untick the header checkbox to deselect all, or tick at least one row).'); return; }
+  const numbers = selected.map(r => r.number);
+  if (!await confirmModal(
+    `Clear all spec content for #${fmtRanges(numbers)}? This discards their current title/premise/` +
+    `prompts/etc and any staged reference images, back to blank -- any already-rendered video for ` +
+    `these numbers is NOT affected. Cannot be undone.`)) return;
+  const btn = document.getElementById('manage-clear-btn');
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = 'Clearing...';
+  try {
+    await api('POST', '/api/manage/clear-content', { project: state.project, numbers });
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+  await loadManageTable();
 }
 
 // Dumping the whole raw log into a <pre> with "ERROR: See log above for
@@ -7852,7 +7941,7 @@ async function pollManageJobs(jobIds, btn, originalLabel) {
   // While active, the button is a real Cancel button, so there's a way
   // to stop a render short of killing processes by hand outside the
   // tool. Enabled (not disabled) and the active job ids are stashed on the
-  // button itself (data-active-job-ids) for handleRunVideoGenClick to
+  // button itself (data-active-job-ids) for handleManagePrimaryClick to
   // find; cleared once the job leaves the active set below.
   if (btn && active.length) {
     btn.disabled = false;

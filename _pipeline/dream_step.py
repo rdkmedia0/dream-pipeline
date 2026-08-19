@@ -3222,6 +3222,23 @@ def commit_concepts_response(project_name, count, response):
     print(f"[dream_step] wrote {len(response)} concept entries to {concept_list_path}")
 
 
+def clear_spec_content(number):
+    """Wipes one row's spec content -- deletes spec_{number:03d}.json and
+    its uploads/<number>/ staging folder (uploaded/typed reference images
+    and prompts) so the row goes back to a pristine, fully blank 'new'
+    state ready for a completely fresh AI generation. Deliberately never
+    touches an already-RENDERED video -- that lives in its own folder
+    under DREAMS_ROOT, a separate thing from spec content, only ever
+    removed via delete_media_folder (the explicit "Delete video" action).
+    A no-op if there's nothing there yet."""
+    spec_path = DATA_DIR / f"spec_{number:03d}.json"
+    if spec_path.exists():
+        spec_path.unlink()
+    staging_dir = uploaded_images_dir(number)
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+
+
 def do_write_spec(number, spec_json_str, allow_custom_beats=False, positive_prompt_is_human=False):
     """Write (or overwrite) spec_{number:03d}.json from a JSON string,
     validating required fields and forcing the correct filename/path/
