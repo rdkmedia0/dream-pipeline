@@ -8937,6 +8937,19 @@ function goldenRulesCurrentSummaryHtml() {
 // let an already-accepted section render its button in the applied
 // state on re-render. Fed into feedbackChatLogHtml's msg.diffHtml
 // passthrough.
+// A proposal message's section keys that both (a) actually differ from
+// beforeSections -- the model sometimes returns a key it didn't really
+// change -- and (b) aren't accepted yet. The one source both the
+// "Accept all (N)" count and acceptAllInMessage's actual work list pull
+// from, so the number shown always matches what clicking it does.
+function goldenRulesPendingKeys(msg) {
+  if (!msg || !msg.proposedSections) return [];
+  const before = msg.beforeSections || {};
+  const accepted = msg.acceptedKeys || {};
+  return Object.keys(msg.proposedSections).filter(key =>
+    !accepted[key] && (before[key] || '').trim() !== (msg.proposedSections[key] || '').trim());
+}
+
 function goldenRulesDiffHtml(before, proposed, msgIndex, acceptedKeys) {
   const defs = window.__grSectionDefs || [];
   const labelFor = key => (defs.find(d => d.key === key) || {}).label || key;
@@ -8953,11 +8966,10 @@ function goldenRulesDiffHtml(before, proposed, msgIndex, acceptedKeys) {
         <div style="white-space:pre-wrap;opacity:0.65;text-decoration:line-through">${esc(oldVal || '(empty)')}</div>
         <div class="muted" style="margin-top:0.3rem">Proposed:</div>
         <div style="white-space:pre-wrap">${esc(newVal || '(empty)')}</div>
-        <div class="row row-end" style="margin-top:0.5rem">
+        <div class="row" style="margin-top:0.5rem;justify-content:flex-end">
           <button type="button" class="gr-diff-accept-btn ${applied ? 'btn-success' : 'btn-primary'}"
-                  data-msg-index="${msgIndex}" data-key="${esc(key)}" ${applied ? 'disabled' : ''}>
-            ${applied ? 'Applied ✓' : 'Accept'}
-          </button>
+                  style="flex:0 0 auto;width:auto"
+                  data-msg-index="${msgIndex}" data-key="${esc(key)}" ${applied ? 'disabled' : ''}>${applied ? 'Applied ✓' : 'Accept'}</button>
         </div>
       </div>`;
   }).join('');
@@ -8988,11 +9000,15 @@ function goldenRulesReviewModal() {
       // "Accept all" only applies to the LAST assistant message's own
       // still-pending sections (same scope "Try again" already uses) --
       // each individual Accept button next to it stays the way to take
-      // some sections and leave others.
+      // some sections and leave others. Uses the same "actually differs
+      // from beforeSections" filter goldenRulesDiffHtml applies when
+      // deciding which blocks to even render -- a key the model
+      // returned but left unchanged from the current value must not
+      // count here either, or the count won't match what's visible.
       const lastAssistantIdx = review.history.map(m => m.role).lastIndexOf('assistant');
       const lastAssistant = lastAssistantIdx >= 0 ? review.history[lastAssistantIdx] : null;
-      const pendingCount = lastAssistant && lastAssistant.proposedSections
-        ? Object.keys(lastAssistant.proposedSections).filter(k => !(lastAssistant.acceptedKeys || {})[k]).length : 0;
+      const pendingKeys = lastAssistant ? goldenRulesPendingKeys(lastAssistant) : [];
+      const pendingCount = pendingKeys.length;
       const canRetry = !review.generating && review.lastMessage;
       const actionsHtml = canRetry ? `
         <div class="row" style="margin-top:0.4rem;gap:0.3rem">
@@ -9083,10 +9099,7 @@ function goldenRulesReviewModal() {
     };
     const acceptOneSection = (msgIndex, key) => acceptKeysInMessage(msgIndex, [key]);
     const acceptAllInMessage = (msgIndex) => {
-      const msg = review.history[msgIndex];
-      if (!msg || !msg.proposedSections) return;
-      const pending = Object.keys(msg.proposedSections).filter(k => !(msg.acceptedKeys || {})[k]);
-      acceptKeysInMessage(msgIndex, pending);
+      acceptKeysInMessage(msgIndex, goldenRulesPendingKeys(review.history[msgIndex]));
     };
     overlay.onclick = (ev) => { if (ev.target === overlay && !review.generating) { overlay.remove(); resolve(review.appliedAny); } };
     render();
