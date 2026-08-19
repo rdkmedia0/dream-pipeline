@@ -6940,7 +6940,7 @@ function renderManageTable() {
             </div>
           </th>
           ${th('AI direction', 'Optional creative direction for the AI, used whenever a blank field on this row is auto-composed.', textFilter('note'))}
-          ${th('Image(s)', 'Reference image(s) for i2v/fml. Upload to replace, type a still-image description for the AI to generate one from, or (first frame only) click "Online photo..." to generate one via Gemini instead -- useful for animals the local model tends to draw wrong. Requires a Gemini key in Settings (paid, no free tier); the button is hidden if none is configured, or if Settings\' kf_backend already sends the first frame through Gemini (Generate new already gets that same accuracy there).')}
+          ${th('Image(s)', 'Reference image(s) for i2v/fml. "Auto-generate missing content" (the button below) writes each blank slot\'s PROMPT text same as every other blank field -- it does not produce an actual image file. The real image (and the video itself) is only generated during Render video, using whatever prompt is saved here at that point; a slot with a prompt but no image yet is already considered ready to render, not something still missing. You can also upload your own image directly here to replace/skip the AI-generated one for that slot, type a still-image description yourself, or (first frame only) click "Online photo..." to generate one via Gemini instead -- useful for animals the local model tends to draw wrong. Requires a Gemini key in Settings (paid, no free tier); the button is hidden if none is configured, or if Settings\' kf_backend already sends the first frame through Gemini (Generate new already gets that same accuracy there).')}
         </tr>
       </thead>
       <tbody>${state.manageRows.map(manageRowHtml).join('')}</tbody>
@@ -7744,10 +7744,25 @@ function manageSelectionIsComplete(selected) {
 function updateManagePrimaryButton() {
   const btn = document.getElementById('manage-run-video-btn');
   if (!btn || btn.dataset.activeJobIds) return;
-  const selected = manageSelectedRows();
-  const mode = selected.length && manageSelectionIsComplete(selected) ? 'render' : 'generate';
-  btn.dataset.mode = mode;
-  btn.textContent = mode === 'render' ? 'Render video' : 'Auto-generate missing content';
+  try {
+    const selected = manageSelectedRows();
+    // Empty selection reads as "render" (the neutral/default label,
+    // matches this button's pre-consolidation default) rather than
+    // "generate" -- selected.length as the leading operand of the old
+    // `selected.length && manageSelectionIsComplete(selected)` check
+    // meant an empty selection (0, falsy) short-circuited straight to
+    // 'generate' with nothing to actually act on, misleading label for
+    // a state where clicking it just alerts "no rows selected" anyway.
+    const mode = (selected.length > 0 && manageSelectionIsComplete(selected)) ? 'render' : (selected.length ? 'generate' : 'render');
+    btn.dataset.mode = mode;
+    btn.textContent = mode === 'render' ? 'Render video' : 'Auto-generate missing content';
+  } catch (e) {
+    // Never leave the button silently stuck on a stale label if this
+    // throws for some row shape not anticipated here -- surface it in
+    // the console so it's actually diagnosable instead of just "the
+    // button didn't update and nobody knows why."
+    console.error('updateManagePrimaryButton failed:', e);
+  }
 }
 
 // The one button does triple duty: "Auto-generate missing content" or
