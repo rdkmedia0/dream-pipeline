@@ -2621,19 +2621,25 @@ INDEX_HTML = r"""<!doctype html>
      + border here makes the log and the reply box read as ONE enclosed
      window, the log naturally at the top of it and the input at the
      bottom, rather than two disconnected floating pieces. */
-  /* max-height (NOT just the chat-log's own inner cap) is the real
-     fix for the panel growing into the video -- .chat-log's 14rem cap
-     only bounded the LOG; the reply textarea itself had no height cap
-     at all and (confirmed via screenshot) a human had dragged it via
-     its native resize handle to roughly half the screen, which grew
-     the whole column-flex panel upward past the video regardless of
-     the log's own bound. This caps the PANEL as a fixed box -- resize
-     disabled on its textareas below closes the other way a human could
-     still grow it, and the log's own overflow:auto is what actually
-     handles a conversation longer than the fixed box allows. */
+  /* max-height:VH, not a % -- confirmed the earlier 60% attempt was a
+     complete no-op: percentage height on a position:absolute element
+     only resolves against its containing block's height if that
+     ancestor has an EXPLICIT height, and .player-fs-wrap doesn't
+     declare one (the Fullscreen API visually fills the screen, but
+     that's not the same as a CSS height value) -- per spec, a %
+     height on an absolutely-positioned descendant of an auto-height
+     ancestor computes to auto, i.e. is silently ignored entirely,
+     which is exactly what the screenshot showed (panel still grew to
+     cover the video). vh resolves against the real viewport instead,
+     with no such ancestor dependency. Also shrunk outright (32vh, was
+     60%) per explicit request: if this is going to sit above part of
+     the video at all, smaller is better. resize:none on this panel's
+     textareas closes the OTHER way a human could grow it past this cap
+     (a native resize-handle drag); the log's own overflow:auto is what
+     actually handles a conversation longer than this fixed box allows. */
   .player-fs-feedback {
     display: none; position: absolute; left: 0.6rem; right: 0.6rem; bottom: 0.6rem;
-    max-height: 60%; padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff;
+    max-height: 32vh; padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff;
     flex-direction: column; align-items: stretch;
     background: rgba(20,20,20,0.92); border: 1px solid rgba(255,255,255,0.18);
     border-radius: var(--radius);

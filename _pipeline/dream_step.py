@@ -1902,13 +1902,23 @@ def generate_feedback_revision(number, workflow, fields, note, verbose=False, ma
     field_schema_hint = payload["schema_hint"]
     payload["schema_hint"] = {
         "response_type": (
-            "REQUIRED, must be exactly \"advice\" or \"revision\". \"advice\" if "
-            "human_direction reads as a QUESTION or a request for your opinion/"
-            "recommendation/discussion (e.g. \"what would you suggest?\", \"what's "
-            "wrong with this?\") -- \"revision\" if it's an actual instruction to "
-            "change something (e.g. \"the joke didn't land, fix it\"). When "
-            "genuinely ambiguous, prefer \"advice\" -- only use \"revision\" for a "
-            "clear directive to make a change."),
+            "REQUIRED, must be exactly \"advice\" or \"revision\". Judge by GRAMMATICAL "
+            "FORM, not intent -- a question is \"advice\" even when it's clearly asking "
+            "about a fix, e.g. \"how do we fix that?\", \"how would you fix the floating "
+            "bark?\", \"what should change here?\", \"what would you suggest?\" are ALL "
+            "\"advice\" -- the human is asking to be TOLD how, not asking you to already "
+            "do it. \"revision\" is reserved for an actual IMPERATIVE COMMAND with no "
+            "question mark: \"fix it\", \"the joke didn't land, rewrite it\", \"make the "
+            "porcupine react to the impact\". If human_direction contains a \"?\" or "
+            "starts with how/what/should/could/would/why, default to \"advice\" -- only "
+            "override that default if the rest of the sentence is unambiguously also a "
+            "command (e.g. \"why not just remove it?\" is still borderline -- prefer "
+            "advice). When genuinely unsure, ALWAYS prefer \"advice\": answering a "
+            "question the human didn't ask (revision when they wanted advice) is a much "
+            "worse mistake than answering a question they DID ask before making any "
+            "change (advice when they arguably wanted revision) -- the human can always "
+            "reply \"do that\" to turn advice into a revision next, but an unwanted "
+            "revision can't be un-asked-for."),
         "advice": (
             "REQUIRED when response_type is \"advice\", otherwise an empty string. "
             "Your conversational answer/recommendation, plain prose, addressed "
