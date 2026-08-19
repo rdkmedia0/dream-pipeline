@@ -23,6 +23,13 @@ _pipeline/model_check_cache.json
 /data/
 /state/
 
+# "Complete" Docker profile's own default volume paths (Ollama model
+# weights, ComfyUI's run/data dirs) -- same reasoning as /data//state/
+# above, real content only ever lands here during local testing.
+/ollama-data/
+/comfyui-run/
+/comfyui-data/
+
 # Per-host override of docker-compose.yml's default volume paths -- see
 # .env.example for what this can set. Real values are host-specific,
 # never shared/committed.

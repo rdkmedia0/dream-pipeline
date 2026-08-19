@@ -77,6 +77,18 @@ with inline diagnostics for whatever's misconfigured.
 
 ## Quick start (Docker — recommended)
 
+Two ways to run this, both via the same `docker-compose.yml`:
+
+| | **Lite** (default) | **Complete** |
+|---|---|---|
+| What starts | Dream Pipeline only | Dream Pipeline + Ollama + ComfyUI, as sibling containers |
+| Ollama/ComfyUI | Bring your own — local, remote, or a separate machine entirely | Bundled, running on **this same machine** |
+| GPU requirement here | None — Dream Pipeline itself never touches a GPU | **Yes** — a real NVIDIA GPU on the machine running `docker compose`, see Hardware below |
+| First-run downloads | None | Real model weights — several GB for the two default Ollama models alone |
+| Command | `docker compose pull && docker compose up -d` | `./run_complete.sh` (Linux/macOS) or `run_complete.bat` (Windows) |
+
+### Lite
+
 ```bash
 docker compose pull
 docker compose up -d
@@ -107,6 +119,72 @@ The host port defaults to `8420`; override with `WEB_UI_PORT=9000 docker
 compose up` or the same `.env` file. It's bound to `127.0.0.1` on the host
 deliberately — see the comment in `docker-compose.yml` before changing
 that.
+
+### Complete
+
+```bash
+./run_complete.sh     # Linux/macOS
+run_complete.bat      # Windows
+```
+
+Equivalent to `docker compose --profile complete up -d` with
+`OLLAMA_URL`/`COMFYUI_URL`/`CREATIVE_MODEL`/`VISION_MODEL` pre-set so
+Dream Pipeline finds the bundled services automatically — Settings
+shows both already configured, nothing to type in by hand. Adds three
+containers (see `docker-compose.yml` for each one's own comments):
+
+- **`ollama`** — the official `ollama/ollama` image (the same headless
+  server Ollama Desktop wraps a GUI around — no desktop app is involved
+  or needed).
+- **`ollama-model-init`** — a one-shot container that pulls the two
+  default models (`gemma4:12b` for creative writing, `qwen3-vl:8b` for
+  vision QC — see **Tested models** below for why) once Ollama is up,
+  then exits. Safe to leave running on every `docker compose up` —
+  `ollama pull` is a no-op once a model's already present.
+- **`comfyui`** — [`mmartial/comfyui-nvidia-docker`](https://github.com/mmartial/ComfyUI-Nvidia-Docker),
+  a maintained, NVIDIA-CUDA-based community ComfyUI image.
+
+**What this does NOT include:** ComfyUI's own *render* checkpoints (the
+actual video-generation model your `workflow_api_*.json` files need).
+Those are separately licensed per model, far larger than the two
+Ollama models above (often 10–30GB+ each), and workflow-specific —
+run `setup_installer.py` once the complete stack is up to fetch
+whichever files your chosen workflow actually needs, exactly the same
+guided step a lite/bare install already uses.
+
+**Why not bundled into Dream Pipeline's own image:** Ollama is MIT
+licensed (fine to redistribute), but ComfyUI is GPL-3.0 and each Ollama
+model has its own separate license — rather than sort out per-model
+redistribution terms, these are pulled directly from their own
+publishers at deploy time (Docker Hub, Ollama's own model registry),
+never copied into an image this repo controls.
+
+#### Hardware & compatibility — read before running Complete
+
+The Complete profile's GPU work (both Ollama and ComfyUI) runs **on
+whatever machine actually runs `docker compose`** — unlike Lite, which
+can point at Ollama/ComfyUI running anywhere on your network. If this
+machine has no GPU, use Lite and point at a machine that does instead.
+
+- **Requires a real NVIDIA GPU** on that machine, plus the
+  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+  installed so Docker can actually reach it — a GPU driver alone isn't
+  enough.
+- **VRAM**: video generation is the heaviest consumer here; check
+  whatever `workflow_api_*.json`/checkpoint you end up using for its
+  own stated requirement rather than assuming a number — this varies a
+  lot by workflow and this repo doesn't ship a fixed one.
+- **Windows specifically**: Docker Desktop on Windows runs containers
+  inside **WSL2** — a real lightweight Linux VM, not instruction-level
+  emulation, but still a virtualization boundary GPU access has to
+  cross. This needs its own WSL-aware NVIDIA driver on the Windows
+  host (installed the normal way, but confirm it explicitly supports
+  WSL2 GPU passthrough) and Docker Desktop's WSL2 backend with GPU
+  support enabled — neither is automatic just from having Docker
+  Desktop and a GPU installed. If GPU passthrough isn't working, the
+  `ollama`/`comfyui` containers will start but silently run on CPU (or
+  fail outright depending on the image) — verify with `docker compose
+  exec ollama nvidia-smi` before assuming anything's using the GPU.
 
 ## Quick start (bare install, no Docker)
 

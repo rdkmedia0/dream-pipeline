@@ -47,4 +47,113 @@ services:
       # docker-compose.yml/.env instead. Paste it once in Settings > Gemini.
       - OLLAMA_URL=${OLLAMA_URL:-}
       - COMFYUI_URL=${COMFYUI_URL:-}
+      # Same idea, for the "complete" profile below -- see
+      # load_config()'s own comment on why BOTH need to be set
+      # explicitly the moment more than one Ollama model exists, rather
+      # than relying on its single-model auto-detect fallback.
+      - CREATIVE_MODEL=${CREATIVE_MODEL:-}
+      - VISION_MODEL=${VISION_MODEL:-}
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------
+  # "Complete" profile -- bundles Ollama + ComfyUI + two known-working
+  # default models (see README's own "Tested models" table) as sibling
+  # containers, so a fresh machine goes from zero to a fully working
+  # setup with one command instead of installing/configuring each piece
+  # by hand. NOT started by a bare `docker compose up` -- opt in with
+  # `docker compose --profile complete up -d`, or use run_complete.sh /
+  # run_complete.bat, which set the right OLLAMA_URL/COMFYUI_URL/
+  # CREATIVE_MODEL/VISION_MODEL values above automatically so dream-pipeline
+  # finds these services with zero manual Settings entry.
+  #
+  # Deliberately NOT baked into dream-pipeline's own image -- see the
+  # README's licensing note: Ollama is MIT (fine to redistribute), but
+  # ComfyUI is GPL-3.0 and each Ollama MODEL has its own separate
+  # license, so these are pulled directly from their own publishers at
+  # deploy time (ollama/ollama on Docker Hub, mmartial/comfyui-nvidia-docker,
+  # and whatever models Ollama itself pulls from its own registry) rather
+  # than redistributed inside an image this repo controls.
+  #
+  # Requires the NVIDIA Container Toolkit on the host (same GPU
+  # requirement the "lite" setup already has for a REMOTE ComfyUI -- this
+  # profile just also runs that GPU workload in a container on this same
+  # machine instead of talking to one elsewhere).
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["complete"]
+    volumes:
+      - ${DREAM_PIPELINE_OLLAMA_DIR:-./ollama-data}:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # One-shot: pulls the two default models (see README's "Tested models"
+  # table for why these two specifically) once Ollama is actually up,
+  # then exits -- `ollama pull` is a no-op if a model's already present,
+  # so this is safe to leave running every `docker compose up` without
+  # re-downloading anything after the first time.
+  #
+  # Expected download size (checked against a live Ollama instance):
+  #   gemma4:12b   ~7.6 GB
+  #   qwen3-vl:8b  ~6.1 GB
+  #   -----------------------
+  #   total        ~13.7 GB  (one-time, first `docker compose --profile
+  #                complete up` only -- plus the ollama/ollama and
+  #                mmartial/comfyui-nvidia-docker base images below)
+  #
+  # To use different models instead of these defaults, override
+  # CREATIVE_MODEL / VISION_MODEL in your .env (see .env.example) --
+  # any tag in Ollama's library works, just note its own download size.
+  ollama-model-init:
+    image: ollama/ollama:latest
+    profiles: ["complete"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["sh", "-c"]
+    command:
+      - "ollama pull ${CREATIVE_MODEL:-gemma4:12b} && ollama pull ${VISION_MODEL:-qwen3-vl:8b}"
+    restart: "no"
+
+  # ComfyUI's own render checkpoints (the actual video-generation model,
+  # separate from anything above) are NOT included here -- those are
+  # workflow-specific, far larger, and separately licensed per model; use
+  # the existing guided installer (setup_installer.py, or Settings'
+  # dependency-check popup) to fetch whichever your workflow_api_*.json
+  # files need, same as a bare/lite install.
+  comfyui:
+    image: mmartial/comfyui-nvidia-docker:latest
+    profiles: ["complete"]
+    ports:
+      - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
+    volumes:
+      # Split the same way the image's own compose.yaml does: `run/`
+      # holds the container's working files (safe to wipe/regenerate on
+      # upgrade), `basedir/` holds actual models/input/output/user data
+      # you don't want to lose.
+      - ${DREAM_PIPELINE_COMFYUI_RUN_DIR:-./comfyui-run}:/comfy/mnt
+      - ${DREAM_PIPELINE_COMFYUI_DATA_DIR:-./comfyui-data}:/basedir
+    environment:
+      - WANTED_UID=${WANTED_UID:-1000}
+      - WANTED_GID=${WANTED_GID:-1000}
+      - BASE_DIRECTORY=/basedir
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
     restart: unless-stopped
