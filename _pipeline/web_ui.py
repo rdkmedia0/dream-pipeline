@@ -2957,6 +2957,14 @@ INDEX_HTML = r"""<!doctype html>
     font-weight: 600; box-shadow: var(--shadow);
   }
   button.btn-danger:hover { filter: brightness(1.08); }
+  /* Confirms a completed, non-reversible-in-place action (e.g. an
+     accepted golden-rules proposal) -- the button itself becomes the
+     state signal instead of a separate banner elsewhere on the page. */
+  button.btn-success {
+    background: var(--success); border-color: var(--success); color: #fff;
+    font-weight: 600; box-shadow: var(--shadow); cursor: default;
+  }
+  button.btn-success:hover { filter: none; }
   /* Current-render progress (see pollManageJobs) -- percent-filled once a
      real step/max is known, otherwise .mf-indeterminate-bar's sliding
      animation while still in the model-loading phase. */
@@ -8922,10 +8930,13 @@ function goldenRulesCurrentSummaryHtml() {
 // Renders a before/after block for each section a proposal actually
 // changed, one Accept button PER section (not one blanket accept for
 // everything) -- per explicit feedback, since a multi-section proposal
-// should let the human take some changes and leave others. msgIndex/
-// acceptedKeys let a section already accepted show "Applied" instead of
-// a live button on re-render. Fed into feedbackChatLogHtml's
-// msg.diffHtml passthrough.
+// should let the human take some changes and leave others. Accept sits
+// at the BOTTOM of its own block (after the human has read the diff,
+// not before) and turns green in place once clicked -- the button IS
+// the status signal, no separate banner needed. msgIndex/acceptedKeys
+// let an already-accepted section render its button in the applied
+// state on re-render. Fed into feedbackChatLogHtml's msg.diffHtml
+// passthrough.
 function goldenRulesDiffHtml(before, proposed, msgIndex, acceptedKeys) {
   const defs = window.__grSectionDefs || [];
   const labelFor = key => (defs.find(d => d.key === key) || {}).label || key;
@@ -8937,15 +8948,17 @@ function goldenRulesDiffHtml(before, proposed, msgIndex, acceptedKeys) {
     const applied = acceptedKeys[key];
     return `
       <div class="card" style="margin-top:0.4rem;padding:0.5rem;font-size:0.85em">
-        <div class="row" style="justify-content:space-between;align-items:center;gap:0.5rem">
-          <div style="font-weight:600">${esc(labelFor(key))}</div>
-          ${applied ? '<span class="muted">Applied ✓</span>' :
-            `<button type="button" class="gr-diff-accept-btn" data-msg-index="${msgIndex}" data-key="${esc(key)}">Accept</button>`}
-        </div>
+        <div style="font-weight:600">${esc(labelFor(key))}</div>
         <div class="muted" style="margin-top:0.3rem">Current:</div>
         <div style="white-space:pre-wrap;opacity:0.65;text-decoration:line-through">${esc(oldVal || '(empty)')}</div>
         <div class="muted" style="margin-top:0.3rem">Proposed:</div>
         <div style="white-space:pre-wrap">${esc(newVal || '(empty)')}</div>
+        <div class="row row-end" style="margin-top:0.5rem">
+          <button type="button" class="gr-diff-accept-btn ${applied ? 'btn-success' : 'btn-primary'}"
+                  data-msg-index="${msgIndex}" data-key="${esc(key)}" ${applied ? 'disabled' : ''}>
+            ${applied ? 'Applied ✓' : 'Accept'}
+          </button>
+        </div>
       </div>`;
   }).join('');
 }
@@ -8972,36 +8985,32 @@ function goldenRulesReviewModal() {
           msg.diffHtml = goldenRulesDiffHtml(msg.beforeSections, msg.proposedSections, i, msg.acceptedKeys || {});
         }
       });
-      const lastAssistant = [...review.history].reverse().find(m => m.role === 'assistant');
+      // "Accept all" only applies to the LAST assistant message's own
+      // still-pending sections (same scope "Try again" already uses) --
+      // each individual Accept button next to it stays the way to take
+      // some sections and leave others.
+      const lastAssistantIdx = review.history.map(m => m.role).lastIndexOf('assistant');
+      const lastAssistant = lastAssistantIdx >= 0 ? review.history[lastAssistantIdx] : null;
+      const pendingCount = lastAssistant && lastAssistant.proposedSections
+        ? Object.keys(lastAssistant.proposedSections).filter(k => !(lastAssistant.acceptedKeys || {})[k]).length : 0;
       const canRetry = !review.generating && review.lastMessage;
       const actionsHtml = canRetry ? `
         <div class="row" style="margin-top:0.4rem;gap:0.3rem">
           <button type="button" id="gr-modal-retry">Try again</button>
-        </div>` : '';
-      // Persistent status line -- lives OUTSIDE the scrolling chat-log,
-      // so an Accept click's effect is visible without having to scroll
-      // back to find the button that was just clicked (that was the
-      // whole complaint: the only prior signal was the button itself
-      // flipping to "Applied ✓", easy to scroll past and lose track of).
-      const statusHtml = review.status ? `
-        <div class="row" style="align-items:center;gap:0.4rem;margin:0.3rem 0;padding:0.4rem 0.6rem;
-             border-radius:var(--radius);background:${review.status.error ? 'var(--danger)' : 'var(--success)'};color:#fff">
-          <span>${review.status.error ? '⚠' : '✓'}</span>
-          <span>${esc(review.status.text)}</span>
+          ${pendingCount > 0 ? `<button type="button" id="gr-modal-accept-all" class="btn-primary">Accept all (${pendingCount})</button>` : ''}
         </div>` : '';
       overlay.innerHTML = `
         <div class="card mf-confirm-card">
           <p class="mf-confirm-message">Discuss golden rules with AI</p>
-          ${statusHtml}
           <div class="chat-log" id="gr-modal-chat-log">${feedbackChatLogHtml(review, actionsHtml)}</div>
           ${!review.generating ? `
             <div class="row row-end" style="margin-top:0.5rem">
-              <button type="button" id="gr-modal-close">Close</button>
+              <button type="button" id="gr-modal-close" class="btn-primary">Close</button>
             </div>
             <div class="row" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
               <textarea id="gr-modal-reply" rows="2" style="flex:1" spellcheck="true"
                 placeholder="e.g. 'just tighten the tone section', 'why is anatomy so long?', 'do that'..."></textarea>
-              <button type="button" id="gr-modal-reply-btn">Send</button>
+              <button type="button" id="gr-modal-reply-btn" class="btn-primary">Send</button>
             </div>` : ''}
         </div>`;
       scrollFeedbackChatToBottom('gr-modal-chat-log');
@@ -9012,6 +9021,8 @@ function goldenRulesReviewModal() {
       overlay.querySelector('#gr-modal-close').onclick = () => { overlay.remove(); resolve(review.appliedAny); };
       const retryBtn = overlay.querySelector('#gr-modal-retry');
       if (retryBtn) retryBtn.onclick = () => generate(review.lastMessage, null);
+      const acceptAllBtn = overlay.querySelector('#gr-modal-accept-all');
+      if (acceptAllBtn) acceptAllBtn.onclick = () => acceptAllInMessage(lastAssistantIdx);
       const doReply = () => {
         const input = overlay.querySelector('#gr-modal-reply');
         const msg = input.value.trim();
@@ -9049,23 +9060,33 @@ function goldenRulesReviewModal() {
       review = { generating: false, history, appliedAny: review.appliedAny, lastMessage: apiMessage };
       render();
     };
-    const acceptOneSection = async (msgIndex, key) => {
+    // Shared by both the per-section Accept button and Accept all --
+    // applies+saves whichever keys are passed, marking each accepted in
+    // place (the button itself turning green IS the status signal now,
+    // no separate banner -- see goldenRulesDiffHtml).
+    const acceptKeysInMessage = async (msgIndex, keys) => {
       const msg = review.history[msgIndex];
-      if (!msg || !msg.proposedSections || !(key in msg.proposedSections)) return;
-      const label = ((window.__grSectionDefs || []).find(d => d.key === key) || {}).label || key;
-      const ta = document.getElementById(`gr-${key}`);
-      if (ta) ta.value = msg.proposedSections[key] || '';
+      if (!msg || !msg.proposedSections || !keys.length) return;
+      keys.forEach(key => {
+        const ta = document.getElementById(`gr-${key}`);
+        if (ta) ta.value = msg.proposedSections[key] || '';
+      });
       updateGoldenRulesWordCount();
       const project = state.pendingNewProject || state.project;
       try {
         await api('POST', '/api/golden-rules', { project, sections: collectGoldenRulesSections() });
-        msg.acceptedKeys = { ...(msg.acceptedKeys || {}), [key]: true };
+        msg.acceptedKeys = { ...(msg.acceptedKeys || {}) };
+        keys.forEach(key => { msg.acceptedKeys[key] = true; });
         review.appliedAny = true;
-        review.status = { text: `Applied "${label}" -- saved to golden_rules.md.` };
-      } catch (e) {
-        review.status = { text: `Couldn't save "${label}": ${e.message}`, error: true };
-      }
+      } catch (e) { alert(e.message); }
       render();
+    };
+    const acceptOneSection = (msgIndex, key) => acceptKeysInMessage(msgIndex, [key]);
+    const acceptAllInMessage = (msgIndex) => {
+      const msg = review.history[msgIndex];
+      if (!msg || !msg.proposedSections) return;
+      const pending = Object.keys(msg.proposedSections).filter(k => !(msg.acceptedKeys || {})[k]);
+      acceptKeysInMessage(msgIndex, pending);
     };
     overlay.onclick = (ev) => { if (ev.target === overlay && !review.generating) { overlay.remove(); resolve(review.appliedAny); } };
     render();
