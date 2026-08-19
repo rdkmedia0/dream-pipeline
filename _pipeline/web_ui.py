@@ -8130,7 +8130,9 @@ function creativeFieldsBody(f, isOnboarding) {
   };
   return `
     ${intro}
-    <label>Concept for AI draft (optional) <input id="cf-concept" placeholder="e.g. small pets doing weird jobs, deadpan voiceover"></label>
+    <label>Concept for AI draft (optional)
+      <span class="mf-help" title="A one-off idea used ONLY by the 'Draft genre/style with AI' button below, to suggest a Genre and Visual style for you -- it is not saved anywhere itself and has no effect on actual story generation once you've saved. Leave blank and the AI invents a genre/style from scratch instead of drafting from this.">?</span>
+      <input id="cf-concept" placeholder="e.g. small pets doing weird jobs, deadpan voiceover"></label>
     <div class="row">
       <button onclick="generateCreativeDraft()">Draft genre/style with AI</button>
       ${isOnboarding ? `<button onclick="selectProject(state.pendingNewProject)">Skip for now</button>` : ''}
@@ -8140,16 +8142,20 @@ function creativeFieldsBody(f, isOnboarding) {
       template.</p>
     <hr style="margin:1em 0;border-color:var(--border-soft)">
     <h4 class="pill-h4"><span>Creative fields</span><span id="cf-status-pill">${creativeFieldsStatusHtml(f)}</span></h4>
-    <label>Genre <span class="mf-help" title="Free text -- type anything. The dropdown arrow shows preset suggestions, but only ones matching what's already typed; clear the field first to browse the full list.">?</span>
+    <label>Genre
+      <span class="mf-help" title="The overall content category (e.g. Comedy, Documentary, Educational) -- filled into the $genre placeholder of every AI story-generation prompt for this project, shaping the tone and structure of every video it writes. Free text -- type anything; the dropdown arrow shows preset suggestions, but only ones matching what's already typed, so clear the field first to browse the full list.">?</span>
       <input id="cf-genre" list="cf-genre-options" value="${esc(f.genre || '')}" oninput="updateCreativeFieldsStatus()"></label>
     <datalist id="cf-genre-options">${(f.genre_options || []).map(g => `<option value="${esc(g)}">`).join('')}</datalist>
-    <label>Visual style <span class="mf-help" title="Free text -- type anything. The dropdown arrow shows preset suggestions, but only ones matching what's already typed; clear the field first to browse the full list.">?</span>
+    <label>Visual style
+      <span class="mf-help" title="The primary visual/rendering style (e.g. a photorealistic nature-documentary look, a flat 2D animated style) -- filled into the $style placeholder of every generation prompt, describing how the video should actually look. Free text -- type anything; the dropdown arrow shows preset suggestions, but only ones matching what's already typed, so clear the field first to browse the full list.">?</span>
       <input id="cf-style1" list="cf-style-options" value="${esc(f.style1 || '')}" oninput="updateCreativeFieldsStatus()"></label>
-    <label>Visual style (optional 2nd option) <input id="cf-style2" list="cf-style-options" value="${esc(f.style2 || '')}"></label>
+    <label>Visual style (optional 2nd option)
+      <span class="mf-help" title="An optional second style blended together with the first one above (e.g. combining an animated look with documentary-style framing) -- leave blank to use just the primary Visual style alone.">?</span>
+      <input id="cf-style2" list="cf-style-options" value="${esc(f.style2 || '')}"></label>
     ${styleDatalist}
     <div class="row" onchange="updateCreativeFieldsStatus()" oninput="updateCreativeFieldsStatus()">
-      <div style="flex:1">${selectField('cf-duration', 'Duration', f.duration_options || [], f.duration_s, formatDurationLabel)}</div>
-      <div style="flex:1">${selectField('cf-resolution', 'Resolution (WxH)', f.resolution_options || [], f.resolution, null)}</div>
+      <div style="flex:1">${selectField('cf-duration', 'Duration <span class="mf-help" title="How long each rendered video is, in seconds -- sets the target length every story is written to fill and how long ComfyUI actually renders. Changing this later does not retroactively resize stories already written.">?</span>', f.duration_options || [], f.duration_s, formatDurationLabel)}</div>
+      <div style="flex:1">${selectField('cf-resolution', 'Resolution (WxH) <span class="mf-help" title="Output video pixel dimensions -- directly drives render time and GPU VRAM usage per video (see the note below for specifics). This pipeline was built and tuned around 512x896.">?</span>', f.resolution_options || [], f.resolution, null)}</div>
     </div>
     <p class="muted" style="margin-top:0.3rem">Higher duration and resolution both mean
       significantly more render time and VRAM for every single video, and (if using Gemini/
