@@ -694,6 +694,11 @@ def h_creative_fields_get(qs, body):
         "style_options": list(ds.STYLE_OPTIONS),
         "duration_options": list(ds.DURATION_OPTIONS),
         "resolution_options": list(ds.RESOLUTION_OPTIONS),
+        # Gates the Creative tab's golden-rules section -- that section
+        # is drafted FROM this project's concept (see
+        # generate_golden_rules_draft), so it has nothing real to work
+        # from until the concept has been saved at least once.
+        "creative_md_exists": (ds.DATA_DIR / "CREATIVE.md").exists(),
     }
 
 
@@ -5876,7 +5881,7 @@ function feedbackChatLogHtml(review, actionsHtml) {
   const bubbles = history.map((msg, i) => {
     const isLastAssistant = !review.generating && msg.role === 'assistant' && i === history.length - 1;
     return `
-    <div class="chat-msg ${msg.role === 'user' ? 'chat-user' : 'chat-assistant'}"${msg.isError ? ' style="color:var(--danger, #c0392b)"' : ''}>${esc(msg.text)}${msg.model ? `<div class="muted" style="font-size:0.8em;margin-top:0.2rem">via ${esc(msg.model)}</div>` : ''}${isLastAssistant && actionsHtml ? actionsHtml : ''}</div>`;
+    <div class="chat-msg ${msg.role === 'user' ? 'chat-user' : 'chat-assistant'}"${msg.isError ? ' style="color:var(--danger, #c0392b)"' : ''}>${esc(msg.text)}${msg.model ? `<div class="muted" style="font-size:0.8em;margin-top:0.2rem">via ${esc(msg.model)}</div>` : ''}${msg.diffHtml || ''}${isLastAssistant && actionsHtml ? actionsHtml : ''}</div>`;
   }).join('');
   const generatingBubble = review.generating
     ? `<div class="chat-msg chat-assistant"><span class="mf-spinner"></span>Asking the AI to revise this...</div>` : '';
@@ -8743,20 +8748,58 @@ async function runAiReview() {
 async function loadCreativeEditor() {
   const container = document.getElementById('creative-editor-content');
   if (!container) return;
-  let data, goldenRules;
+  let data;
   try {
-    [data, goldenRules] = await Promise.all([
-      api('GET', `/api/creative-fields?project=${encodeURIComponent(state.project)}`),
-      api('GET', `/api/golden-rules?project=${encodeURIComponent(state.project)}`),
-    ]);
+    data = await api('GET', `/api/creative-fields?project=${encodeURIComponent(state.project)}`);
   } catch (e) {
     container.innerHTML = `<pre>ERROR: ${e.message}</pre>`;
     return;
   }
+  // Golden rules is drafted FROM the concept (generate_golden_rules_draft
+  // reads this project's CREATIVE.md as one of its two inputs), so the
+  // section stays hidden until the concept has actually been saved once
+  // -- nothing real for it to work from before that.
+  if (!data.creative_md_exists) {
+    container.innerHTML = creativeFieldsBody(data, false);
+    return;
+  }
+  let goldenRules;
+  try {
+    goldenRules = await api('GET', `/api/golden-rules?project=${encodeURIComponent(state.project)}`);
+  } catch (e) {
+    container.innerHTML = creativeFieldsBody(data, false) + `<pre>ERROR: ${e.message}</pre>`;
+    return;
+  }
   window.__grWordLimit = goldenRules.word_limit || 1000;
   window.__grSectionDefs = goldenRules.section_defs || [];
+  const hasAnyContent = (goldenRules.section_defs || []).some(d => (goldenRules.sections[d.key] || '').trim());
   container.innerHTML = creativeFieldsBody(data, false) + goldenRulesEditorHtml(goldenRules);
   updateGoldenRulesWordCount();
+  // First time this project ever reaches here (concept just saved, no
+  // rules drafted yet) -- auto-populate instead of making the human
+  // click Generate for what's obviously the very next step; they still
+  // review/edit/save it themselves, nothing here saves automatically.
+  if (!hasAnyContent) autoGenerateGoldenRules();
+}
+
+async function autoGenerateGoldenRules() {
+  const statusEl = document.getElementById('gr-fields');
+  if (statusEl) statusEl.insertAdjacentHTML('beforebegin',
+    '<p class="muted" id="gr-auto-status"><span class="mf-spinner"></span>Drafting golden rules from your concept...</p>');
+  try {
+    const project = state.pendingNewProject || state.project;
+    const result = await api('POST', '/api/golden-rules/generate', { project });
+    (window.__grSectionDefs || []).forEach(d => {
+      const ta = document.getElementById(`gr-${d.key}`);
+      if (ta) ta.value = result.sections[d.key] || '';
+    });
+    updateGoldenRulesWordCount();
+  } catch (e) {
+    /* leave sections blank -- the human can still click Generate manually */
+  } finally {
+    const el = document.getElementById('gr-auto-status');
+    if (el) el.remove();
+  }
 }
 
 function goldenRulesEditorHtml(gr) {
@@ -8856,6 +8899,29 @@ async function saveGoldenRules() {
 // feedbackChatLogHtml/scrollFeedbackChatToBottom/onFeedbackTextareaKeydown
 // since the interaction shape is identical, just against golden_rules.md
 // sections instead of a spec's fields.
+// Renders a before/after block for each section a proposal actually
+// changed, so the human can compare old vs new content directly in the
+// chat bubble instead of just reading a prose change_summary and having
+// to trust it (or dig through the form to see what would actually
+// change) -- fed into feedbackChatLogHtml's msg.diffHtml passthrough.
+function goldenRulesDiffHtml(before, proposed) {
+  const defs = window.__grSectionDefs || [];
+  const labelFor = key => (defs.find(d => d.key === key) || {}).label || key;
+  return Object.keys(proposed || {}).map(key => {
+    const oldVal = (before[key] || '').trim();
+    const newVal = (proposed[key] || '').trim();
+    if (oldVal === newVal) return '';
+    return `
+      <div class="card" style="margin-top:0.4rem;padding:0.5rem;font-size:0.85em">
+        <div style="font-weight:600">${esc(labelFor(key))}</div>
+        <div class="muted" style="margin-top:0.3rem">Current:</div>
+        <div style="white-space:pre-wrap;opacity:0.65;text-decoration:line-through">${esc(oldVal || '(empty)')}</div>
+        <div class="muted" style="margin-top:0.3rem">Proposed:</div>
+        <div style="white-space:pre-wrap">${esc(newVal || '(empty)')}</div>
+      </div>`;
+  }).join('');
+}
+
 function goldenRulesReviewModal() {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
@@ -8903,15 +8969,17 @@ function goldenRulesReviewModal() {
       const history = review.history || [];
       const apiHistory = history.map(h => ({ role: h.role, content: h.text }));
       if (message) history.push({ role: 'user', text: message });
+      const beforeSections = collectGoldenRulesSections();
       review = { generating: true, history, appliedAny: review.appliedAny };
       render();
       const project = state.pendingNewProject || state.project;
       try {
         const result = await api('POST', '/api/golden-rules/discuss', {
-          project, sections: collectGoldenRulesSections(), message: message || '', history: apiHistory,
+          project, sections: beforeSections, message: message || '', history: apiHistory,
         });
         const bubbleText = result.kind === 'advice' ? result.text : (result.change_summary || 'The AI proposed changes.');
-        history.push({ role: 'assistant', text: bubbleText, model: result.model });
+        const diffHtml = result.kind === 'proposal' ? goldenRulesDiffHtml(beforeSections, result.sections || {}) : '';
+        history.push({ role: 'assistant', text: bubbleText, model: result.model, diffHtml });
         review = { kind: result.kind, sections: result.sections, model: result.model, history, appliedAny: review.appliedAny };
       } catch (e) {
         history.push({ role: 'assistant', text: e.message, isError: true });
