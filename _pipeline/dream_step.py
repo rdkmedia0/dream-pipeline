@@ -135,13 +135,6 @@ VISION_OPTIONS = {"num_predict": 8192, "num_ctx": 16384}
 
 PIPELINE_DIR = Path(__file__).resolve().parent
 
-# Single consolidated source for every mechanical/render-quality rule
-# this pipeline needs (see golden_rules.md's own header for why) --
-# shared across every project; a project's CREATIVE.md holds only
-# genuinely project-specific facts (visual style options, genre), not
-# rules. See format_rules().
-FORMAT_RULES_PATH = PIPELINE_DIR / "golden_rules.md"
-
 # The strong-backend (Gemini) spec-generation prompt SKELETON --
 # the literal wording/section layout Gemini itself chose in a two-round
 # self-critique (see build_simple_spec_prompt's docstring), as a
@@ -958,21 +951,19 @@ def recent_titles_for_dedup(limit=15):
 
 
 def format_rules():
-    """This project's golden_rules.md (see golden_rules_section_defs /
-    golden_rules_sections) if it's been AI-drafted or hand-edited for it
-    yet, else FORMAT_RULES_PATH's pipeline-wide baseline template as a
-    fallback for a project that hasn't customized its own rules -- so
-    every project is always covered by something proven, even brand new
-    ones. Returns None if neither exists (a from-scratch pipeline install)
-    so callers degrade gracefully instead of crashing on a request
-    that's otherwise still perfectly usable."""
+    """This project's own golden_rules.md (see golden_rules_section_defs /
+    golden_rules_sections) -- one file per project, AI-drafted at concept
+    save time (see loadCreativeEditor's autoGenerateGoldenRules) or
+    hand-edited after. No pipeline-wide fallback file -- per explicit
+    instruction, there is exactly one golden_rules.md per project, not a
+    shared one behind it. Returns None if this project hasn't reached
+    that point yet (concept not saved, or the auto-draft hasn't run) so
+    callers degrade gracefully instead of crashing on a request that's
+    otherwise still perfectly usable."""
     project_path = _project_golden_rules_path()
-    if project_path.exists():
-        text = project_path.read_text(encoding="utf-8")
-    elif FORMAT_RULES_PATH.exists():
-        text = FORMAT_RULES_PATH.read_text(encoding="utf-8")
-    else:
+    if not project_path.exists():
         return None
+    text = project_path.read_text(encoding="utf-8")
     _, _, duration_s = project_render_settings()
     if duration_s != 24:
         # format_rules.md's own text hardcodes "00:24" as the (default)
@@ -1439,6 +1430,16 @@ def _project_golden_rules_path():
     return DATA_DIR / "golden_rules.md"
 
 
+def golden_rules_text_for_project():
+    """This project's own golden_rules.md, raw verbatim text (empty
+    string if it doesn't exist yet) -- used as regeneration context by
+    generate_golden_rules_draft, distinct from format_rules() (which
+    also substitutes the live render-duration placeholder for actual
+    generation calls, not wanted here)."""
+    path = _project_golden_rules_path()
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
 def _assemble_golden_rules_text(sections):
     """sections: {key: body}. Renders the fixed header order into one
     markdown file -- the inverse of _parse_golden_rules_sections."""
@@ -1502,14 +1503,17 @@ def save_golden_rules_sections(sections):
 
 
 def generate_golden_rules_draft():
-    """AI-drafts this project's golden_rules.md as a first pass, using the
-    pipeline's baseline template (FORMAT_RULES_PATH, the proven-necessary
-    mechanical constraints every project starts from) plus this project's
-    own creative idea (CREATIVE.md, via creative_guidance_pointer()) as
-    the two inputs -- never writes anything, the GUI form is where a human
+    """AI-drafts this project's golden_rules.md as a first pass, using
+    this project's own creative idea (CREATIVE.md, via
+    creative_guidance_pointer()) as the only input -- there is no
+    pipeline-wide baseline file behind this (removed per explicit
+    instruction: one golden_rules.md per project, nothing shared). If
+    this project already has rules drafted, its own current content is
+    included too, so a re-draft refines what's there instead of
+    discarding it. Never writes anything, the GUI form is where a human
     reviews/edits/saves it. Returns {key: body} for the same fixed
     sections the form renders, so the result drops straight into it."""
-    baseline = FORMAT_RULES_PATH.read_text(encoding="utf-8") if FORMAT_RULES_PATH.exists() else ""
+    existing = golden_rules_text_for_project()
     creative = creative_guidance_pointer() or ""
     section_hints = "\n".join(f"- {label} ({key}): {hint}"
                                for key, label, hint in golden_rules_section_defs())
@@ -1519,10 +1523,12 @@ def generate_golden_rules_draft():
         "MECHANICAL/RENDER/STYLE RULES ONLY: no changelog, no worked examples, no restating "
         "of creative facts (species, characters, world details, genre) that already live in "
         "the project's own CREATIVE.md below -- a rule says HOW something must be done, a "
-        "creative fact says WHAT the story is about; do not duplicate the latter.\n\n"
-        "Baseline template this pipeline has already proven necessary (use as a starting "
-        "point, tailor and trim to fit this project's genre, don't just copy verbatim):\n"
-        "---\n" + baseline + "\n---\n\n"
+        "creative fact says WHAT the story is about; do not duplicate the latter. Draw on "
+        "general best practice for AI video generation prompts (continuity, anatomy, audio "
+        "sync, pacing) as well as this project's own concept.\n\n"
+        + (("This project's own current golden_rules.md, if any (refine/reorganize into the "
+            "sections below, don't discard proven rules just because they're already there):\n"
+            "---\n" + existing + "\n---\n\n") if existing else "") +
         "This project's creative idea (CREATIVE.md):\n---\n" + creative + "\n---\n\n"
         "Fill exactly these sections, each a rule body (not a restatement of the creative "
         "idea itself):\n" + section_hints + "\n\n"
