@@ -1,8 +1,8 @@
 [
   {
-    "key": "premise_and_humor",
-    "label": "Premise & humor",
-    "hint": "The SHAPE of what makes a scene work here (a real complication must happen on-screen, vary the kind of complication/closing beat) -- not what the premise is ABOUT, that's a creative fact, not a rule."
+    "key": "premise_atmosphere_tone",
+    "label": "Premise, atmosphere & tone",
+    "hint": "The SHAPE of what makes a scene work (a real development/complication must happen on-screen, vary its kind and closing beat) and the emotional/content boundaries it must stay within -- what's in bounds and out of bounds. Not what the premise is ABOUT, that's a creative fact, not a rule."
   },
   {
     "key": "variety_exclusions",
@@ -10,39 +10,19 @@
     "hint": "Rules against repeating species/roles/tropes/closing lines across scripts, and any specific banned cliches."
   },
   {
-    "key": "tone",
-    "label": "Tone",
-    "hint": "Emotional/content boundaries -- what's in bounds and out of bounds (e.g. no real peril, no dark humor)."
+    "key": "dialogue_audio",
+    "label": "Dialogue & audio",
+    "hint": "How lines should sound and deliver (character energy, banned generic-narration patterns, voice tagging) plus the technical audio rules: caps/punctuation limits, pacing math, mouth-movement/voiceover sync."
   },
   {
-    "key": "dialogue_style",
-    "label": "Dialogue & voice style",
-    "hint": "How lines should sound and deliver -- character energy, banned generic-narration patterns, voice tagging."
-  },
-  {
-    "key": "structure",
-    "label": "Structure",
-    "hint": "Camera/scene continuity rules (cuts, location changes, shot count)."
-  },
-  {
-    "key": "continuous_action",
-    "label": "Continuous action",
-    "hint": "How physical motion must be depicted across beats (not just before/after snapshots) and kept in sync with dialogue timing."
+    "key": "structure_action_timing",
+    "label": "Structure, action & timing",
+    "hint": "Camera/scene continuity rules (cuts, location changes, shot count), how physical motion must be depicted across beats and kept in sync with dialogue, and required beat count/timing."
   },
   {
     "key": "anatomy",
     "label": "Anatomy accuracy",
     "hint": "Rules keeping each animal's real anatomy correct through every pose."
-  },
-  {
-    "key": "audio_speech",
-    "label": "Audio & speech",
-    "hint": "Caps/punctuation limits, pacing math, mouth-movement/voiceover sync rules."
-  },
-  {
-    "key": "timestamps",
-    "label": "Timestamps & beat count",
-    "hint": "Required beat count and timing rules."
   },
   {
     "key": "fml2v_prompts",

@@ -2802,9 +2802,8 @@ def _chat_get_golden_rules(**_ignored):
 _CHAT_GET_GOLDEN_RULES_TOOL = {"type": "function", "function": {
     "name": "get_golden_rules",
     "description": "Fetch this project's current golden_rules.md, as its fixed sections "
-                    "(premise_and_humor, variety_exclusions, tone, dialogue_style, structure, "
-                    "continuous_action, anatomy, audio_speech, timestamps, fml2v_prompts, "
-                    "negative_prompt_baseline).",
+                    "(premise_atmosphere_tone, variety_exclusions, dialogue_audio, "
+                    "structure_action_timing, anatomy, fml2v_prompts, negative_prompt_baseline).",
     "parameters": {"type": "object", "properties": {}},
 }}
 

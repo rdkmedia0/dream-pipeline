@@ -8823,11 +8823,7 @@ function goldenRulesEditorHtml(gr) {
       generation call for this project. Keep facts about the STORY (species, characters, world)
       in the fields above instead; this section is only HOW things must be rendered/written, not
       WHAT the story is about.</p>
-    ${!hasAnyContent ? `<p class="muted">No rules drafted for this project yet.
-      <button type="button" onclick="generateGoldenRules()">Generate with AI</button>
-      drafts a starting point from the pipeline's baseline template and this project's
-      concept above -- nothing is saved until you review and hit Save.</p>` : `
-      <p><button type="button" onclick="generateGoldenRules()">Re-generate with AI</button></p>`}
+    ${hasAnyContent ? `<p><button type="button" onclick="generateGoldenRules()">Re-generate with AI</button></p>` : ''}
     <div id="gr-fields">${fieldsHtml}</div>
     <div class="row" style="margin-top:0.3rem;align-items:center;gap:0.6rem">
       <span class="muted" id="gr-word-count"></span>
