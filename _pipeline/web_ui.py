@@ -8900,21 +8900,44 @@ async function saveGoldenRules() {
 // feedbackChatLogHtml/scrollFeedbackChatToBottom/onFeedbackTextareaKeydown
 // since the interaction shape is identical, just against golden_rules.md
 // sections instead of a spec's fields.
+// Plain listing of what's actually saved right now -- shown as the
+// modal's opening bubble with NO AI call, per explicit feedback: the
+// human should see the actual current content and be asked what they
+// want changed, not have the AI immediately propose a rewrite of
+// everything on open.
+function goldenRulesCurrentSummaryHtml() {
+  const defs = window.__grSectionDefs || [];
+  const sections = collectGoldenRulesSections();
+  return defs.map(d => {
+    const val = (sections[d.key] || '').trim();
+    const shown = val ? (val.length > 220 ? val.slice(0, 220) + '…' : val) : null;
+    return `<div style="margin-top:0.3rem"><strong>${esc(d.label)}:</strong> ${shown ? esc(shown) : '<span class="muted">(empty)</span>'}</div>`;
+  }).join('');
+}
+
 // Renders a before/after block for each section a proposal actually
-// changed, so the human can compare old vs new content directly in the
-// chat bubble instead of just reading a prose change_summary and having
-// to trust it (or dig through the form to see what would actually
-// change) -- fed into feedbackChatLogHtml's msg.diffHtml passthrough.
-function goldenRulesDiffHtml(before, proposed) {
+// changed, one Accept button PER section (not one blanket accept for
+// everything) -- per explicit feedback, since a multi-section proposal
+// should let the human take some changes and leave others. msgIndex/
+// acceptedKeys let a section already accepted show "Applied" instead of
+// a live button on re-render. Fed into feedbackChatLogHtml's
+// msg.diffHtml passthrough.
+function goldenRulesDiffHtml(before, proposed, msgIndex, acceptedKeys) {
   const defs = window.__grSectionDefs || [];
   const labelFor = key => (defs.find(d => d.key === key) || {}).label || key;
+  acceptedKeys = acceptedKeys || {};
   return Object.keys(proposed || {}).map(key => {
     const oldVal = (before[key] || '').trim();
     const newVal = (proposed[key] || '').trim();
     if (oldVal === newVal) return '';
+    const applied = acceptedKeys[key];
     return `
       <div class="card" style="margin-top:0.4rem;padding:0.5rem;font-size:0.85em">
-        <div style="font-weight:600">${esc(labelFor(key))}</div>
+        <div class="row" style="justify-content:space-between;align-items:center;gap:0.5rem">
+          <div style="font-weight:600">${esc(labelFor(key))}</div>
+          ${applied ? '<span class="muted">Applied ✓</span>' :
+            `<button type="button" class="gr-diff-accept-btn" data-msg-index="${msgIndex}" data-key="${esc(key)}">Accept</button>`}
+        </div>
         <div class="muted" style="margin-top:0.3rem">Current:</div>
         <div style="white-space:pre-wrap;opacity:0.65;text-decoration:line-through">${esc(oldVal || '(empty)')}</div>
         <div class="muted" style="margin-top:0.3rem">Proposed:</div>
@@ -8928,14 +8951,28 @@ function goldenRulesReviewModal() {
     const overlay = document.createElement('div');
     overlay.className = 'mf-confirm-overlay';
     document.body.appendChild(overlay);
-    let review = { generating: true, history: [], appliedAny: false };
+    // Opening bubble is a static summary, not an AI call -- see
+    // goldenRulesCurrentSummaryHtml's own comment.
+    let review = {
+      generating: false, appliedAny: false,
+      history: [{ role: 'assistant', text: "Here's what's currently saved. What would you like to change?",
+                  diffHtml: goldenRulesCurrentSummaryHtml(), isStaticSummary: true }],
+    };
     const render = () => {
-      const canAccept = review.kind === 'proposal' && review.sections && Object.keys(review.sections).length;
-      const actionsHtml = !review.generating ? `
+      // Diff blocks are recomputed fresh every render from each
+      // message's own stored proposedSections/acceptedKeys (not baked
+      // once at push-time) so an Accept click's effect (button ->
+      // "Applied ✓") shows up immediately on re-render.
+      review.history.forEach((msg, i) => {
+        if (msg.proposedSections) {
+          msg.diffHtml = goldenRulesDiffHtml(msg.beforeSections, msg.proposedSections, i, msg.acceptedKeys || {});
+        }
+      });
+      const lastAssistant = [...review.history].reverse().find(m => m.role === 'assistant');
+      const canRetry = !review.generating && review.lastMessage;
+      const actionsHtml = canRetry ? `
         <div class="row" style="margin-top:0.4rem;gap:0.3rem">
           <button type="button" id="gr-modal-retry">Try again</button>
-          <button type="button" id="gr-modal-accept" class="btn-primary" ${canAccept ? '' : 'disabled'}
-                  title="${canAccept ? 'Apply the proposed section(s) into the form and save' : 'Nothing to accept yet -- this was advice, not a proposed change. Reply below to ask for an actual change.'}">Accept &amp; save</button>
         </div>` : '';
       overlay.innerHTML = `
         <div class="card mf-confirm-card">
@@ -8948,63 +8985,70 @@ function goldenRulesReviewModal() {
             <div class="row" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
               <textarea id="gr-modal-reply" rows="2" style="flex:1" spellcheck="true"
                 placeholder="e.g. 'just tighten the tone section', 'why is anatomy so long?', 'do that'..."></textarea>
-              <button type="button" id="gr-modal-reply-btn">${review.kind === 'advice' ? 'Reply' : 'Refine'}</button>
+              <button type="button" id="gr-modal-reply-btn">Send</button>
             </div>` : ''}
         </div>`;
       scrollFeedbackChatToBottom('gr-modal-chat-log');
+      overlay.querySelectorAll('.gr-diff-accept-btn').forEach(btn => {
+        btn.onclick = () => acceptOneSection(parseInt(btn.dataset.msgIndex, 10), btn.dataset.key);
+      });
       if (review.generating) return;
       overlay.querySelector('#gr-modal-close').onclick = () => { overlay.remove(); resolve(review.appliedAny); };
-      overlay.querySelector('#gr-modal-retry').onclick = () => generate(null);
-      const acceptBtn = overlay.querySelector('#gr-modal-accept');
-      if (acceptBtn) acceptBtn.onclick = accept;
+      const retryBtn = overlay.querySelector('#gr-modal-retry');
+      if (retryBtn) retryBtn.onclick = () => generate(review.lastMessage, null);
       const doReply = () => {
         const input = overlay.querySelector('#gr-modal-reply');
         const msg = input.value.trim();
         if (!msg) return;
-        generate(msg);
+        generate(msg, msg);
       };
       overlay.querySelector('#gr-modal-reply-btn').onclick = doReply;
       overlay.querySelector('#gr-modal-reply').addEventListener('keydown', (ev) => onFeedbackTextareaKeydown(ev, doReply));
     };
-    const generate = async (message) => {
-      const history = review.history || [];
-      const apiHistory = history.map(h => ({ role: h.role, content: h.text }));
-      if (message) history.push({ role: 'user', text: message });
+    // apiMessage is always sent; displayMessage is null for "Try again"
+    // (same request resent, nothing new to show as a user bubble).
+    const generate = async (apiMessage, displayMessage) => {
+      const history = review.history;
+      if (displayMessage) history.push({ role: 'user', text: displayMessage });
       const beforeSections = collectGoldenRulesSections();
-      review = { generating: true, history, appliedAny: review.appliedAny };
+      review = { generating: true, history, appliedAny: review.appliedAny, lastMessage: apiMessage };
       render();
       const project = state.pendingNewProject || state.project;
       try {
+        const apiHistory = history.filter(h => !h.isStaticSummary).map(h => ({ role: h.role, content: h.text }));
         const result = await api('POST', '/api/golden-rules/discuss', {
-          project, sections: beforeSections, message: message || '', history: apiHistory,
+          project, sections: beforeSections, message: apiMessage, history: apiHistory,
         });
         const bubbleText = result.kind === 'advice' ? result.text : (result.change_summary || 'The AI proposed changes.');
-        const diffHtml = result.kind === 'proposal' ? goldenRulesDiffHtml(beforeSections, result.sections || {}) : '';
-        history.push({ role: 'assistant', text: bubbleText, model: result.model, diffHtml });
-        review = { kind: result.kind, sections: result.sections, model: result.model, history, appliedAny: review.appliedAny };
+        const hasSections = result.kind === 'proposal' && result.sections && Object.keys(result.sections).length;
+        history.push({
+          role: 'assistant', text: bubbleText, model: result.model,
+          beforeSections: hasSections ? beforeSections : null,
+          proposedSections: hasSections ? result.sections : null,
+          acceptedKeys: {},
+        });
       } catch (e) {
         history.push({ role: 'assistant', text: e.message, isError: true });
-        review = { error: e.message, history, appliedAny: review.appliedAny };
       }
+      review = { generating: false, history, appliedAny: review.appliedAny, lastMessage: apiMessage };
       render();
     };
-    const accept = async () => {
-      const proposed = review.sections || {};
-      Object.keys(proposed).forEach(key => {
-        const ta = document.getElementById(`gr-${key}`);
-        if (ta) ta.value = proposed[key];
-      });
+    const acceptOneSection = async (msgIndex, key) => {
+      const msg = review.history[msgIndex];
+      if (!msg || !msg.proposedSections || !(key in msg.proposedSections)) return;
+      const ta = document.getElementById(`gr-${key}`);
+      if (ta) ta.value = msg.proposedSections[key] || '';
       updateGoldenRulesWordCount();
       const project = state.pendingNewProject || state.project;
       try {
         await api('POST', '/api/golden-rules', { project, sections: collectGoldenRulesSections() });
+        msg.acceptedKeys = { ...(msg.acceptedKeys || {}), [key]: true };
         review.appliedAny = true;
-        review.history.push({ role: 'assistant', text: 'Saved to this project\'s golden_rules.md.' });
-        render();
       } catch (e) { alert(e.message); }
+      render();
     };
     overlay.onclick = (ev) => { if (ev.target === overlay && !review.generating) { overlay.remove(); resolve(review.appliedAny); } };
-    generate(null);
+    render();
   });
 }
 

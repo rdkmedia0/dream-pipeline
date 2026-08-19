@@ -1579,22 +1579,25 @@ def discuss_golden_rules(sections, message, history):
         f"{GOLDEN_RULES_WORD_LIMIT} words.\n\n"
         "First classify the human's latest message: \"advice\" if it's a question / asking "
         "for an opinion (judge by grammatical form, same rule as anywhere else -- a question "
-        "mark or how/what/should/why means advice), \"proposal\" if it's an instruction to "
-        "change something, OR this is the very first message with no prior conversation (in "
-        "that case always propose a first draft/improvement pass rather than asking what to "
-        "do). When genuinely unsure, prefer advice.\n\n"
+        "mark or how/what/should/why means advice), \"proposal\" ONLY if it's an actual "
+        "instruction to change something specific. The human has already been shown the "
+        "current saved content before sending this message -- never treat silence or a vague "
+        "opener as an implicit request to rewrite everything; if genuinely unsure whether "
+        "they want a change or are just asking something, prefer advice. When it IS a "
+        "proposal, change ONLY the section(s) the human actually asked about -- never expand "
+        "scope to other sections they didn't mention.\n\n"
         "Current form state (what the human is looking at right now):\n"
         + json.dumps(sections, indent=2) + "\n\n"
         "This project's CREATIVE.md (for overlap-checking, never restate its facts here):\n"
         "---\n" + creative + "\n---\n\n"
         "Conversation so far:\n" + history_text + "\n\n"
-        "Human's latest message: " + (message or "(no message -- generate an initial "
-                                                   "review/proposal)") + "\n\n"
+        "Human's latest message: " + message + "\n\n"
         "Reply with ONLY a JSON object: "
         '{"response_type": "advice"|"proposal", '
         '"advice": "REQUIRED when advice, else empty string -- conversational answer", '
         '"sections": {"<section_key>": "<new full body text>", ...REQUIRED when proposal, '
-        'else omit -- ONLY the section keys you are actually changing, valid keys are '
+        'else omit -- ONLY the section keys the human actually asked to change, never more, '
+        'valid keys are '
         + ", ".join(sorted(valid_keys)) + '}, '
         '"change_summary": "REQUIRED when proposal, else empty string -- 1-3 sentences, plain '
         'prose, what changed and why, addressed to the human"}'
