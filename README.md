@@ -130,7 +130,7 @@ run_complete.bat      # Windows
 Equivalent to `docker compose --profile complete up -d` with
 `OLLAMA_URL`/`COMFYUI_URL`/`CREATIVE_MODEL`/`VISION_MODEL` pre-set so
 Dream Pipeline finds the bundled services automatically — Settings
-shows both already configured, nothing to type in by hand. Adds three
+shows both already configured, nothing to type in by hand. Adds four
 containers (see `docker-compose.yml` for each one's own comments):
 
 - **`ollama`** — the official `ollama/ollama` image (the same headless
@@ -143,21 +143,32 @@ containers (see `docker-compose.yml` for each one's own comments):
   `ollama pull` is a no-op once a model's already present.
 - **`comfyui`** — [`mmartial/comfyui-nvidia-docker`](https://github.com/mmartial/ComfyUI-Nvidia-Docker),
   a maintained, NVIDIA-CUDA-based community ComfyUI image.
+- **`comfyui-model-init`** — a one-shot container that downloads the
+  checkpoint + text encoder + vae/upscaler files our default workflow
+  (`workflow_api_fml2v.json`) needs straight from Hugging Face into
+  ComfyUI's `basedir` volume, then exits. Safe to re-run — skips
+  already-downloaded files. Override `COMFYUI_CHECKPOINT_URL` /
+  `COMFYUI_TEXT_ENCODER_URL` in `.env` to use a different
+  `workflow_api_*.json`'s models instead (see `install_manifest.py` for
+  each workflow's filenames/sources), and update Settings' workflow
+  choice to match.
 
-**What this does NOT include:** ComfyUI's own *render* checkpoints (the
-actual video-generation model your `workflow_api_*.json` files need).
-Those are separately licensed per model, far larger than the two
-Ollama models above (often 10–30GB+ each), and workflow-specific —
-run `setup_installer.py` once the complete stack is up to fetch
-whichever files your chosen workflow actually needs, exactly the same
-guided step a lite/bare install already uses.
+**Download size, first run only:** ~13.7GB for the two Ollama models
+above, plus ~38GB for the default ComfyUI checkpoint set
+(23GB diffusion model + 13.2GB text encoder + ~2GB vae/upscaler
+companions) — **~52GB total**, before either service's own base image.
+Nothing after this needs any manual model hunting for the default
+workflow; `setup_installer.py` / Settings' dependency-check popup still
+covers fetching a DIFFERENT workflow's models if you switch away from
+the default.
 
 **Why not bundled into Dream Pipeline's own image:** Ollama is MIT
-licensed (fine to redistribute), but ComfyUI is GPL-3.0 and each Ollama
-model has its own separate license — rather than sort out per-model
-redistribution terms, these are pulled directly from their own
-publishers at deploy time (Docker Hub, Ollama's own model registry),
-never copied into an image this repo controls.
+licensed (fine to redistribute), but ComfyUI is GPL-3.0 and each
+model (Ollama's or ComfyUI's) has its own separate license — rather
+than sort out per-model redistribution terms, these are pulled
+directly from their own publishers at deploy time (Docker Hub,
+Ollama's own model registry, Hugging Face), never copied into an image
+this repo controls.
 
 #### Hardware & compatibility — read before running Complete
 

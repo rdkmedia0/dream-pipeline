@@ -127,12 +127,55 @@ services:
       - "ollama pull ${CREATIVE_MODEL:-gemma4:12b} && ollama pull ${VISION_MODEL:-qwen3-vl:8b}"
     restart: "no"
 
-  # ComfyUI's own render checkpoints (the actual video-generation model,
-  # separate from anything above) are NOT included here -- those are
-  # workflow-specific, far larger, and separately licensed per model; use
-  # the existing guided installer (setup_installer.py, or Settings'
-  # dependency-check popup) to fetch whichever your workflow_api_*.json
-  # files need, same as a bare/lite install.
+  # One-shot: downloads the checkpoint set our default workflow
+  # (workflow_api_fml2v.json) actually needs to run, straight from each
+  # file's own publisher (Hugging Face -- never bundled/redistributed by
+  # this repo, same reasoning as the "complete" profile's own comment
+  # above). Writes directly into comfyui's `basedir` volume, so it only
+  # needs that volume mounted -- doesn't wait on the comfyui service
+  # itself being up. `curl -C -` resumes/skips already-complete files,
+  # so re-running `docker compose --profile complete up` is safe and
+  # doesn't re-download anything after the first time.
+  #
+  # Expected download size (from install_manifest.py's own tracked
+  # sizes for these files):
+  #   diffusion model (COMFYUI_CHECKPOINT_URL)    ~23 GB
+  #   text encoder    (COMFYUI_TEXT_ENCODER_URL)  ~13.2 GB
+  #   vae / upscaler companions (fixed, small)     ~2 GB (untracked exact size)
+  #   -----------------------------------------------------
+  #   total                                        ~38 GB  (one-time)
+  #
+  # Override COMFYUI_CHECKPOINT_URL / COMFYUI_TEXT_ENCODER_URL in your
+  # .env (see .env.example) to point at a different checkpoint/text
+  # encoder instead of our tested default -- e.g. to use one of the
+  # OTHER workflow_api_*.json files' models instead (fp8_t2v, i2v,
+  # t2i_i2i -- see install_manifest.py for their filenames/sources).
+  # Swapping either URL means also switching which workflow Settings is
+  # configured to use, same as changing CREATIVE_MODEL/VISION_MODEL
+  # above requires those models to actually be pulled.
+  comfyui-model-init:
+    image: curlimages/curl:latest
+    profiles: ["complete"]
+    user: "${WANTED_UID:-1000}:${WANTED_GID:-1000}"
+    volumes:
+      - ${DREAM_PIPELINE_COMFYUI_DATA_DIR:-./comfyui-data}:/basedir
+    environment:
+      - COMFYUI_CHECKPOINT_URL=${COMFYUI_CHECKPOINT_URL:-https://huggingface.co/Kijai/LTX2.3_comfy/resolve/main/diffusion_models/ltx-2.3-22b-distilled-1.1_transformer_only_fp8_scaled.safetensors}
+      - COMFYUI_TEXT_ENCODER_URL=${COMFYUI_TEXT_ENCODER_URL:-https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp8_scaled.safetensors}
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        mkdir -p /basedir/models/diffusion_models /basedir/models/text_encoders /basedir/models/vae /basedir/models/latent_upscale_models
+        fetch() { out="$$1"; url="$$2"; [ -s "$$out" ] || curl -fL -C - -o "$$out" "$$url"; }
+        fetch "/basedir/models/diffusion_models/$$(basename "$$COMFYUI_CHECKPOINT_URL")" "$$COMFYUI_CHECKPOINT_URL"
+        fetch "/basedir/models/text_encoders/$$(basename "$$COMFYUI_TEXT_ENCODER_URL")" "$$COMFYUI_TEXT_ENCODER_URL"
+        fetch "/basedir/models/vae/LTX23_video_vae_bf16.safetensors" "https://huggingface.co/Kijai/LTX2.3_comfy/resolve/main/vae/LTX23_video_vae_bf16.safetensors"
+        fetch "/basedir/models/vae/LTX23_audio_vae_bf16.safetensors" "https://huggingface.co/Kijai/LTX2.3_comfy/resolve/main/vae/LTX23_audio_vae_bf16.safetensors"
+        fetch "/basedir/models/vae/taeltx2_3.safetensors" "https://huggingface.co/Kijai/LTX2.3_comfy/resolve/main/vae/taeltx2_3.safetensors"
+        fetch "/basedir/models/latent_upscale_models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors" "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+    restart: "no"
+
   comfyui:
     image: mmartial/comfyui-nvidia-docker:latest
     profiles: ["complete"]
