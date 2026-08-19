@@ -1202,7 +1202,7 @@ def compose_creative_md(display_name, genre, styles, duration_s, resolution, con
         "This project's own creative facts -- editable from the Creative tab. "
         "Every mechanical/render-quality rule (lip sync, complexity budget, "
         "one fixed environment, negative-prompt baseline, copyright, etc.) is "
-        "shared pipeline-wide and lives in _pipeline/golden_rules.md instead "
+        "lives in this project's own golden_rules.md instead "
         "-- not repeated here.\n\n"
         f"{_GENRE_MARKER} {genre or 'Comedy'}\n\n"
         f"{style_lines}\n\n"

@@ -77,15 +77,26 @@ with inline diagnostics for whatever's misconfigured.
 
 ## Quick start (Docker — recommended)
 
-Two ways to run this, both via the same `docker-compose.yml`:
+Three ways to run this, all via the same `docker-compose.yml` — plain
+`docker compose` commands, nothing extra to install:
 
-| | **Lite** (default) | **Complete** |
-|---|---|---|
-| What starts | Dream Pipeline only | Dream Pipeline + Ollama + ComfyUI, as sibling containers |
-| Ollama/ComfyUI | Bring your own — local, remote, or a separate machine entirely | Bundled, running on **this same machine** |
-| GPU requirement here | None — Dream Pipeline itself never touches a GPU | **Yes** — a real NVIDIA GPU on the machine running `docker compose`, see Hardware below |
-| First-run downloads | None | Real model weights — several GB for the two default Ollama models alone |
-| Command | `docker compose pull && docker compose up -d` | `./run_complete.sh` (Linux/macOS) or `run_complete.bat` (Windows) |
+| | **Lite** (default) | **Complete, no models** | **Complete, with models** |
+|---|---|---|---|
+| Command | `docker compose up -d` | `docker compose --profile complete up -d --scale ollama-model-init=0 --scale comfyui-model-init=0` | `docker compose --profile complete up -d` |
+| What starts | Dream Pipeline only | Dream Pipeline + Ollama + ComfyUI, empty model dirs | Dream Pipeline + Ollama + ComfyUI, models auto-downloaded |
+| Ollama/ComfyUI | Bring your own — local, remote, or a separate machine entirely | Bundled, running on **this same machine**, but you fetch models yourself | Bundled, running on **this same machine**, models fetched automatically |
+| GPU requirement here | None — Dream Pipeline itself never touches a GPU | **Yes** — a real NVIDIA GPU on the machine running `docker compose`, see Hardware below | Same as left |
+| First-run download | None | None (base images only) | ~52GB — see the size breakdown below |
+
+The middle option is for bringing your own model files into the
+bundled containers (e.g. models you already have on disk, or a
+different checkpoint set) without triggering the default download —
+the two `-init` services are one-shot downloaders; scaling them to `0`
+just skips them, everything else about the `complete` profile is
+identical. `./run_complete.sh` / `run_complete.bat` (below) are a thin
+convenience wrapper around the third command, not a separate mechanism
+— use the plain `docker compose` commands above directly if you'd
+rather not rely on them.
 
 ### Lite
 
@@ -123,15 +134,24 @@ that.
 ### Complete
 
 ```bash
-./run_complete.sh     # Linux/macOS
-run_complete.bat      # Windows
+# With the default models auto-downloaded (~52GB, see below):
+docker compose --profile complete up -d
+
+# Or without downloading any models -- bring your own into
+# ./ollama-data / ./comfyui-data yourself:
+docker compose --profile complete up -d --scale ollama-model-init=0 --scale comfyui-model-init=0
 ```
 
-Equivalent to `docker compose --profile complete up -d` with
-`OLLAMA_URL`/`COMFYUI_URL`/`CREATIVE_MODEL`/`VISION_MODEL` pre-set so
-Dream Pipeline finds the bundled services automatically — Settings
-shows both already configured, nothing to type in by hand. Adds four
-containers (see `docker-compose.yml` for each one's own comments):
+`./run_complete.sh` (Linux/macOS) / `run_complete.bat` (Windows) do the
+same as the first command above, plus pre-set
+`OLLAMA_URL`/`COMFYUI_URL`/`CREATIVE_MODEL`/`VISION_MODEL` so Dream
+Pipeline finds the bundled services automatically — Settings shows
+both already configured, nothing to type in by hand. Purely a
+convenience wrapper, not required — the plain `docker compose`
+commands work identically, you'd just set those four in `.env` or
+Settings yourself instead.
+
+Adds four containers (see `docker-compose.yml` for each one's own comments):
 
 - **`ollama`** — the official `ollama/ollama` image (the same headless
   server Ollama Desktop wraps a GUI around — no desktop app is involved
@@ -153,14 +173,26 @@ containers (see `docker-compose.yml` for each one's own comments):
   each workflow's filenames/sources), and update Settings' workflow
   choice to match.
 
-**Download size, first run only:** ~13.7GB for the two Ollama models
-above, plus ~38GB for the default ComfyUI checkpoint set
-(23GB diffusion model + 13.2GB text encoder + ~2GB vae/upscaler
-companions) — **~52GB total**, before either service's own base image.
-Nothing after this needs any manual model hunting for the default
-workflow; `setup_installer.py` / Settings' dependency-check popup still
-covers fetching a DIFFERENT workflow's models if you switch away from
-the default.
+**Disk cost, first run, by variant:**
+
+| | Base images (Docker layers) | Model downloads |
+|---|---|---|
+| Lite | ~250MB (`dream-pipeline` only) | None |
+| Complete, no models | ~250MB + 3.1GB (`ollama/ollama`) + 6.3GB (`comfyui-nvidia-docker`, CUDA-based) ≈ **~9.7GB** | None (`--scale ...=0` skips both `-init` containers) |
+| Complete, with models | Same **~9.7GB** as above | ~13.7GB (Ollama: `gemma4:12b` 7.6GB + `qwen3-vl:8b` 6.1GB) + ~38GB (ComfyUI: 23GB diffusion model + 13.2GB text encoder + ~2GB vae/upscaler) ≈ **~52GB** |
+| Complete, with models — **total** | | **~62GB** (base images + models combined) |
+
+Base image sizes are per each image's own Docker Hub listing (
+`ollama/ollama`, `mmartial/comfyui-nvidia-docker` are third-party
+images, not controlled by this repo — check `docker images` after
+pulling for the exact figure on your machine, sizes there change as
+those projects publish new versions). Model downloads only happen once;
+`ollama pull` and this repo's `curl -C -` fetches are both idempotent,
+so re-running `docker compose up` after the first time doesn't
+re-download anything. Nothing after the first run needs any manual
+model hunting for the default workflow; `setup_installer.py` /
+Settings' dependency-check popup still covers fetching a DIFFERENT
+workflow's models if you switch away from the default.
 
 **Why not bundled into Dream Pipeline's own image:** Ollama is MIT
 licensed (fine to redistribute), but ComfyUI is GPL-3.0 and each
