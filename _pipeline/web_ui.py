@@ -5292,7 +5292,8 @@ function buildFsOverlayHtml() {
   const fsReviewActionsHtml = (state.fsFeedbackReview && !state.fsFeedbackReview.generating) ? `
     <div class="row" style="gap:0.3rem">
       <button data-action="fs-review-retry" type="button">Try again</button>
-      <button data-action="fs-review-accept" type="button" class="btn-primary" ${state.fsFeedbackReview.content ? '' : 'disabled'}>Accept</button>
+      <button data-action="fs-review-accept" type="button" class="btn-primary" ${state.fsFeedbackReview.content ? '' : 'disabled'}
+              title="${state.fsFeedbackReview.content ? 'Write this revision and queue its render' : 'Nothing to accept yet -- this was advice, not a proposed change. Reply below (e.g. \'do that\') to actually request the revision, then Accept.'}">Accept</button>
     </div>` : '';
   const feedbackReviewBody = state.fsFeedbackReview ? `
       <div class="chat-log" id="fs-review-chat-log">${feedbackChatLogHtml(state.fsFeedbackReview, fsReviewActionsHtml)}</div>
@@ -5767,7 +5768,8 @@ function feedbackReviewModal(number, initialNote) {
       const actionsHtml = !review.generating ? `
         <div class="row" style="margin-top:0.4rem;gap:0.3rem">
           <button type="button" id="fr-modal-retry">Try again</button>
-          <button type="button" id="fr-modal-accept" class="btn-primary" ${review.content ? '' : 'disabled'}>Accept</button>
+          <button type="button" id="fr-modal-accept" class="btn-primary" ${review.content ? '' : 'disabled'}
+                  title="${review.content ? 'Write this revision and queue its render' : 'Nothing to accept yet -- this was advice, not a proposed change. Reply below (e.g. \'do that\') to actually request the revision, then Accept.'}">Accept</button>
         </div>` : '';
       overlay.innerHTML = `
         <div class="card mf-confirm-card">
