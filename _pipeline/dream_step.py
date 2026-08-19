@@ -3419,8 +3419,8 @@ def _validate_and_normalize_spec(number, spec, allow_custom_beats=False, positiv
         #
         # Gated on the rule actually being PRESENT in this project's own
         # active rules, not hardcoded as a universal requirement --
-        # checks golden_rules.md (where this rule happens to live today,
-        # shared pipeline-wide) AND this project's own CREATIVE.md (in
+        # checks this project's own golden_rules.md (where this rule
+        # happens to live today) AND its own CREATIVE.md (in
         # case a project's own style notes state it, or a future project
         # explicitly opts out by not mentioning it), so a project that
         # genuinely doesn't use this convention isn't force-validated
@@ -5295,10 +5295,11 @@ REQUIRED_NEW_PROJECT_FIELDS = [
 # 2026-08-12: CREATIVE.md was cut down to project-FACTS only (genre,
 # visual style) -- every rule/process/worked-example section that used to
 # live here (content modes, complexity budget, voice/role pool, dedup
-# approach, worked examples, etc.) moved to the shared, pipeline-wide
-# golden_rules.md instead (see that file's own header for why: several of
-# those "channel-specific" rules turned out to be general render-quality
-# fixes, not actually per-project). A fresh project's CREATIVE.md now only
+# approach, worked examples, etc.) moved to golden_rules.md instead
+# (see that file's own header for why: several of those "channel-specific"
+# rules turned out to be general render-quality fixes, not actually
+# per-project -- golden_rules.md itself later became per-project too, see
+# _project_golden_rules_path()). A fresh project's CREATIVE.md now only
 # needs these two facts -- project_genre_and_styles() parses them back out
 # by the exact marker lines shown here.
 def read_creative_md():
@@ -5355,8 +5356,8 @@ def build_creative_draft_payload(project_name, concept):
             f"channel with {concept_clause}. This is a FIRST DRAFT a human will review "
             f"before it governs anything -- keep every field short and concrete, "
             f"{tailored_clause}. Do NOT write rules, process, worked examples, or a "
-            f"voice pool -- every mechanical/render-quality rule already applies "
-            f"pipeline-wide via a shared golden_rules.md, not something this draft "
+            f"voice pool -- every mechanical/render-quality rule belongs in this "
+            f"project's own golden_rules.md instead, not something this draft "
             f"needs to state or reinvent."
         ),
     }

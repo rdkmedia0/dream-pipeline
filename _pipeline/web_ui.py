@@ -8390,12 +8390,13 @@ function creativeFieldsBody(f, isOnboarding) {
   const intro = isOnboarding
     ? `<p class="muted">Optional: describe the channel's concept and let AI draft a first-pass
         genre/style, or just fill in the fields yourself below. Every mechanical/render-quality
-        rule is shared pipeline-wide already and applies automatically -- nothing to set here for
-        that. Skip for now if you'd rather come back to this later from the Creative tab.</p>`
+        rule lives in this project's own golden rules (see the Creative tab after setup) --
+        nothing to set here for that. Skip for now if you'd rather come back to this later from
+        the Creative tab.</p>`
     : `<p class="muted">This project's own creative facts -- genre, visual style(s), render
         duration/resolution, and the actual prompt template sent to the AI for each story. Every
-        mechanical/render-quality rule is shared pipeline-wide instead and doesn't need touching
-        here. Nothing changes until you click Save.</p>`;
+        mechanical/render-quality rule lives in this project's own golden rules below instead and
+        doesn't need touching here. Nothing changes until you click Save.</p>`;
   const styleDatalist = `<datalist id="cf-style-options">${(f.style_options || []).map(s => `<option value="${esc(s)}">`).join('')}</datalist>`;
   // Real <select> + explicit "Custom..." option instead of an <input
   // list=...> datalist -- a plain input's datalist suggestions have no
