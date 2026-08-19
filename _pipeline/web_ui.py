@@ -2611,11 +2611,22 @@ INDEX_HTML = r"""<!doctype html>
      .chat-msg bubble (which gets its own override below); align-items:
      flex-start (not center) since the chat log can be much taller than
      a single button row. */
+  /* A solid bordered panel, not the transparent-to-black GRADIENT this
+     used before -- the gradient made the chat log read as loose text
+     floating on the video with no visible boundary, while the reply
+     textarea (which has its own border) looked like a separate, unrelated
+     box below it -- confirmed via screenshot: a human circled the
+     textarea specifically as "chat window", not recognizing the message
+     bubble above it as part of the same interface. One shared background
+     + border here makes the log and the reply box read as ONE enclosed
+     window, the log naturally at the top of it and the input at the
+     bottom, rather than two disconnected floating pieces. */
   .player-fs-feedback {
-    display: none; position: absolute; left: 0; right: 0; bottom: 0;
+    display: none; position: absolute; left: 0.6rem; right: 0.6rem; bottom: 0.6rem;
     padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff;
     flex-direction: column; align-items: stretch;
-    background: linear-gradient(transparent, rgba(0,0,0,0.75));
+    background: rgba(20,20,20,0.92); border: 1px solid rgba(255,255,255,0.18);
+    border-radius: var(--radius);
   }
   .player-fs-feedback > .row { width: 100%; box-sizing: border-box; }
   .player-fs-feedback .muted { color: rgba(255,255,255,0.7); }
