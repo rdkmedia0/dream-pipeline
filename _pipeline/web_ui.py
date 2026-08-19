@@ -7899,29 +7899,14 @@ async function runManageSave(selected) {
   state.status = await api('GET', `/api/status?project=${encodeURIComponent(state.project)}`);
 }
 
-// Whether every row in a selection is already fully content-complete --
-// the primary button's whole decision: "Auto-generate missing content"
-// (some field somewhere is still blank) vs "Render video" (nothing left
-// to fill in). Mirrors specNeedsSave/kfNeedsSave's own "still blank"
-// rule per row, just evaluated across the whole selection at once.
-function manageSelectionIsComplete(selected) {
-  return selected.every(row => {
-    const tr = document.querySelector(`tr[data-number="${row.number}"]`);
-    if (!tr) return false;
-    const current = readManageRow(tr);
-    return !specNeedsSave(row, current) && !kfNeedsSave(row, current);
-  });
-}
-
 // Whether ANY row in the selection has a genuinely blank required field
-// -- as opposed to manageSelectionIsComplete's broader "needs saving at
-// all" check, which also trips on a row that's fully filled in but has
-// an unsaved manual edit. That distinction is exactly what the primary
-// button's label needs: an edited-but-complete selection still has to
-// go through Save before it can render (Render reads the saved spec off
-// disk, not the live form), but it must NOT say "Auto-generate missing
-// content" while doing it -- nothing is actually missing, and nothing
-// will actually be AI-composed.
+// -- the primary button's whole decision: "Auto-generate missing
+// content" (true here) vs "Render video" (false -- nothing left to
+// fill in, though there may still be an unsaved edit to a field that's
+// already filled in; runManageVideoGen saves that itself before
+// rendering). That distinction matters because an edited-but-complete
+// selection must NOT say "Auto-generate missing content" -- nothing is
+// actually missing, and nothing will actually be AI-composed.
 function manageSelectionHasMissingContent(selected) {
   return selected.some(row => {
     const tr = document.querySelector(`tr[data-number="${row.number}"]`);
@@ -7966,25 +7951,20 @@ function updateManagePrimaryButton() {
     const selected = manageSelectedRows();
     // Empty selection reads as "render" (the neutral/default label,
     // matches this button's pre-consolidation default) rather than
-    // "generate"/"save" -- selected.length===0 short-circuiting to
-    // either of those would be a misleading label for a state where
-    // clicking it just alerts "no rows selected" anyway.
+    // "generate" -- selected.length===0 short-circuiting to that would
+    // be a misleading label for a state where clicking it just alerts
+    // "no rows selected" anyway.
     //
-    // Three modes, not two: a selection can be (1) complete and saved
-    // -> render, (2) missing a genuinely blank field somewhere -> needs
-    // AI generation, or (3) fully filled in but with an unsaved manual
-    // edit -> needs a plain save, NOT generation (nothing's missing,
-    // nothing gets AI-composed). Collapsing (2) and (3) into one
-    // "generate" mode used to mislabel a manual edit as content needing
-    // to be auto-generated, right after the user had already filled it
-    // in themselves.
-    let mode;
-    if (selected.length === 0) mode = 'render';
-    else if (manageSelectionIsComplete(selected)) mode = 'render';
-    else if (manageSelectionHasMissingContent(selected)) mode = 'generate';
-    else mode = 'save';
+    // Only a genuinely MISSING field earns the "generate" label -- a
+    // row that's fully filled in but has an unsaved manual edit still
+    // reads as "render" here; runManageVideoGen saves any such dirty
+    // rows itself before it actually renders (nothing there needs AI
+    // generation, so there's nothing wrong with folding that save
+    // silently into the render click instead of making the human do it
+    // as a separate step first).
+    const mode = (selected.length > 0 && manageSelectionHasMissingContent(selected)) ? 'generate' : 'render';
     btn.dataset.mode = mode;
-    btn.textContent = mode === 'render' ? 'Render video' : mode === 'save' ? 'Save changes' : 'Auto-generate missing content';
+    btn.textContent = mode === 'render' ? 'Render video' : 'Auto-generate missing content';
   } catch (e) {
     // Never leave the button silently stuck on a stale label if this
     // throws for some row shape not anticipated here -- surface it in
@@ -7995,7 +7975,7 @@ function updateManagePrimaryButton() {
 }
 
 // The one button does triple duty: "Auto-generate missing content" or
-// "Render video" depending on manageSelectionIsComplete (see
+// "Render video" depending on manageSelectionHasMissingContent (see
 // updateManagePrimaryButton), or "Cancel" while a job it started is
 // active (pollManageJobs flips its text/data-active-job-ids while
 // active) -- dispatches to whichever action actually applies right now
@@ -8011,13 +7991,6 @@ async function handleManagePrimaryClick() {
       `Auto-generate missing content for #${numbers}? Fields you've already filled in are used ` +
       `exactly as-is and left untouched -- only fields still blank are composed by AI. Nothing ` +
       `renders yet; review the result after, then click Render video.`)) return;
-    await runManageSave(selected);
-  } else if (btn.dataset.mode === 'save') {
-    const numbers = fmtRanges(selected.map(r => r.number));
-    if (!await confirmModal(
-      `Save your edits for #${numbers}? Nothing is missing here, so nothing gets AI-generated -- ` +
-      `this just writes what's currently in the form to disk. Nothing renders yet; click Render ` +
-      `video after.`)) return;
     await runManageSave(selected);
   } else {
     await runManageVideoGen(selected);
@@ -8038,20 +8011,51 @@ async function cancelVideoGenJobs() {
 
 async function runManageVideoGen(selected) {
   const numbers = selected.map(r => r.number);
+  // Render reads the spec/keyframes actually saved on disk, not the
+  // live form -- so a row that's fully filled in but has an unsaved
+  // manual edit needs that edit written to disk before rendering can
+  // possibly pick it up. Rather than making the human do that as its
+  // own separate click (this button already only reaches this branch
+  // once manageSelectionHasMissingContent is false, so nothing here
+  // needs AI generation -- any save triggered below is a plain,
+  // verbatim write of what's already in the form), fold it silently
+  // into this same click. saveManageRowContent no-ops per row when
+  // that row doesn't actually need it, so this is a harmless no-op
+  // for rows with nothing to save.
+  const dirtyNumbers = selected.filter(r => {
+    const tr = document.querySelector(`tr[data-number="${r.number}"]`);
+    return tr && rowHasUnsavedChanges(r, tr);
+  }).map(r => r.number);
   // Always confirms what's about to happen, not just the destructive
   // (re-render) case -- explicit requirement: "On click a prompt for
   // what will be done and accept / cancel," for every render, not only
   // ones that overwrite something.
   const alreadyRendered = selected.filter(r => r.rendered).map(r => r.number);
+  const saveNote = dirtyNumbers.length
+    ? ` (unsaved edits to #${fmtRanges(dirtyNumbers)} are saved first)`
+    : '';
   const message = alreadyRendered.length
-    ? `Render video for #${fmtRanges(numbers)}? #${fmtRanges(alreadyRendered)} already ` +
+    ? `Render video for #${fmtRanges(numbers)}${saveNote}? #${fmtRanges(alreadyRendered)} already ` +
       `${alreadyRendered.length === 1 ? 'has' : 'have'} a video and will be RE-RENDERED, ` +
       `overwriting the current one; any others render for the first time. Continue?`
-    : `Render video for #${fmtRanges(numbers)}? This starts real GPU rendering. Continue?`;
+    : `Render video for #${fmtRanges(numbers)}${saveNote}? This starts real GPU rendering. Continue?`;
   if (!await confirmModal(message)) return;
   const btn = document.getElementById('manage-run-video-btn');
   btn.disabled = true;
   const originalLabel = btn.textContent;
+  if (dirtyNumbers.length) {
+    btn.textContent = 'Saving...';
+    for (const number of dirtyNumbers) {
+      const row = selected.find(r => r.number === number);
+      const tr = document.querySelector(`tr[data-number="${number}"]`);
+      try { await saveManageRowContent(row, tr, false); } catch (e) {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+        alert(`Saving #${number} failed, render was not started: ${e.message}`);
+        return;
+      }
+    }
+  }
   btn.textContent = 'Starting...';
   document.getElementById('manage-results').innerHTML =
     `<div class="card"><span class="mf-spinner"></span><span class="badge">working</span> starting render(s)...</div>`;
