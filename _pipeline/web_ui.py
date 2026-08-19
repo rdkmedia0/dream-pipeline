@@ -723,11 +723,12 @@ def h_creative_draft_generate(qs, body):
 
 def h_golden_rules_get(qs, body):
     """Per-project golden_rules.md, parsed into its fixed form sections
-    -- see GOLDEN_RULES_SECTION_DEFS in dream_step.py."""
+    -- see golden_rules_section_defs() in dream_step.py (structure lives
+    in golden_rules_sections.json, not hardcoded in Python)."""
     _project_from_qs(qs)
     return {
         "sections": ds.golden_rules_sections(),
-        "section_defs": [{"key": k, "label": l, "hint": h} for k, l, h in ds.GOLDEN_RULES_SECTION_DEFS],
+        "section_defs": [{"key": k, "label": l, "hint": h} for k, l, h in ds.golden_rules_section_defs()],
         "word_limit": ds.GOLDEN_RULES_WORD_LIMIT,
     }
 

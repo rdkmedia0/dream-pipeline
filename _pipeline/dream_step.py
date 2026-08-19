@@ -958,7 +958,7 @@ def recent_titles_for_dedup(limit=15):
 
 
 def format_rules():
-    """This project's golden_rules.md (see GOLDEN_RULES_SECTION_DEFS /
+    """This project's golden_rules.md (see golden_rules_section_defs /
     golden_rules_sections) if it's been AI-drafted or hand-edited for it
     yet, else FORMAT_RULES_PATH's pipeline-wide baseline template as a
     fallback for a project that hasn't customized its own rules -- so
@@ -1414,37 +1414,25 @@ GOLDEN_RULES_WORD_LIMIT = 1000
 # mechanical/render/style RULE, never a restatement of a creative FACT
 # (species, world, characters) that already lives in CREATIVE.md --
 # that overlap is exactly what the user asked to eliminate.
-GOLDEN_RULES_SECTION_DEFS = [
-    ("premise_and_humor", "Premise & humor",
-     "The SHAPE of what makes a scene work here (a real complication must "
-     "happen on-screen, vary the kind of complication/closing beat) -- not "
-     "what the premise is ABOUT, that's a creative fact, not a rule."),
-    ("variety_exclusions", "Variety & exclusions",
-     "Rules against repeating species/roles/tropes/closing lines across "
-     "scripts, and any specific banned cliches."),
-    ("tone", "Tone",
-     "Emotional/content boundaries -- what's in bounds and out of bounds "
-     "(e.g. no real peril, no dark humor)."),
-    ("dialogue_style", "Dialogue & voice style",
-     "How lines should sound and deliver -- character energy, banned "
-     "generic-narration patterns, voice tagging."),
-    ("structure", "Structure",
-     "Camera/scene continuity rules (cuts, location changes, shot count)."),
-    ("continuous_action", "Continuous action",
-     "How physical motion must be depicted across beats (not just "
-     "before/after snapshots) and kept in sync with dialogue timing."),
-    ("anatomy", "Anatomy accuracy",
-     "Rules keeping each animal's real anatomy correct through every pose."),
-    ("audio_speech", "Audio & speech",
-     "Caps/punctuation limits, pacing math, mouth-movement/voiceover "
-     "sync rules."),
-    ("timestamps", "Timestamps & beat count",
-     "Required beat count and timing rules."),
-    ("fml2v_prompts", "fml2v prompt structure",
-     "Rules for how first/middle/last delta prompts must be written."),
-    ("negative_prompt_baseline", "Negative-prompt baseline",
-     "A single comma-separated list of default negative-prompt terms."),
-]
+GOLDEN_RULES_SECTIONS_PATH = PIPELINE_DIR / "golden_rules_sections.json"
+_golden_rules_section_defs_cache = None
+
+
+def golden_rules_section_defs():
+    """The fixed section structure (key, label, hint) the golden-rules
+    form/AI-draft/discuss flow all share -- loaded from
+    GOLDEN_RULES_SECTIONS_PATH (a real file, edit it directly to
+    add/rename/retire a section pipeline-wide) rather than hardcoded here,
+    so the template structure itself is data, not code, same as
+    golden_rules.md's own baseline content already is. Cached after the
+    first read -- this file only changes via a human editing it on disk,
+    never at runtime, so re-reading it on every call would just be
+    wasted I/O for no benefit. Returns [(key, label, hint), ...]."""
+    global _golden_rules_section_defs_cache
+    if _golden_rules_section_defs_cache is None:
+        raw = json.loads(GOLDEN_RULES_SECTIONS_PATH.read_text(encoding="utf-8"))
+        _golden_rules_section_defs_cache = [(d["key"], d["label"], d["hint"]) for d in raw]
+    return _golden_rules_section_defs_cache
 
 
 def _project_golden_rules_path():
@@ -1455,7 +1443,7 @@ def _assemble_golden_rules_text(sections):
     """sections: {key: body}. Renders the fixed header order into one
     markdown file -- the inverse of _parse_golden_rules_sections."""
     parts = ["# Golden Rules\n"]
-    for key, label, _hint in GOLDEN_RULES_SECTION_DEFS:
+    for key, label, _hint in golden_rules_section_defs():
         body = (sections.get(key) or "").strip()
         if body:
             parts.append(f"## {label}\n\n{body}\n")
@@ -1465,10 +1453,10 @@ def _assemble_golden_rules_text(sections):
 def _parse_golden_rules_sections(text):
     """Best-effort split of a golden_rules.md file back into
     {key: body} by matching '## <label>' headers against
-    GOLDEN_RULES_SECTION_DEFS -- the inverse of _assemble_golden_rules_text.
+    golden_rules_section_defs() -- the inverse of _assemble_golden_rules_text.
     Unrecognized/legacy content (e.g. a pre-migration file) is dropped
     rather than crashing; the form just starts from an empty section."""
-    label_to_key = {label: key for key, label, _hint in GOLDEN_RULES_SECTION_DEFS}
+    label_to_key = {label: key for key, label, _hint in golden_rules_section_defs()}
     sections = {}
     current_key = None
     buf = []
@@ -1492,9 +1480,9 @@ def golden_rules_sections():
     filled the first time."""
     path = _project_golden_rules_path()
     if not path.exists():
-        return {key: "" for key, _label, _hint in GOLDEN_RULES_SECTION_DEFS}
+        return {key: "" for key, _label, _hint in golden_rules_section_defs()}
     parsed = _parse_golden_rules_sections(path.read_text(encoding="utf-8"))
-    return {key: parsed.get(key, "") for key, _label, _hint in GOLDEN_RULES_SECTION_DEFS}
+    return {key: parsed.get(key, "") for key, _label, _hint in golden_rules_section_defs()}
 
 
 def save_golden_rules_sections(sections):
@@ -1524,7 +1512,7 @@ def generate_golden_rules_draft():
     baseline = FORMAT_RULES_PATH.read_text(encoding="utf-8") if FORMAT_RULES_PATH.exists() else ""
     creative = creative_guidance_pointer() or ""
     section_hints = "\n".join(f"- {label} ({key}): {hint}"
-                               for key, label, hint in GOLDEN_RULES_SECTION_DEFS)
+                               for key, label, hint in golden_rules_section_defs())
     prompt = (
         "Draft golden_rules.md for one project in a video pipeline -- a rules file loaded "
         "into every single AI generation call for THIS project. It must contain STRICT "
@@ -1544,7 +1532,7 @@ def generate_golden_rules_draft():
         "doesn't apply)."
     )
     parsed, _history = _creative_completion(prompt)
-    return {key: (parsed.get(key) or "").strip() for key, _label, _hint in GOLDEN_RULES_SECTION_DEFS}
+    return {key: (parsed.get(key) or "").strip() for key, _label, _hint in golden_rules_section_defs()}
 
 
 def discuss_golden_rules(sections, message, history):
@@ -1574,8 +1562,8 @@ def discuss_golden_rules(sections, message, history):
 
     creative = creative_guidance_pointer() or ""
     section_hints = "\n".join(f"- {label} ({key}): {hint}"
-                               for key, label, hint in GOLDEN_RULES_SECTION_DEFS)
-    valid_keys = {key for key, _label, _hint in GOLDEN_RULES_SECTION_DEFS}
+                               for key, label, hint in golden_rules_section_defs())
+    valid_keys = {key for key, _label, _hint in golden_rules_section_defs()}
     history_text = "\n".join(
         f"{'Human' if h.get('role') == 'user' else 'Assistant'}: {h.get('content', '')}"
         for h in (history or [])) or "(nothing yet -- this is the first message)"
@@ -2824,7 +2812,7 @@ def _chat_save_golden_rules(sections=None, **_ignored):
     reversible by editing again, no confirmation required."""
     current = golden_rules_sections()
     current.update({k: v for k, v in (sections or {}).items()
-                     if k in {key for key, _l, _h in GOLDEN_RULES_SECTION_DEFS}})
+                     if k in {key for key, _l, _h in golden_rules_section_defs()}})
     save_golden_rules_sections(current)
     return "Saved. " + json.dumps(current)
 

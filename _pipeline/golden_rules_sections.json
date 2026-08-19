@@ -1,0 +1,57 @@
+[
+  {
+    "key": "premise_and_humor",
+    "label": "Premise & humor",
+    "hint": "The SHAPE of what makes a scene work here (a real complication must happen on-screen, vary the kind of complication/closing beat) -- not what the premise is ABOUT, that's a creative fact, not a rule."
+  },
+  {
+    "key": "variety_exclusions",
+    "label": "Variety & exclusions",
+    "hint": "Rules against repeating species/roles/tropes/closing lines across scripts, and any specific banned cliches."
+  },
+  {
+    "key": "tone",
+    "label": "Tone",
+    "hint": "Emotional/content boundaries -- what's in bounds and out of bounds (e.g. no real peril, no dark humor)."
+  },
+  {
+    "key": "dialogue_style",
+    "label": "Dialogue & voice style",
+    "hint": "How lines should sound and deliver -- character energy, banned generic-narration patterns, voice tagging."
+  },
+  {
+    "key": "structure",
+    "label": "Structure",
+    "hint": "Camera/scene continuity rules (cuts, location changes, shot count)."
+  },
+  {
+    "key": "continuous_action",
+    "label": "Continuous action",
+    "hint": "How physical motion must be depicted across beats (not just before/after snapshots) and kept in sync with dialogue timing."
+  },
+  {
+    "key": "anatomy",
+    "label": "Anatomy accuracy",
+    "hint": "Rules keeping each animal's real anatomy correct through every pose."
+  },
+  {
+    "key": "audio_speech",
+    "label": "Audio & speech",
+    "hint": "Caps/punctuation limits, pacing math, mouth-movement/voiceover sync rules."
+  },
+  {
+    "key": "timestamps",
+    "label": "Timestamps & beat count",
+    "hint": "Required beat count and timing rules."
+  },
+  {
+    "key": "fml2v_prompts",
+    "label": "fml2v prompt structure",
+    "hint": "Rules for how first/middle/last delta prompts must be written."
+  },
+  {
+    "key": "negative_prompt_baseline",
+    "label": "Negative-prompt baseline",
+    "hint": "A single comma-separated list of default negative-prompt terms."
+  }
+]
