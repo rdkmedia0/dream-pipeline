@@ -7672,6 +7672,18 @@ function kfNeedsSave(row, current) {
   return false;
 }
 
+// One-level undo, keyed by row number -- captures the row's state
+// immediately before a save actually overwrites it. Deliberately lives
+// INSIDE saveManageRowContent, the one function every save path in this
+// tool funnels through -- the Auto-generate button's loop, and (per
+// explicit requirement) any future path too, so the exact same
+// mechanism covers a human typing content directly, clearing one field
+// (the × button) then auto-generating just that field, or applying
+// AI-chat-proposed content then saving -- there's no separate "chat
+// save" or "clear-field save" code path to individually wire up, they
+// all end up here. See reloadManageRow for how this gets used.
+if (state.manageRowSnapshots === undefined) state.manageRowSnapshots = {};
+
 // "Auto-generate missing content" mode of the primary button -- writes
 // exactly what's currently in the form to spec_{number}.json, verbatim,
 // EXCEPT any still-blank required field, which the server auto-composes
@@ -7686,6 +7698,11 @@ function kfNeedsSave(row, current) {
 async function saveManageRowContent(row, tr, verbose) {
   const results = [];
   const current = readManageRow(tr);
+  if (specNeedsSave(row, current) || kfNeedsSave(row, current)) {
+    // Snapshot BEFORE any write happens, whatever this row actually
+    // was a moment ago -- one level of undo, refreshed on every save.
+    state.manageRowSnapshots[row.number] = row;
+  }
   if (specNeedsSave(row, current)) {
     try {
       const r = await api('POST', '/api/manage/spec', {
@@ -7721,28 +7738,46 @@ function rowHasUnsavedChanges(row, tr) {
   return specFieldsDirty(row, current) || kfFieldsDirty(row, current);
 }
 
-// "Revert row" -- reloads ONE row from what's actually saved on disk
-// right now, discarding any in-progress edits (typed OR just
-// auto-generated-but-not-reviewed-as-wanted) to that row specifically.
-// Every OTHER row's own in-progress edits are completely untouched --
-// this replaces only that one <tr>'s DOM node, not the whole table, and
-// only patches state.manageRows at that row's own index. The natural
-// answer to "I changed a lot of rows and only want to back one of them
-// out": since Auto-generate missing content already always writes
-// straight to disk (no separate unsaved-draft state to discard), this
-// is really "reload what's on disk," same idea as a hard refresh but
-// scoped to one row instead of losing every other row's progress too.
+// "Revert row" -- picks the right action for whatever state this row
+// is ACTUALLY in, so it works the same way no matter which path got
+// content into the form: typed directly, chat-proposed then applied,
+// a field cleared then auto-generated, or generated wholesale --
+// there's exactly one thing worth reverting at any given moment, this
+// just figures out which:
+//   - unsaved edits sitting in the form (dirty vs disk) -> discard
+//     them, reload from disk (nothing on disk has changed).
+//   - form matches disk, but a save happened earlier in this session
+//     (see saveManageRowContent's snapshot) -> undo THAT save, writing
+//     the previous content back to disk.
+//   - neither -> nothing to revert.
+// Every OTHER row's own in-progress edits are completely untouched
+// either way -- this only ever replaces this one <tr>'s DOM node.
 async function reloadManageRow(number) {
   const tr = document.querySelector(`tr[data-number="${number}"]`);
   if (!tr) return;
   const row = state.manageRows.find(r => r.number === number);
   const dirty = row && rowHasUnsavedChanges(row, tr);
-  const message = dirty
-    ? `Revert #${number} to what's actually saved on disk right now? Unsaved edits to THIS row ` +
-      `are discarded -- other rows are not affected.`
-    : `Reload #${number} from disk? (No unsaved edits detected on this row -- this just confirms ` +
-      `the table matches what's actually saved.)`;
-  if (!await confirmModal(message)) return;
+  const snapshot = state.manageRowSnapshots && state.manageRowSnapshots[number];
+
+  if (dirty) {
+    if (!await confirmModal(
+      `Revert #${number} to what's actually saved on disk right now? Unsaved edits to THIS row ` +
+      `are discarded -- other rows are not affected.`)) return;
+    await reloadManageRowFromDisk(number, tr);
+    return;
+  }
+  if (snapshot) {
+    if (!await confirmModal(
+      `Undo the last save for #${number} and restore what it had before that? This writes the ` +
+      `PREVIOUS content back to disk -- other rows are not affected.`)) return;
+    await restoreManageRowSnapshot(number, snapshot, tr);
+    return;
+  }
+  alert(`Nothing to revert for #${number} -- the form already matches what's saved on disk, and ` +
+        `no earlier version has been recorded yet this session.`);
+}
+
+async function reloadManageRowFromDisk(number, tr) {
   try {
     const data = await api('GET', `/api/manage-rows?project=${encodeURIComponent(state.project)}&numbers=${number}`);
     const freshRow = data.rows[0];
@@ -7751,6 +7786,30 @@ async function reloadManageRow(number) {
     tr.outerHTML = manageRowHtml(freshRow);
     updateManagePrimaryButton();
   } catch (e) { alert(e.message); }
+}
+
+// Writes a snapshot's content back to disk via the SAME endpoints every
+// other save uses (verbatim -- a snapshot is always a fully-formed
+// prior row, so there's nothing left blank for the server to AI-fill),
+// then reloads from disk and clears the snapshot -- one level of undo,
+// not a full history; restoring again later needs a NEW save to have
+// happened first.
+async function restoreManageRowSnapshot(number, snapshot, tr) {
+  try {
+    const type = workflowToType(snapshot.workflow);
+    const fields = { title: snapshot.title, premise: snapshot.premise, positive_prompt: snapshot.positive_prompt,
+                      negative_prompt: snapshot.negative_prompt, description: snapshot.description, tags: snapshot.tags };
+    await api('POST', '/api/manage/spec', { project: state.project, number, type, fields, note: '', verbose: false });
+    if (type === 'i2v') {
+      await api('POST', '/api/manage/keyframes', {
+        project: state.project, number, type, fields: { i2v_generate_image_prompt: snapshot.i2v_prompt }, verbose: false });
+    } else if (type === 'fml') {
+      await api('POST', '/api/manage/keyframes', {
+        project: state.project, number, type, fields: snapshot.fml_prompts, verbose: false });
+    }
+  } catch (e) { alert(e.message); return; }
+  delete state.manageRowSnapshots[number];
+  await reloadManageRowFromDisk(number, tr);
 }
 
 async function runManageSave(selected) {
