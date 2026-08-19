@@ -8031,6 +8031,70 @@ async function submitNewProject() {
 // after Save differs (move into the project vs. stay and refresh).
 // project name is read from state, never string-embedded into an onclick
 // (the video-folder apostrophe bug earlier taught that lesson the hard way).
+// Shared responsive-Save-button feedback -- every form's Save button
+// (Creative fields, golden rules, more later) routes its actual save
+// call through this instead of a silent success/alert()-only failure:
+// disables mid-flight ("Saving..."), then flashes .btn-success (green,
+// "Saved") or .btn-danger (red, "Save failed", hover for the real
+// error) for a couple seconds before reverting to normal -- the button
+// itself is the status signal, consistent with the golden-rules Accept
+// button's own state-flip pattern.
+async function withSaveButtonFeedback(btn, fn) {
+  if (!btn) { await fn(); return; }
+  const originalLabel = btn.textContent;
+  const baseClass = btn.className.replace(/\bbtn-(primary|success|danger)\b/g, '').trim();
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  btn.title = '';
+  let error = null;
+  try {
+    await fn();
+  } catch (e) {
+    error = e;
+  }
+  btn.className = `${baseClass} ${error ? 'btn-danger' : 'btn-success'}`.trim();
+  btn.textContent = error ? 'Save failed' : 'Saved ✓';
+  if (error) btn.title = error.message;
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.className = `${baseClass} btn-primary`.trim();
+    btn.textContent = originalLabel;
+    btn.title = '';
+  }, 2000);
+  if (error) throw error;
+}
+
+// OK/NOK completeness pill for the Creative fields form -- confirms at
+// a glance whether the fields actually needed for generation (genre,
+// visual style, duration, resolution -- concept directive/template are
+// optional, blank is a valid deliberate choice for those) are filled,
+// without having to scroll through and check each one. Recomputed live
+// via oninput on those fields, not just at page load.
+function creativeFieldsStatusHtml(fields) {
+  const missing = [];
+  if (!(fields.genre || '').trim()) missing.push('Genre');
+  if (!(fields.style1 || '').trim()) missing.push('Visual style');
+  if (!fields.duration_s) missing.push('Duration');
+  if (!fields.resolution) missing.push('Resolution');
+  return missing.length
+    ? `<span class="badge badge-danger" title="Still needed: ${esc(missing.join(', '))}">NOK -- ${missing.length} missing</span>`
+    : `<span class="badge badge-ok">OK -- ready to save</span>`;
+}
+
+// Recomputes from the DOM's CURRENT (possibly unsaved) values -- called
+// on every relevant field's input/change, not just at page load, so
+// the pill tracks what's actually in the form right now.
+function updateCreativeFieldsStatus() {
+  const el = document.getElementById('cf-status-pill');
+  if (!el) return;
+  el.innerHTML = creativeFieldsStatusHtml({
+    genre: document.getElementById('cf-genre')?.value,
+    style1: document.getElementById('cf-style1')?.value,
+    duration_s: creativeFieldValue('cf-duration'),
+    resolution: creativeFieldValue('cf-resolution'),
+  });
+}
+
 function creativeFieldsBody(f, isOnboarding) {
   const intro = isOnboarding
     ? `<p class="muted">Optional: describe the channel's concept and let AI draft a first-pass
@@ -8070,12 +8134,12 @@ function creativeFieldsBody(f, isOnboarding) {
       from the concept above -- it doesn't touch Duration/Resolution/Concept directive/Prompt
       template.</p>
     <hr style="margin:1em 0;border-color:var(--border-soft)">
-    <label>Genre <input id="cf-genre" list="cf-genre-options" value="${esc(f.genre || '')}"></label>
+    <label>Genre <input id="cf-genre" list="cf-genre-options" value="${esc(f.genre || '')}" oninput="updateCreativeFieldsStatus()"></label>
     <datalist id="cf-genre-options">${(f.genre_options || []).map(g => `<option value="${esc(g)}">`).join('')}</datalist>
-    <label>Visual style <input id="cf-style1" list="cf-style-options" value="${esc(f.style1 || '')}"></label>
+    <label>Visual style <input id="cf-style1" list="cf-style-options" value="${esc(f.style1 || '')}" oninput="updateCreativeFieldsStatus()"></label>
     <label>Visual style (optional 2nd option) <input id="cf-style2" list="cf-style-options" value="${esc(f.style2 || '')}"></label>
     ${styleDatalist}
-    <div class="row">
+    <div class="row" onchange="updateCreativeFieldsStatus()" oninput="updateCreativeFieldsStatus()">
       <div style="flex:1">${selectField('cf-duration', 'Duration', f.duration_options || [], f.duration_s, formatDurationLabel)}</div>
       <div style="flex:1">${selectField('cf-resolution', 'Resolution (WxH)', f.resolution_options || [], f.resolution, null)}</div>
     </div>
@@ -8092,8 +8156,9 @@ function creativeFieldsBody(f, isOnboarding) {
     <label>Prompt template <span class="mf-help" title="The actual prompt sent to the AI for each story. Tweak freely -- just keep the placeholders (genre/title/duration/style/direction/rules/exclusions/negative_baseline) intact, they're filled in automatically each call.">?</span>
       <textarea id="cf-template" rows="16" style="font-family:monospace;font-size:0.85em">${esc(f.template || '')}</textarea>
     </label>
-    <div class="row">
-      <button class="btn-primary" onclick="saveCreativeFields()">Save</button>
+    <div class="row" style="align-items:center">
+      <button class="btn-primary" onclick="saveCreativeFields(event)">Save</button>
+      <span id="cf-status-pill">${creativeFieldsStatusHtml(f)}</span>
     </div>`;
 }
 
@@ -8842,10 +8907,10 @@ function goldenRulesEditorHtml(gr) {
     ${hasAnyContent ? `<p><button type="button" onclick="generateGoldenRules()">Re-generate with AI</button></p>` : ''}
     <div id="gr-fields">${fieldsHtml}</div>
     <div class="row" style="margin-top:0.3rem;align-items:center;gap:0.6rem">
-      <span class="muted" id="gr-word-count"></span>
+      <span id="gr-word-count"></span>
       <span style="flex:1"></span>
       <button type="button" onclick="reviewGoldenRules()">Review with AI</button>
-      <button type="button" class="btn-primary" onclick="saveGoldenRules()">Save</button>
+      <button type="button" class="btn-primary" onclick="saveGoldenRules(event)">Save</button>
     </div>
     <div id="gr-review-result"></div>`;
 }
@@ -8861,12 +8926,17 @@ function collectGoldenRulesSections() {
 function updateGoldenRulesWordCount() {
   const el = document.getElementById('gr-word-count');
   if (!el) return;
-  const words = Object.values(collectGoldenRulesSections())
+  const sections = collectGoldenRulesSections();
+  const filled = Object.values(sections).filter(v => v.trim()).length;
+  const total = Object.keys(sections).length;
+  const words = Object.values(sections)
     .map(v => v.trim()).filter(Boolean)
     .reduce((sum, v) => sum + v.split(/\s+/).length, 0);
   const limit = window.__grWordLimit || 1000;
-  el.textContent = `${words} / ${limit} words`;
-  el.style.color = words > limit ? 'var(--danger)' : '';
+  const overLimit = words > limit;
+  el.innerHTML = overLimit
+    ? `<span class="badge badge-danger" title="Over the ${limit}-word ceiling -- trim before saving">NOK -- ${words} / ${limit} words</span>`
+    : `<span class="badge badge-ok">OK -- ${filled}/${total} sections, ${words} / ${limit} words</span>`;
 }
 
 async function generateGoldenRules() {
@@ -8893,15 +8963,12 @@ async function generateGoldenRules() {
   }
 }
 
-async function saveGoldenRules() {
+async function saveGoldenRules(ev) {
   const project = state.pendingNewProject || state.project;
   try {
-    await api('POST', '/api/golden-rules', { project, sections: collectGoldenRulesSections() });
-    const resultEl = document.getElementById('gr-review-result');
-    if (resultEl) resultEl.innerHTML = '<p class="muted">Saved.</p>';
-  } catch (e) {
-    alert(`ERROR: ${e.message}`);
-  }
+    await withSaveButtonFeedback(ev?.target, () =>
+      api('POST', '/api/golden-rules', { project, sections: collectGoldenRulesSections() }));
+  } catch (e) { /* button itself already shows the failure */ }
 }
 
 // "Review with AI" opens a propose/discuss/accept conversation, same
@@ -9134,7 +9201,7 @@ async function generateCreativeDraft() {
   }
 }
 
-async function saveCreativeFields() {
+async function saveCreativeFields(ev) {
   const project = state.pendingNewProject || state.project;
   const body = {
     project,
@@ -9147,13 +9214,21 @@ async function saveCreativeFields() {
     template: document.getElementById('cf-template').value,
   };
   try {
-    await api('POST', '/api/creative-fields', body);
-    if (state.pendingNewProject) {
-      selectProject(state.pendingNewProject);
-    } else {
-      await loadCreativeEditor();
-    }
-  } catch (e) { alert(e.message); }
+    // The button flip happens FIRST, while it's still attached to the
+    // DOM -- loadCreativeEditor/selectProject below tear down and
+    // rebuild this whole section (including a fresh Save button), so
+    // if the reload ran inside withSaveButtonFeedback's own callback
+    // the green flash would apply to an already-detached node and
+    // never actually be visible. A short pause after lets the human
+    // see it before the rebuild replaces it.
+    await withSaveButtonFeedback(ev?.target, () => api('POST', '/api/creative-fields', body));
+  } catch (e) { alert(e.message); return; }
+  await new Promise(r => setTimeout(r, 500));
+  if (state.pendingNewProject) {
+    await selectProject(state.pendingNewProject);
+  } else {
+    await loadCreativeEditor();
+  }
 }
 
 // ---------------------------------------------------------------------
