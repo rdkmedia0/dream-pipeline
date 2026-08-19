@@ -2645,9 +2645,26 @@ TABLE MECHANICS (field-locking -- the most important rule to explain if asked):
   Always asks for confirmation first.
 - Uploading to YouTube is its own separate tab, never bundled into the above.
 
-YOUR OWN LIMITS: you have no ability to write files, run code, or save anything directly --
-you only ever produce chat text and a list of field proposals. A human reviews any proposals
-and clicks Apply, then still has to click Run updates for anything to actually be saved."""
+YOUR OWN TOOLS -- use a REAL tool call for these, never just describe the action in prose or
+put it in "proposals" (proposals are ONLY for spec field content, per-number, applied to the
+loaded table -- e.g. title/positive_prompt/etc, never "delete" or any other action):
+- get_spec_content(number): read one row's actual saved spec content.
+- get_creative_fields() / save_creative_fields(...): read/save this project's Creative-tab
+  fields (genre, style, duration, resolution, concept directive, template). Saves take effect
+  immediately, no human approval step -- reversible by editing again.
+- get_golden_rules() / save_golden_rules(sections): read/save this project's golden_rules.md
+  (mechanical/render/style rules only -- never restate a creative fact here, that belongs in
+  Creative fields instead). Saves take effect immediately, reversible by editing again.
+- list_videos(): every video in this project with its number/folder/stage.
+- propose_delete_video(number) / propose_render_video(number): for a DESTRUCTIVE or EXPENSIVE
+  request (delete a video, start a render/rework), you MUST call the matching propose_ tool --
+  it does NOT execute anything, it only registers the action for the human to explicitly
+  confirm in the chat UI (a Confirm/Cancel button appears there automatically). After calling
+  it, tell the human clearly what you're proposing and that they need to click Confirm --
+  NEVER say the action is done, queued, or "initiated" -- it has not happened until they click
+  Confirm themselves.
+If asked to do something none of these tools cover (e.g. YouTube upload), say so plainly and
+point to the relevant tab instead of inventing a proposal for it."""
 
 
 def build_chat_payload(project_name, message, history, numbers):
@@ -2692,7 +2709,14 @@ def build_chat_payload(project_name, message, history, numbers):
             "specific number, only do so if that number is in "
             "numbers_currently_loaded_in_table -- otherwise tell them to load it into the "
             "table first (Number(s) field, Load button), don't invent content for a row "
-            "that doesn't exist in their view."
+            "that doesn't exist in their view. For anything covered by tool_briefing's "
+            "'YOUR OWN TOOLS' list (reading/saving Creative fields or golden rules, listing "
+            "videos, proposing a delete or render), you MUST make the matching real tool "
+            "call -- never just say in your reply that you did/will do it, that's a lie the "
+            "human can't act on. A delete or render specifically only ever happens through "
+            "propose_delete_video/propose_render_video, which registers it for the human's "
+            "own explicit Confirm click -- never claim it's done, started, initiated, or "
+            "queued in your reply text; say what you proposed and that they need to confirm."
         ),
     }
 
@@ -2730,24 +2754,145 @@ _CHAT_GET_SPEC_TOOL = {"type": "function", "function": {
 }}
 
 
-def chat_with_agent(project_name, message, history, numbers, model, model_name=None):
+def _chat_get_creative_fields(**_ignored):
+    """Read-only chat tool: this project's Creative-tab fields (genre,
+    style, duration, resolution, concept directive, template)."""
+    return json.dumps(creative_fields())
+
+
+_CHAT_GET_CREATIVE_FIELDS_TOOL = {"type": "function", "function": {
+    "name": "get_creative_fields",
+    "description": "Fetch this project's current Creative-tab fields (genre, style1, style2, "
+                    "duration_s, resolution, concept_directive, template).",
+    "parameters": {"type": "object", "properties": {}},
+}}
+
+
+def _chat_save_creative_fields(genre=None, style1=None, style2=None, duration_s=None,
+                                resolution=None, concept_directive=None, template=None, **_ignored):
+    """Write chat tool: directly saves Creative-tab fields, same call as
+    the GUI's own Save button (h_creative_fields_save) -- reversible by
+    editing again, no confirmation required (see chat_with_agent's own
+    non-destructive/destructive split). save_creative_fields always
+    fully recomposes CREATIVE.md from every param, so any field the
+    caller omitted here is filled in from the CURRENT saved value first
+    -- otherwise an omitted field would get blanked out instead of left
+    alone, unlike every other tool here."""
+    current = creative_fields()
+    save_creative_fields(
+        PROJECT_DIR.name,
+        genre if genre is not None else current.get("genre", ""),
+        style1 if style1 is not None else current.get("style1", ""),
+        style2 if style2 is not None else current.get("style2", ""),
+        duration_s if duration_s is not None else current.get("duration_s"),
+        resolution if resolution is not None else current.get("resolution"),
+        concept_directive if concept_directive is not None else current.get("concept_directive", ""),
+        template if template is not None else current.get("template", ""))
+    return "Saved. " + json.dumps(creative_fields())
+
+
+_CHAT_SAVE_CREATIVE_FIELDS_TOOL = {"type": "function", "function": {
+    "name": "save_creative_fields",
+    "description": "Save this project's Creative-tab fields. Only pass the fields you're "
+                    "actually changing -- omitted ones keep their current saved value.",
+    "parameters": {"type": "object", "properties": {
+        "genre": {"type": "string"}, "style1": {"type": "string"}, "style2": {"type": "string"},
+        "duration_s": {"type": "integer"}, "resolution": {"type": "string"},
+        "concept_directive": {"type": "string"}, "template": {"type": "string"},
+    }},
+}}
+
+
+def _chat_get_golden_rules(**_ignored):
+    """Read-only chat tool: this project's golden_rules.md sections."""
+    return json.dumps(golden_rules_sections())
+
+
+_CHAT_GET_GOLDEN_RULES_TOOL = {"type": "function", "function": {
+    "name": "get_golden_rules",
+    "description": "Fetch this project's current golden_rules.md, as its fixed sections "
+                    "(premise_and_humor, variety_exclusions, tone, dialogue_style, structure, "
+                    "continuous_action, anatomy, audio_speech, timestamps, fml2v_prompts, "
+                    "negative_prompt_baseline).",
+    "parameters": {"type": "object", "properties": {}},
+}}
+
+
+def _chat_save_golden_rules(sections=None, **_ignored):
+    """Write chat tool: merges given sections into this project's saved
+    golden_rules.md (unlisted sections keep their current value) --
+    reversible by editing again, no confirmation required."""
+    current = golden_rules_sections()
+    current.update({k: v for k, v in (sections or {}).items()
+                     if k in {key for key, _l, _h in GOLDEN_RULES_SECTION_DEFS}})
+    save_golden_rules_sections(current)
+    return "Saved. " + json.dumps(current)
+
+
+_CHAT_SAVE_GOLDEN_RULES_TOOL = {"type": "function", "function": {
+    "name": "save_golden_rules",
+    "description": "Save/update this project's golden_rules.md. Pass only the section keys "
+                    "you're actually changing (see get_golden_rules for the full key list and "
+                    "current values) -- omitted sections keep their current saved value. Rules "
+                    "must be mechanical/render/style rules, never creative facts (those belong "
+                    "in Creative-tab fields instead).",
+    "parameters": {"type": "object", "properties": {
+        "sections": {"type": "object", "description": "section key -> new full body text"},
+    }, "required": ["sections"]},
+}}
+
+
+def _chat_list_videos(**_ignored):
+    """Read-only chat tool: every video folder in this project (number,
+    title-bearing folder name, and which stage it's in)."""
+    entries = list_media_folders(PROJECT_DIR.name)
+    return json.dumps([{"number": e.get("number"), "folder": e.get("folder"),
+                         "location": e.get("location")} for e in entries])
+
+
+_CHAT_LIST_VIDEOS_TOOL = {"type": "function", "function": {
+    "name": "list_videos",
+    "description": "List every video in this project with its row number, folder name, and "
+                    "current stage (location: e.g. active, reviewed).",
+    "parameters": {"type": "object", "properties": {}},
+}}
+
+
+CHAT_BASE_TOOLS = [_CHAT_GET_SPEC_TOOL, _CHAT_GET_CREATIVE_FIELDS_TOOL, _CHAT_SAVE_CREATIVE_FIELDS_TOOL,
+                    _CHAT_GET_GOLDEN_RULES_TOOL, _CHAT_SAVE_GOLDEN_RULES_TOOL, _CHAT_LIST_VIDEOS_TOOL]
+CHAT_BASE_TOOL_FNS = {
+    "get_spec_content": _chat_get_spec_content,
+    "get_creative_fields": _chat_get_creative_fields,
+    "save_creative_fields": _chat_save_creative_fields,
+    "get_golden_rules": _chat_get_golden_rules,
+    "save_golden_rules": _chat_save_golden_rules,
+    "list_videos": _chat_list_videos,
+}
+
+
+def chat_with_agent(project_name, message, history, numbers, model, model_name=None,
+                     extra_tools=None, extra_tool_fns=None):
     """Dispatches one chat turn to the local Ollama model -- fast,
     offline, no account/CLI dependency beyond Ollama itself, with real
     web_search/wikipedia_search access via _ollama_tool_completion's
-    local tool-calling loop, PLUS get_spec_content (see
-    _CHAT_GET_SPEC_TOOL above), passed as this call's own extra tool
-    rather than added to the shared _OLLAMA_SEARCH_TOOLS -- that set is
-    also used by tool_completion (concept generation), which has no
-    business reading arbitrary existing specs, so the extra tool is
-    scoped to just this one call site instead of widening what every
-    tool-calling caller can do. Never given file-write or code-execution
-    tools -- the tool set is hardcoded, a structural guarantee, not just
-    an instruction."""
+    local tool-calling loop, plus CHAT_BASE_TOOLS (read/write content
+    tools this function owns directly -- get_spec_content, Creative
+    fields, golden rules, list_videos) merged with extra_tools/
+    extra_tool_fns the CALLER supplies for anything that needs web_ui.py's
+    own infrastructure (background job dispatch for rendering, a
+    confirmation registry for destructive actions) that this module has
+    no business reaching into directly. Every base tool here is either
+    read-only or a reversible content write (edit again to undo) --
+    nothing here deletes, renders, or touches an external service; those
+    stay entirely in the caller-supplied extra set, gated behind
+    whatever confirmation flow the caller builds (see web_ui.py's
+    h_chat/h_chat_confirm_action)."""
     payload = build_chat_payload(project_name, message, history, numbers)
     prompt = _render_creative_prompt(payload)
+    tools = CHAT_BASE_TOOLS + (extra_tools or [])
+    tool_fns = {**CHAT_BASE_TOOL_FNS, **(extra_tool_fns or {})}
     response, _history = _ollama_tool_completion(
-        prompt, model=model_name,
-        extra_tools=[_CHAT_GET_SPEC_TOOL], extra_tool_fns={"get_spec_content": _chat_get_spec_content})
+        prompt, model=model_name, extra_tools=tools, extra_tool_fns=tool_fns)
     proposals = response.get("proposals")
     return {
         "reply": response.get("reply", ""),

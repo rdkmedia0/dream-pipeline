@@ -56,6 +56,16 @@ import dream_step as ds
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 
+# Destructive/expensive actions the chat agent proposes (delete a video,
+# start a render) are never executed inside the chat tool call itself --
+# the tool call only registers what it WOULD do here, keyed by a token,
+# and returns that token/description for h_chat to surface to the human
+# as an explicit Confirm/Cancel choice. Only h_chat_confirm_action (fired
+# by the human clicking Confirm) actually runs it. Short-lived/in-memory
+# by design -- a token nobody confirms is just never looked up again.
+CHAT_PENDING_ACTIONS = {}
+CHAT_PENDING_ACTIONS_LOCK = threading.Lock()
+
 # Video-review "Provide feedback" queue -- a separate, deliberately
 # simple lane from JOBS above. Only serializes against ITSELF (one
 # feedback-driven rework at a time, in submission order); a manual
@@ -754,7 +764,99 @@ def h_chat(qs, body):
     numbers_context = body.get("numbers") or ""
     model = "ollama"
     model_name = (body.get("model_name") or "").strip() or None
-    return ds.chat_with_agent(project, message, history, numbers_context, model, model_name)
+
+    # Destructive/expensive tools live here, not in dream_step.py's own
+    # CHAT_BASE_TOOLS, because they need THIS module's job/confirmation
+    # infrastructure (_start_job, CHAT_PENDING_ACTIONS) -- see
+    # chat_with_agent's own docstring on why that split exists. `pending`
+    # is a closure the tool functions below write into; at most one
+    # proposal survives per chat turn (a model that called a second
+    # propose_* tool after the first would just overwrite it here, same
+    # as only ever acting on its LATEST proposal).
+    pending = {}
+
+    def _propose_delete_video(number=None, **_ignored):
+        entries = [e for e in ds.list_media_folders(project) if e.get("number") == number]
+        if not entries:
+            return f"ERROR: no video with number {number} in this project."
+        entry = entries[0]
+        token = uuid.uuid4().hex
+        description = (f"Permanently delete video #{number} (\"{entry['folder']}\", currently "
+                        f"in {entry['location']}). This cannot be undone.")
+        pending.clear()
+        pending.update(token=token, project=project, description=description,
+                        action="delete_video", kwargs={"folder": entry["folder"], "location": entry["location"]})
+        return (f"CONFIRMATION REQUIRED -- do NOT say this is done. Tell the human exactly what "
+                f"you're about to do: {description} They must click Confirm in the chat for it "
+                f"to actually happen.")
+
+    def _propose_render_video(number=None, **_ignored):
+        entries = [e for e in ds.list_media_folders(project) if e.get("number") == number]
+        if not entries:
+            return f"ERROR: no video with number {number} in this project."
+        token = uuid.uuid4().hex
+        description = (f"Start a render/rework for #{number}. This uses real GPU time and "
+                        f"overwrites the current video for that number.")
+        pending.clear()
+        pending.update(token=token, project=project, description=description,
+                        action="render_video", kwargs={"number": number})
+        return (f"CONFIRMATION REQUIRED -- do NOT say this is done. Tell the human exactly what "
+                f"you're about to do: {description} They must click Confirm in the chat for it "
+                f"to actually happen.")
+
+    extra_tools = [
+        {"type": "function", "function": {
+            "name": "propose_delete_video",
+            "description": "Propose permanently deleting one video by its row number -- this "
+                            "does NOT delete anything yet, it only registers the action for the "
+                            "human to explicitly confirm in the chat UI.",
+            "parameters": {"type": "object", "properties": {
+                "number": {"type": "integer"}}, "required": ["number"]}}},
+        {"type": "function", "function": {
+            "name": "propose_render_video",
+            "description": "Propose starting a render/rework for one video by its row number -- "
+                            "this does NOT start anything yet, it only registers the action for "
+                            "the human to explicitly confirm in the chat UI.",
+            "parameters": {"type": "object", "properties": {
+                "number": {"type": "integer"}}, "required": ["number"]}}},
+    ]
+    extra_tool_fns = {"propose_delete_video": _propose_delete_video,
+                       "propose_render_video": _propose_render_video}
+
+    result = ds.chat_with_agent(project, message, history, numbers_context, model, model_name,
+                                 extra_tools=extra_tools, extra_tool_fns=extra_tool_fns)
+    if pending:
+        with CHAT_PENDING_ACTIONS_LOCK:
+            CHAT_PENDING_ACTIONS[pending["token"]] = pending
+        result["pending_action"] = {"token": pending["token"], "description": pending["description"]}
+    return result
+
+
+def h_chat_confirm_action(qs, body):
+    """Fired only by the human clicking Confirm on a chat-proposed
+    destructive action -- see h_chat's propose_* tool closures above for
+    how a token gets registered in the first place. Popped (not just
+    read) so a token can only ever be confirmed once."""
+    project = _project_from_body(body)
+    token = (body.get("token") or "").strip()
+    with CHAT_PENDING_ACTIONS_LOCK:
+        pending = CHAT_PENDING_ACTIONS.pop(token, None)
+    if not pending or pending["project"] != project:
+        raise ValueError("This confirmation has expired or doesn't match the current project -- ask again in chat.")
+    action = pending["action"]
+    kwargs = pending["kwargs"]
+    if action == "delete_video":
+        ds.delete_media_folder(kwargs["folder"], kwargs["location"])
+        return {"ok": True, "message": f"Deleted \"{kwargs['folder']}\"."}
+    if action == "render_video":
+        number = kwargs["number"]
+        job_id = uuid.uuid4().hex[:12]
+        cancel_check = lambda: JOBS.get(job_id, {}).get("cancelled", False)
+        job_id = _start_job(project, "rework", [number], ds.with_vram_guard,
+                             ds.do_rework, [number], randomize_seeds=False, type_arg=None,
+                             verbose=False, cancel_check=cancel_check, job_id=job_id)
+        return {"ok": True, "message": f"Render started for #{number} (job {job_id}).", "job_id": job_id}
+    raise ValueError(f"unknown pending action type: {action}")
 
 
 def h_config_get(qs, body):
@@ -2166,6 +2268,7 @@ ROUTES = {
     ("POST", "/api/golden-rules/discuss"): h_golden_rules_discuss,
     ("POST", "/api/creative-draft"): h_creative_draft_generate,
     ("POST", "/api/chat"): h_chat,
+    ("POST", "/api/chat/confirm-action"): h_chat_confirm_action,
     ("GET", "/api/config"): h_config_get,
     ("POST", "/api/config"): h_config_save,
     ("POST", "/api/config/reset"): h_config_reset,
@@ -5477,15 +5580,19 @@ function renderListCard() {
 }
 
 // Help chat -- its own sidebar tab (see selectSidebarTab), not nested
-// under the video panel. The agent (local Ollama or a real Claude Code
-// agent, human's choice per message) has NO file-write or code-execution
-// tools -- the Claude dispatch uses the same --disallowedTools
-// restriction already proven for concepts/CREATIVE.md generation, so
-// that's a structural guarantee, not a prompt-level promise. Its replies
-// can include field "proposals"; those only ever populate the matching
-// row's cells after an explicit Apply click -- never written to disk
-// directly. Run updates (already the only thing that writes specs) is
-// still required afterward, same as any other edit.
+// under the video panel. The agent can read/discuss/draft everything in
+// the tool (spec content, Creative fields, golden rules, video list) and
+// can save reversible content edits (Creative fields, golden rules)
+// directly -- see chat_with_agent's CHAT_BASE_TOOLS in dream_step.py.
+// Destructive/expensive actions (deleting a video, starting a render)
+// are never executed from a tool call itself: the tool only registers a
+// pending_action token (see h_chat's propose_* closures in web_ui.py),
+// surfaced here as an explicit Confirm/Cancel choice -- confirmChatAction
+// below is the only path that actually runs one. Spec-field "proposals"
+// are the oldest/lowest-risk case of the same idea: they only ever
+// populate the matching row's cells after an explicit Apply click, never
+// written to disk directly -- Run updates (already the only thing that
+// writes specs) is still required afterward, same as any other edit.
 if (state.chatHistory === undefined) state.chatHistory = [];
 
 async function renderChatCard() {
@@ -5556,9 +5663,43 @@ function renderChatLog() {
         <ul>${proposals.map(p => `<li>#${esc(p.number)} <strong>${esc(p.field)}</strong>: ${esc(String(p.value || '').slice(0, 70))}${String(p.value || '').length > 70 ? '…' : ''}</li>`).join('')}</ul>
         <button onclick="applyChatProposals(${i})">Apply to table</button>
       </div>` : '';
-    return `<div class="chat-msg chat-assistant">${esc(m.text)}${proposalsHtml}</div>`;
+    // pendingAction: a destructive/expensive action the AI proposed on
+    // THIS message -- resolved (confirmed/cancelled) clears it so old
+    // messages in the log don't keep showing a stale, already-decided
+    // Confirm button (see confirmChatAction/cancelChatAction below).
+    const pa = m.pendingAction;
+    const pendingHtml = pa && !pa.resolved ? `
+      <div class="chat-proposals" style="border-color:var(--warning, #c8860a)">
+        <div class="muted">${esc(pa.description)}</div>
+        <div class="row" style="margin-top:0.3rem;gap:0.4rem">
+          <button onclick="cancelChatAction(${i})">Cancel</button>
+          <button class="btn-primary" onclick="confirmChatAction(${i})">Confirm</button>
+        </div>
+      </div>` : (pa && pa.resolved ? `<div class="muted" style="margin-top:0.3rem">${esc(pa.resolved)}</div>` : '');
+    return `<div class="chat-msg chat-assistant">${esc(m.text)}${proposalsHtml}${pendingHtml}</div>`;
   }).join('');
   log.scrollTop = log.scrollHeight;
+}
+
+async function confirmChatAction(msgIndex) {
+  const msg = state.chatHistory[msgIndex];
+  const pa = msg && msg.pendingAction;
+  if (!pa || pa.resolved) return;
+  try {
+    const result = await api('POST', '/api/chat/confirm-action', { project: state.project, token: pa.token });
+    pa.resolved = result.message || 'Done.';
+  } catch (e) {
+    pa.resolved = 'ERROR: ' + e.message;
+  }
+  renderChatLog();
+}
+
+function cancelChatAction(msgIndex) {
+  const msg = state.chatHistory[msgIndex];
+  const pa = msg && msg.pendingAction;
+  if (!pa || pa.resolved) return;
+  pa.resolved = 'Cancelled.';
+  renderChatLog();
 }
 
 async function sendChatMessage() {
@@ -5579,7 +5720,8 @@ async function sendChatMessage() {
     const data = await api('POST', '/api/chat', {
       project: state.project, message: text, history: historyForRequest, model, model_name: modelName, numbers,
     });
-    state.chatHistory.push({ role: 'assistant', text: data.reply, proposals: data.proposals || [] });
+    state.chatHistory.push({ role: 'assistant', text: data.reply, proposals: data.proposals || [],
+                              pendingAction: data.pending_action || null });
   } catch (e) {
     state.chatHistory.push({ role: 'assistant', text: 'ERROR: ' + e.message, proposals: [] });
   }
