@@ -8140,9 +8140,11 @@ function creativeFieldsBody(f, isOnboarding) {
       template.</p>
     <hr style="margin:1em 0;border-color:var(--border-soft)">
     <h4 class="pill-h4"><span>Creative fields</span><span id="cf-status-pill">${creativeFieldsStatusHtml(f)}</span></h4>
-    <label>Genre <input id="cf-genre" list="cf-genre-options" value="${esc(f.genre || '')}" oninput="updateCreativeFieldsStatus()"></label>
+    <label>Genre <span class="mf-help" title="Free text -- type anything. The dropdown arrow shows preset suggestions, but only ones matching what's already typed; clear the field first to browse the full list.">?</span>
+      <input id="cf-genre" list="cf-genre-options" value="${esc(f.genre || '')}" oninput="updateCreativeFieldsStatus()"></label>
     <datalist id="cf-genre-options">${(f.genre_options || []).map(g => `<option value="${esc(g)}">`).join('')}</datalist>
-    <label>Visual style <input id="cf-style1" list="cf-style-options" value="${esc(f.style1 || '')}" oninput="updateCreativeFieldsStatus()"></label>
+    <label>Visual style <span class="mf-help" title="Free text -- type anything. The dropdown arrow shows preset suggestions, but only ones matching what's already typed; clear the field first to browse the full list.">?</span>
+      <input id="cf-style1" list="cf-style-options" value="${esc(f.style1 || '')}" oninput="updateCreativeFieldsStatus()"></label>
     <label>Visual style (optional 2nd option) <input id="cf-style2" list="cf-style-options" value="${esc(f.style2 || '')}"></label>
     ${styleDatalist}
     <div class="row" onchange="updateCreativeFieldsStatus()" oninput="updateCreativeFieldsStatus()">
