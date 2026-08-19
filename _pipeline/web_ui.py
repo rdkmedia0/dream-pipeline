@@ -6946,7 +6946,7 @@ function renderManageTable() {
             </div>
           </th>
           ${th('AI direction', 'Optional creative direction for the AI, used whenever a blank field on this row is auto-composed.', textFilter('note'))}
-          ${th('Image(s)', 'Reference image(s) for i2v/fml. "Auto-generate missing content" (the button below) writes each blank slot\'s PROMPT text same as every other blank field -- it does not produce an actual image file. The real image (and the video itself) is only generated during Render video, using whatever prompt is saved here at that point; a slot with a prompt but no image yet is already considered ready to render, not something still missing. You can also upload your own image directly here to replace/skip the AI-generated one for that slot, type a still-image description yourself, or (first frame only) click "Online photo..." to generate one via Gemini instead -- useful for animals the local model tends to draw wrong. Requires a Gemini key in Settings (paid, no free tier); the button is hidden if none is configured, or if Settings\' kf_backend already sends the first frame through Gemini (Generate new already gets that same accuracy there).')}
+          ${th('Image(s)', 'Reference image(s) for i2v/fml. Auto-generate missing content only writes the PROMPT text for a blank slot -- the actual image is generated during Render video itself. A slot with a prompt but no image yet already counts as ready. You can also upload your own image, type a description yourself, or (first frame only) generate one via Gemini with "Online photo..." if configured in Settings.')}
         </tr>
       </thead>
       <tbody>${state.manageRows.map(manageRowHtml).join('')}</tbody>
@@ -7613,12 +7613,32 @@ function readManageRow(tr) {
 // warning (rowHasUnsavedChanges), which should only fire when the human
 // actually typed something, not just because a field happens to be
 // blank. See specNeedsSave for the broader check Save itself uses.
+// negative_prompt/tags round-trip through the pill-based tags UI
+// (getTagsValue), which joins with a bare ',' -- the saved spec's own
+// text almost always has ', ' (a space after each comma, however it
+// was originally written/AI-composed), so a naive string compare
+// reported EVERY row with a real negative_prompt/tags list as "dirty"
+// even when nothing had actually changed, which meant a row could
+// never reach specNeedsSave===false and the primary button could never
+// reach "Render video" no matter how complete the content actually was
+// (confirmed live, 2026-08-19: a freshly regenerated fml row with every
+// field filled in still evaluated as dirty solely because of this).
+// Comparing as normalized comma-lists (split/trim/rejoin) instead of
+// raw strings treats ", " and "," as identical, which they are.
+function normalizedTagList(s) {
+  return (s || '').split(',').map(t => t.trim()).filter(Boolean).join(',');
+}
+
 function specFieldsDirty(row, current) {
   if (!row.exists) return true;
   if (workflowToType(row.workflow) !== current.type) return true;
   const orig = { title: row.title, premise: row.premise, positive_prompt: row.positive_prompt,
                  negative_prompt: row.negative_prompt, description: row.description, tags: row.tags };
-  return Object.keys(orig).some(k => (orig[k] || '') !== (current.fields[k] || ''));
+  const listFields = new Set(['negative_prompt', 'tags']);
+  return Object.keys(orig).some(k => {
+    const a = orig[k] || '', b = current.fields[k] || '';
+    return listFields.has(k) ? normalizedTagList(a) !== normalizedTagList(b) : a !== b;
+  });
 }
 
 function kfFieldsDirty(row, current) {
