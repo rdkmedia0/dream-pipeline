@@ -8783,6 +8783,13 @@ async function loadCreativeEditor() {
   if (!hasAnyContent) autoGenerateGoldenRules();
 }
 
+// The very first draft (fired once, right after a concept is saved with
+// no rules yet -- see loadCreativeEditor) saves itself immediately so
+// the project has a working golden_rules.md without an extra click;
+// every subsequent generate/discuss/edit still goes through the normal
+// review-then-Save/Accept flow, this auto-save only ever applies to
+// that first draft. The human can freely overwrite it afterward --
+// nothing here locks the content, it just seeds it.
 async function autoGenerateGoldenRules() {
   const statusEl = document.getElementById('gr-fields');
   if (statusEl) statusEl.insertAdjacentHTML('beforebegin',
@@ -8795,8 +8802,9 @@ async function autoGenerateGoldenRules() {
       if (ta) ta.value = result.sections[d.key] || '';
     });
     updateGoldenRulesWordCount();
+    await api('POST', '/api/golden-rules', { project, sections: collectGoldenRulesSections() });
   } catch (e) {
-    /* leave sections blank -- the human can still click Generate manually */
+    /* leave sections blank/unsaved -- the human can still click Re-generate manually */
   } finally {
     const el = document.getElementById('gr-auto-status');
     if (el) el.remove();
