@@ -1090,7 +1090,7 @@ def h_upload(qs, body):
     log = io.StringIO()
     _STDOUT_ROUTER.set_target(log)
     try:
-        result = ds.do_upload(numbers, force=False)
+        result = ds.do_upload(numbers, force=bool(body.get("force")))
     finally:
         _STDOUT_ROUTER.clear_target()
     # pending_confirmation set means do_upload stopped mid-batch to ask a
@@ -1098,6 +1098,23 @@ def h_upload(qs, body):
     # as its own field (not just buried in the log text) so the frontend
     # can show a real Yes/No prompt instead of just displaying an error.
     return {"log": log.getvalue(), "pending_confirmation": result.get("pending_confirmation")}
+
+
+def h_upload_update_metadata(qs, body):
+    project = _project_from_body(body)
+    s = ds.compute_status(project)
+    numbers = ds.parse_number_spec(str(body["numbers"]))
+    # "all" here means every already-uploaded number, not rendered-but-
+    # not-uploaded -- update-metadata only makes sense against a video
+    # that's actually live, unlike a plain upload.
+    numbers = ds.resolve_all(numbers, s["uploaded"], "all already-uploaded")
+    log = io.StringIO()
+    _STDOUT_ROUTER.set_target(log)
+    try:
+        ds.do_update_metadata(numbers)
+    finally:
+        _STDOUT_ROUTER.clear_target()
+    return {"log": log.getvalue()}
 
 
 def h_upload_rename_video(qs, body):
@@ -2271,6 +2288,7 @@ ROUTES = {
     ("GET", "/api/active-jobs"): h_active_jobs,
     ("POST", "/api/upload"): h_upload,
     ("POST", "/api/upload/rename-video"): h_upload_rename_video,
+    ("POST", "/api/upload/update-metadata"): h_upload_update_metadata,
     ("GET", "/api/videos"): h_videos,
     ("POST", "/api/videos/move"): h_move_video,
     ("POST", "/api/videos/delete"): h_delete_video,
@@ -6518,7 +6536,19 @@ function uploadTemplateSection(template, error) {
 
 function uploadActionForm() {
   return `<div class="card"><label>Number(s) <input id="upload-numbers" placeholder="e.g. 83 or all"></label>
-    <button class="btn-primary" onclick="submitUpload()">Upload</button></div>`;
+    <label class="row" style="gap:0.4rem"><input type="checkbox" id="upload-force" style="width:auto"> Force
+      re-upload <span class="mf-help" title="Off by default, a number already marked published is skipped
+      (safe -- won't accidentally create a duplicate). Turn this on to re-upload anyway -- e.g. you deleted
+      the video directly on YouTube and want to push it again. This creates a genuinely NEW video (a new
+      URL/ID), it does NOT edit or restore the old one -- YouTube's API has no way to replace a video's
+      file in place. If you only need to fix the title/description/tags on a video that's still live, use
+      Update metadata below instead -- no re-upload, no duplicate, no delete needed.">?</span></label>
+    <button class="btn-primary" onclick="submitUpload()">Upload</button>
+    <button onclick="submitUpdateMetadata()" title="Pushes freshly-built title/description/tags/status
+      (from each number's current spec + this template) to its ALREADY-uploaded video via YouTube's
+      videos.update -- does not touch the video file, does not re-upload, does not create a duplicate.
+      The right tool for fixing metadata on a video that's already live (e.g. a wrong title).">Update
+      metadata</button></div>`;
 }
 
 async function saveUploadTemplate() {
@@ -8376,16 +8406,34 @@ function showResult(html) {
 async function submitUpload() {
   showResult('<span class="badge">working</span> uploading...');
   try {
-    await runUploadNumbers(document.getElementById('upload-numbers').value);
+    const force = document.getElementById('upload-force').checked;
+    await runUploadNumbers(document.getElementById('upload-numbers').value, force);
+  } catch (e) { showResult(`<pre>ERROR: ${e.message}</pre>`); }
+}
+
+// Fixes title/description/tags/status on an ALREADY-uploaded video in
+// place -- no re-upload, no new video, no delete needed. The right fix
+// for e.g. a wrong title going out (see Upload's own "Force re-upload"
+// help text) rather than deleting on YouTube and re-uploading.
+async function submitUpdateMetadata() {
+  showResult('<span class="badge">working</span> updating metadata...');
+  try {
+    const data = await api('POST', '/api/upload/update-metadata', {
+      project: state.project, numbers: document.getElementById('upload-numbers').value,
+    });
+    state.status = await api('GET', `/api/status?project=${encodeURIComponent(state.project)}`);
+    renderMenu('upload');
+    showResult(`<pre>${esc(data.log)}</pre>`);
   } catch (e) { showResult(`<pre>ERROR: ${e.message}</pre>`); }
 }
 
 // Split out of submitUpload so a confirmed rename can resume the SAME
 // batch by re-calling this with the same numbers string -- do_upload
 // skips already-published numbers harmlessly (see its own docstring),
-// so this just continues from wherever it stopped, not a restart.
-async function runUploadNumbers(numbersStr) {
-  const data = await api('POST', '/api/upload', { project: state.project, numbers: numbersStr });
+// so this just continues from wherever it stopped, not a restart. force
+// carries through the resume too, same as the original click.
+async function runUploadNumbers(numbersStr, force) {
+  const data = await api('POST', '/api/upload', { project: state.project, numbers: numbersStr, force });
   // renderSidebar() alone left the "specs: X | rendered: Y | uploaded:
   // Z" summary line (and the Upload tab's own ⚠ crumb) showing stale
   // pre-upload counts -- that line is rendered by renderMenu() from

@@ -5130,15 +5130,16 @@ def format_number_ranges(numbers):
 def _upload_dream_subprocess(*extra_args):
     """Shared plumbing for every upload_dream.py subprocess call this
     file makes -- captures stdout/stderr (see do_upload's own comment on
-    why capturing beats inheriting here), echoes both verbatim for full
-    transparency, and returns (returncode, parsed_json_or_None)."""
+    why capturing beats inheriting here) and returns (returncode,
+    parsed_json_or_None, stdout, stderr). Deliberately does NOT print
+    anything itself -- callers decide what's worth showing (do_upload
+    prints a clean one-line summary on success and the full raw output
+    only on failure; a human reading the upload log wants to see an
+    error in detail, not a wall of JSON for every video that worked
+    fine)."""
     cmd = [sys.executable, str(PIPELINE_DIR / "upload_dream.py"),
            "--project", PROJECT_DIR.name, *extra_args]
     result = subprocess.run(cmd, cwd=str(PIPELINE_DIR), capture_output=True, text=True)
-    if result.stdout:
-        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
-    if result.stderr:
-        print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", flush=True)
     parsed = None
     for line in reversed(result.stdout.splitlines()):
         line = line.strip()
@@ -5148,7 +5149,17 @@ def _upload_dream_subprocess(*extra_args):
             except Exception:
                 pass
             break
-    return result.returncode, parsed
+    return result.returncode, parsed, result.stdout, result.stderr
+
+
+def _print_raw_subprocess_output(stdout, stderr):
+    """Full transparency fallback -- used when a subprocess produced no
+    parseable JSON at all (itself an anomaly worth seeing raw) or when
+    do_upload is reporting a real failure."""
+    if stdout:
+        print(stdout, end="" if stdout.endswith("\n") else "\n", flush=True)
+    if stderr:
+        print(stderr, end="" if stderr.endswith("\n") else "\n", flush=True)
 
 
 def diagnose_upload_video(number):
@@ -5156,10 +5167,18 @@ def diagnose_upload_video(number):
     diagnose_video_file) for whether #number's video is where do_upload
     is about to look for it. Returns the parsed {"status": ...} dict, or
     a synthetic {"status": "error", "error": ...} if the subprocess
-    itself produced no parseable result at all."""
-    returncode, parsed = _upload_dream_subprocess("--number", str(number), "--diagnose-file")
-    if parsed is not None:
+    itself produced no parseable result at all, OR if --diagnose-file
+    never actually ran -- upload_dream.py's main() checks spec/index/
+    template BEFORE reaching the --diagnose-file branch, so a genuinely
+    missing spec (e.g. a number nothing was ever rendered for) prints its
+    own {"error": ...} with no "status" key at all; without this check
+    do_upload's own `if diag["status"] in (...)` would KeyError on it."""
+    returncode, parsed, stdout, stderr = _upload_dream_subprocess("--number", str(number), "--diagnose-file")
+    if parsed is not None and "status" in parsed:
         return parsed
+    if parsed is not None:
+        return {"status": "error", "error": parsed.get("error", "unrecognized result shape")}
+    _print_raw_subprocess_output(stdout, stderr)
     return {"status": "error", "error": "no JSON result line found in its output"}
 
 
@@ -5168,9 +5187,10 @@ def rename_upload_video(number):
     upload_dream.py's rename_video_to_expected, which re-diagnoses
     before actually renaming rather than trusting stale info. Returns
     the same shape as diagnose_upload_video."""
-    returncode, parsed = _upload_dream_subprocess("--number", str(number), "--rename-video")
+    returncode, parsed, stdout, stderr = _upload_dream_subprocess("--number", str(number), "--rename-video")
     if parsed is not None:
         return parsed
+    _print_raw_subprocess_output(stdout, stderr)
     return {"status": "error", "error": "no JSON result line found in its output"}
 
 
@@ -5206,10 +5226,28 @@ def do_upload(numbers, force):
         extra = ["--number", str(number)]
         if force:
             extra.append("--force")
-        returncode, parsed = _upload_dream_subprocess(*extra)
+        returncode, parsed, stdout, stderr = _upload_dream_subprocess(*extra)
         if returncode == 0:
             any_uploaded = True
+            # Clean one-liner, not the raw JSON/subprocess output -- a
+            # successful upload doesn't need the full transparency an
+            # actual failure does (see the else branch below); only real
+            # exceptions are an unparseable result (itself worth seeing
+            # raw) and a live-metadata mismatch upload_dream.py's own
+            # verify_upload flagged (still exit 0 -- the file uploaded
+            # fine, but the human should still know something's off).
+            if parsed is None:
+                _print_raw_subprocess_output(stdout, stderr)
+                print(f"[dream_step] #{number} uploaded, but no JSON result line was found to confirm details.")
+            elif parsed.get("verified") is False:
+                print(f"[dream_step] #{number} uploaded: {parsed.get('url')} -- WARNING: live metadata "
+                      f"doesn't match what was intended: {parsed.get('mismatches')}")
+            else:
+                print(f"[dream_step] #{number} uploaded: {parsed.get('url')}")
         else:
+            # Full raw output ONLY here -- an actual failure is exactly
+            # when a human needs to see everything, not just the summary.
+            _print_raw_subprocess_output(stdout, stderr)
             error_detail = parsed.get("error") if parsed else None
             reason = f": {error_detail}" if error_detail else " -- no JSON result line found in its output"
             print(f"[dream_step] >>> #{number} upload did not succeed{reason} -- this may be an "
@@ -5340,28 +5378,26 @@ def do_update_metadata(numbers):
     any_updated = False
     for number in numbers:
         print(f"[dream_step] updating #{number}'s live metadata via upload_dream.py --update-metadata", flush=True)
-        cmd = [sys.executable, str(PIPELINE_DIR / "upload_dream.py"),
-               "--project", PROJECT_DIR.name, "--number", str(number), "--update-metadata"]
-        # Captured, not inherited -- see do_upload's identical comment:
-        # the child's JSON result line has no "[dream_step] >>>" prefix,
-        # so the web UI's failure summary never surfaced it on its own.
-        result = subprocess.run(cmd, cwd=str(PIPELINE_DIR), capture_output=True, text=True)
-        if result.stdout:
-            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
-        if result.stderr:
-            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", flush=True)
-        if result.returncode == 0:
+        # See do_upload's identical comment: captured rather than
+        # inherited so the child's JSON result line can be folded into
+        # the "[dream_step] >>>" summary line on failure, and so a
+        # successful update prints a clean one-liner instead of the raw
+        # JSON -- full output only when there's an actual error to see.
+        returncode, parsed, stdout, stderr = _upload_dream_subprocess(
+            "--number", str(number), "--update-metadata")
+        if returncode == 0:
             any_updated = True
+            if parsed is None:
+                _print_raw_subprocess_output(stdout, stderr)
+                print(f"[dream_step] #{number}'s metadata updated, but no JSON result line was found to confirm details.")
+            elif parsed.get("verified") is False:
+                print(f"[dream_step] #{number}'s metadata updated -- WARNING: live metadata still "
+                      f"doesn't match what was intended: {parsed.get('mismatches')}")
+            else:
+                print(f"[dream_step] #{number}'s metadata updated: {parsed.get('url')}")
         else:
-            error_detail = None
-            for line in reversed(result.stdout.splitlines()):
-                line = line.strip()
-                if line.startswith("{"):
-                    try:
-                        error_detail = json.loads(line).get("error")
-                    except Exception:
-                        pass
-                    break
+            _print_raw_subprocess_output(stdout, stderr)
+            error_detail = parsed.get("error") if parsed else None
             reason = f": {error_detail}" if error_detail else " -- no JSON result line found in its output"
             print(f"[dream_step] >>> #{number} metadata update did not succeed{reason}. "
                   f"Stopping here rather than continuing past it silently.")

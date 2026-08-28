@@ -595,11 +595,19 @@ def build_metadata(spec, template, number):
 
     return {
         "snippet": {
-            # Same "Dream #N <title>" convention generate_dream.py already
-            # uses for the folder/filename -- spec["title"] alone is bare
-            # (e.g. "Which Way the Feather Tips"), not what actually gets
-            # uploaded.
-            "title": f"Dream #{number} {spec['title']}",
+            # Same "<episode_label> #N <title>" convention
+            # get_episode_label()/generate_dream.py already use for the
+            # folder/filename (defaulting to "Dream" only when the
+            # project's own upload_template.json doesn't set
+            # episode_label) -- spec["title"] alone is bare (e.g. "Which
+            # Way the Feather Tips"), not what actually gets uploaded.
+            # A hardcoded "Dream" here (confirmed a real bug: every
+            # ChatAiMals upload went out titled "Dream #N ..." despite
+            # its own episode_label being "Tale") would silently
+            # mismatch every project using a different label, even
+            # though the FILE was found under the right "Tale #N ..."
+            # name -- the two must always agree.
+            "title": f"{template.get('episode_label', 'Dream')} #{number} {spec['title']}",
             "description": description,
             "tags": all_tags,
             "categoryId": template.get("category_id", "24"),
