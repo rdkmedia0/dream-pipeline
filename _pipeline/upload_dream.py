@@ -759,11 +759,22 @@ def main():
             body = build_metadata(spec, template, args.number)
             body["id"] = video_id
             youtube.videos().update(part="snippet,status", body=body).execute()
+            # "ok" reflects whether the actual videos.update() call
+            # succeeded (it did, or this line would have raised) -- NOT
+            # whether the immediate re-check sees it live yet. Same
+            # philosophy as the real upload branch below: a mismatch
+            # here is surfaced as "verified"/"mismatches" for the caller
+            # to warn about, not treated as the update itself having
+            # failed. Confirmed a real false failure this caused: a
+            # title update succeeded, but the very next verify_upload
+            # call still saw the OLD title -- YouTube's API is not
+            # instantly consistent, and this exit(1)'d as if the update
+            # never happened at all.
             ok, mismatches, live = verify_upload(youtube, video_id, body)
-            result.update({"ok": ok, "video_id": video_id, "url": entry.get("youtube_url"),
+            result.update({"ok": True, "video_id": video_id, "url": entry.get("youtube_url"),
                             "verified": ok, "mismatches": mismatches or None})
             print(json.dumps(result))
-            sys.exit(0 if ok else 1)
+            sys.exit(0)
         except HttpError as e:
             result["error"] = f"YouTube API error: {e}"
             print(json.dumps(result)); sys.exit(1)

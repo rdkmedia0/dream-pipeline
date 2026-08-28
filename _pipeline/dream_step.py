@@ -5162,6 +5162,28 @@ def _print_raw_subprocess_output(stdout, stderr):
         print(stderr, end="" if stderr.endswith("\n") else "\n", flush=True)
 
 
+def _failure_reason(parsed):
+    """Builds the ": <reason>" suffix for a failure summary line -- NOT
+    just parsed.get("error"), which is None whenever a JSON result line
+    WAS found but genuinely has nothing in its "error" field (e.g. the
+    only fields upload_dream.py 's --update-metadata sets on a verify
+    mismatch are "verified"/"mismatches", not "error" -- confirmed a
+    real false claim this caused: a metadata update that actually
+    succeeded, whose immediate verify re-check just hadn't caught up
+    yet, reported as "no JSON result line found in its output" even
+    though one clearly had been). Only claims that when parsed is
+    ACTUALLY None -- otherwise falls back to showing mismatches (if
+    present) or the raw parsed dict, so there's always something
+    concrete rather than a misleading absence claim."""
+    if parsed is None:
+        return " -- no JSON result line found in its output"
+    if parsed.get("error"):
+        return f": {parsed['error']}"
+    if parsed.get("mismatches"):
+        return f" -- live metadata doesn't match what was intended: {parsed['mismatches']}"
+    return f" -- {parsed}"
+
+
 def diagnose_upload_video(number):
     """Filesystem-only pre-check (see upload_dream.py's own
     diagnose_video_file) for whether #number's video is where do_upload
@@ -5280,10 +5302,8 @@ def do_upload(numbers, force):
             # Full raw output ONLY here -- an actual failure is exactly
             # when a human needs to see everything, not just the summary.
             _print_raw_subprocess_output(stdout, stderr)
-            error_detail = parsed.get("error") if parsed else None
-            reason = f": {error_detail}" if error_detail else " -- no JSON result line found in its output"
-            print(f"[dream_step] >>> #{number} upload did not succeed{reason}. Stopping here rather "
-                  f"than continuing past it silently.")
+            print(f"[dream_step] >>> #{number} upload did not succeed{_failure_reason(parsed)}. "
+                  f"Stopping here rather than continuing past it silently.")
             return {"any_uploaded": any_uploaded, "pending_confirmation": None}
     if not any_uploaded:
         print("[dream_step] Nothing was uploaded this run.")
@@ -5428,9 +5448,7 @@ def do_update_metadata(numbers):
                 print(f"[dream_step] #{number}'s metadata updated: {parsed.get('url')}")
         else:
             _print_raw_subprocess_output(stdout, stderr)
-            error_detail = parsed.get("error") if parsed else None
-            reason = f": {error_detail}" if error_detail else " -- no JSON result line found in its output"
-            print(f"[dream_step] >>> #{number} metadata update did not succeed{reason}. "
+            print(f"[dream_step] >>> #{number} metadata update did not succeed{_failure_reason(parsed)}. "
                   f"Stopping here rather than continuing past it silently.")
             return
     if not any_updated:
