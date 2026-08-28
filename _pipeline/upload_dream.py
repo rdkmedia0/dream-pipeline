@@ -772,9 +772,16 @@ def main():
             print(json.dumps(result)); sys.exit(1)
 
     if entry.get("published") and not args.force:
+        # "status" (not just "error") lets dream_step.py's do_upload tell
+        # this apart from a real failure -- this is an expected, common
+        # state (re-listing an already-uploaded number), not something
+        # broken, and the web UI offers a real choice for it (resend the
+        # file + metadata, or metadata only) rather than just failing.
+        result["status"] = "already_published"
         result["video_id"] = entry.get("youtube_video_id")
         result["url"] = entry.get("youtube_url")
-        result["error"] = f"#{args.number} is already marked published -- pass --force to re-upload"
+        result["error"] = (f"#{args.number} already exists at {entry.get('youtube_url')} -- use "
+                            f"resend (file + metadata) or metadata-only to push again")
         print(json.dumps(result)); sys.exit(1)
 
     # A genuine overwrite when --force is re-uploading over something

@@ -6536,21 +6536,15 @@ function uploadTemplateSection(template, error) {
 
 function uploadActionForm() {
   return `<div class="card"><label>Number(s) <input id="upload-numbers" placeholder="e.g. 83 or all"></label>
-    <label class="row" style="gap:0.4rem"><input type="checkbox" id="upload-force" style="width:auto"> Force
-      re-upload <span class="mf-help" title="Off by default, a number already marked published is skipped
-      (safe -- uploads nothing). Turn this on to rebuild it -- e.g. the render was wrong and needed
-      reworking, or you deleted the video directly on YouTube. DESTRUCTIVE: if a video is currently live for
-      this number, it is DELETED first, then the current file is uploaded fresh as a replacement (a genuine
-      overwrite, new URL/ID -- YouTube's API has no way to replace a video's file in place, so delete-then-
-      upload is the only way to avoid leaving the old, wrong video live as an orphaned duplicate). Cannot be
-      undone. If you only need to fix the title/description/tags and the video FILE itself is already
-      correct, use Update metadata below instead -- no delete, no re-upload, much cheaper.">?</span></label>
+    <p class="muted" style="margin:0 0 0.5rem">A number already uploaded is never silently skipped OR
+      re-sent -- Upload stops and asks you to choose Resend (delete the live video, push the current file +
+      metadata fresh) or Metadata only (push just title/description/tags/status, no delete, no re-upload,
+      much cheaper) right there.</p>
     <button class="btn-primary" onclick="submitUpload()">Upload</button>
     <button onclick="submitUpdateMetadata()" title="Pushes freshly-built title/description/tags/status
       (from each number's current spec + this template) to its ALREADY-uploaded video via YouTube's
       videos.update -- does not touch the video file, does not re-upload, does not create a duplicate.
-      The right tool for fixing metadata on a video that's already live (e.g. a wrong title).">Update
-      metadata</button></div>`;
+      The right tool for bulk-fixing metadata on videos that are already live.">Update metadata</button></div>`;
 }
 
 async function saveUploadTemplate() {
@@ -8406,26 +8400,9 @@ function showResult(html) {
 }
 
 async function submitUpload() {
-  const numbersStr = document.getElementById('upload-numbers').value;
-  const force = document.getElementById('upload-force').checked;
-  if (force) {
-    // Force now genuinely deletes the currently-live video (if any)
-    // before uploading the replacement -- a real, irreversible
-    // destructive action, not just "upload again alongside the old
-    // one" -- always confirm before it, same as every other
-    // destructive action in this app (Clear content, delete project,
-    // ...). do_upload only actually deletes numbers that ARE already
-    // published; an unpublished number in the same batch just uploads
-    // normally, so this warns generally rather than trying to
-    // pre-compute exactly which of possibly several numbers are live.
-    if (!await confirmModal(
-      `Force re-upload #${numbersStr}? Any of these that are already live on YouTube will be DELETED ` +
-      `first, then the current file uploaded fresh in its place. Cannot be undone. If you only need to ` +
-      `fix text (title/description/tags), cancel this and use Update metadata instead.`)) return;
-  }
   showResult('<span class="badge">working</span> uploading...');
   try {
-    await runUploadNumbers(numbersStr, force);
+    await runUploadNumbers(document.getElementById('upload-numbers').value, false);
   } catch (e) { showResult(`<pre>ERROR: ${e.message}</pre>`); }
 }
 
@@ -8445,11 +8422,14 @@ async function submitUpdateMetadata() {
   } catch (e) { showResult(`<pre>ERROR: ${e.message}</pre>`); }
 }
 
-// Split out of submitUpload so a confirmed rename can resume the SAME
-// batch by re-calling this with the same numbers string -- do_upload
-// skips already-published numbers harmlessly (see its own docstring),
-// so this just continues from wherever it stopped, not a restart. force
-// carries through the resume too, same as the original click.
+// Split out of submitUpload so a resolved stop (a confirmed rename, a
+// resend, a metadata-only push) can resume the rest of the batch by
+// re-calling this. Always resumes with pending_confirmation's own
+// "remaining_numbers" (see do_upload's docstring), NEVER the original
+// numbersStr again -- numbers before the stopping point may have
+// already succeeded in an earlier call and are now published, so
+// resuming the full original list would immediately re-trigger an
+// "already published" stop on each of them right back.
 async function runUploadNumbers(numbersStr, force) {
   const data = await api('POST', '/api/upload', { project: state.project, numbers: numbersStr, force });
   // renderSidebar() alone left the "specs: X | rendered: Y | uploaded:
@@ -8466,7 +8446,17 @@ async function runUploadNumbers(numbersStr, force) {
 
   const pc = data.pending_confirmation;
   if (!pc) return;
+
+  if (pc.diagnose) {
+    await handleUploadMismatch(pc, data.log);
+  } else if (pc.already_published) {
+    await handleUploadAlreadyPublished(pc, data.log);
+  }
+}
+
+async function handleUploadMismatch(pc, priorLog) {
   const d = pc.diagnose;
+  const remaining = pc.remaining_numbers.join(',');
 
   if (d.status === 'mismatch') {
     // The one case safe to offer an automatic fix for -- exactly one
@@ -8480,23 +8470,73 @@ async function runUploadNumbers(numbersStr, force) {
     if (ok) {
       const renamed = await api('POST', '/api/upload/rename-video', { project: state.project, number: pc.number });
       if (renamed.status !== 'ok') {
-        showResult(`<pre>${esc(data.log)}\n\nRename did not go through as expected: ` +
+        showResult(`<pre>${esc(priorLog)}\n\nRename did not go through as expected: ` +
           `${esc(JSON.stringify(renamed))}\n${esc(renamed.log || '')}</pre>`);
         return;
       }
-      await runUploadNumbers(numbersStr, force);
+      await runUploadNumbers(remaining, false);
     } else {
-      showResult(`<pre>${esc(data.log)}\n\nThe video for #${pc.number} is missing and may need to ` +
+      showResult(`<pre>${esc(priorLog)}\n\nThe video for #${pc.number} is missing and may need to ` +
         `be regenerated. Address by moving video "${d.found}" out of the Reviewed folder and ` +
         `reworking, or uploading the correct video to ${d.folder}/${d.expected}.</pre>`);
     }
   } else if (d.status === 'ambiguous') {
     // 2+ candidate files -- NOT safe to auto-pick one, so this only
     // ever informs, never offers a rename.
-    showResult(`<pre>${esc(data.log)}\n\nMultiple video files found in ${d.folder} for #${pc.number}, ` +
+    showResult(`<pre>${esc(priorLog)}\n\nMultiple video files found in ${d.folder} for #${pc.number}, ` +
       `none named "${d.expected}": ${d.candidates.join(', ')}. Resolve manually by keeping only the ` +
       `correct one, named "${d.expected}", then try uploading again.</pre>`);
   }
+}
+
+// The reactive choice for a number Upload found already published --
+// no upfront "force" checkbox to predict in advance; plain Upload just
+// stops here and asks. resendUpload/metadataOnlyUpload are the two
+// buttons rendered into the results panel below.
+async function handleUploadAlreadyPublished(pc, priorLog) {
+  const remaining = pc.remaining_numbers.join(',');
+  const ap = pc.already_published;
+  document.getElementById('results').innerHTML = `<div class="card">
+    <pre>${esc(priorLog)}</pre>
+    <p>#${pc.number} already exists at <a href="${esc(ap.url)}" target="_blank">${esc(ap.url)}</a>.</p>
+    <div class="row" style="gap:0.5rem">
+      <button onclick="resendUpload('${remaining}')">Resend (file + metadata)</button>
+      <button onclick="metadataOnlyUpload(${pc.number}, '${remaining}')">Metadata only</button>
+    </div></div>`;
+}
+
+async function resendUpload(remainingStr) {
+  // Genuinely deletes the currently-live video before uploading the
+  // replacement -- a real, irreversible destructive action, always
+  // confirmed, same as every other destructive action in this app
+  // (Clear content, delete project, ...).
+  if (!await confirmModal(
+    `Resend #${remainingStr}? Any of these that are already live on YouTube will be DELETED first, ` +
+    `then the current file + metadata uploaded fresh in its place. Cannot be undone.`)) return;
+  showResult('<span class="badge">working</span> resending...');
+  try {
+    await runUploadNumbers(remainingStr, true);
+  } catch (e) { showResult(`<pre>ERROR: ${e.message}</pre>`); }
+}
+
+async function metadataOnlyUpload(number, remainingStr) {
+  showResult('<span class="badge">working</span> updating metadata...');
+  try {
+    const data = await api('POST', '/api/upload/update-metadata', {
+      project: state.project, numbers: String(number),
+    });
+    // Continue the rest of the batch (everything after this number)
+    // the same way a confirmed rename does -- this one's resolved, on
+    // to whatever's left.
+    const rest = remainingStr.split(',').map(Number).filter(n => n !== number);
+    if (rest.length) {
+      await runUploadNumbers(rest.join(','), false);
+    } else {
+      state.status = await api('GET', `/api/status?project=${encodeURIComponent(state.project)}`);
+      renderMenu('upload');
+      showResult(`<pre>${esc(data.log)}</pre>`);
+    }
+  } catch (e) { showResult(`<pre>ERROR: ${e.message}</pre>`); }
 }
 
 function showNewProject() {

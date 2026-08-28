@@ -5222,15 +5222,23 @@ def do_upload(numbers, force):
     -- pending_confirmation is set (and the loop stops there, leaving
     remaining numbers untouched) exactly when a human decision is
     needed; CLI callers that don't care can just ignore the return
-    value, same as before this was added."""
+    value, same as before this was added. pending_confirmation always
+    includes "remaining_numbers" (this number and everything still
+    unprocessed after it) -- a caller resuming the batch MUST resume
+    with exactly that list, not the original numbers again: numbers
+    before this point may have already succeeded in THIS SAME call and
+    are now published, so resuming the original full list would
+    immediately re-trigger an "already published" stop on each of them
+    right back."""
     any_uploaded = False
-    for number in numbers:
+    for i, number in enumerate(numbers):
         diag = diagnose_upload_video(number)
         if diag["status"] in ("mismatch", "ambiguous"):
             print(f"[dream_step] >>> #{number}'s video file isn't where expected -- "
                   f"{diag}. Stopping here to ask before guessing.")
             return {"any_uploaded": any_uploaded,
-                    "pending_confirmation": {"number": number, "diagnose": diag}}
+                    "pending_confirmation": {"number": number, "diagnose": diag,
+                                              "remaining_numbers": list(numbers[i:])}}
         print(f"[dream_step] uploading #{number} via upload_dream.py", flush=True)
         extra = ["--number", str(number)]
         if force:
@@ -5256,15 +5264,26 @@ def do_upload(numbers, force):
                     warnings.append(f"live metadata doesn't match what was intended: {parsed.get('mismatches')}")
                 suffix = f" -- WARNING: {'; '.join(warnings)}" if warnings else ""
                 print(f"[dream_step] #{number} uploaded: {parsed.get('url')}{suffix}")
+        elif parsed and parsed.get("status") == "already_published":
+            # Expected, common state -- not a failure -- so this stops
+            # with a real choice (see h_upload/the web UI) rather than
+            # the generic failure path below: resend (delete the live
+            # video, upload the current file + metadata fresh) or
+            # metadata-only (push just title/description/tags/status
+            # from the current spec + template, no delete, no re-upload).
+            print(f"[dream_step] >>> #{number} already exists at {parsed.get('url')}. "
+                  f"Stopping here to ask: resend, or metadata only?")
+            return {"any_uploaded": any_uploaded,
+                    "pending_confirmation": {"number": number, "already_published": parsed,
+                                              "remaining_numbers": list(numbers[i:])}}
         else:
             # Full raw output ONLY here -- an actual failure is exactly
             # when a human needs to see everything, not just the summary.
             _print_raw_subprocess_output(stdout, stderr)
             error_detail = parsed.get("error") if parsed else None
             reason = f": {error_detail}" if error_detail else " -- no JSON result line found in its output"
-            print(f"[dream_step] >>> #{number} upload did not succeed{reason} -- this may be an "
-                  f"intentional skip (already published) rather than a real failure. Stopping here "
-                  f"either way rather than continuing past it silently.")
+            print(f"[dream_step] >>> #{number} upload did not succeed{reason}. Stopping here rather "
+                  f"than continuing past it silently.")
             return {"any_uploaded": any_uploaded, "pending_confirmation": None}
     if not any_uploaded:
         print("[dream_step] Nothing was uploaded this run.")
