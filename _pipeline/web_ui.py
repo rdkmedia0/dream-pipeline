@@ -91,6 +91,15 @@ FEEDBACK_WORKER_RUNNING = False
 FEEDBACK_STATUS = {"current": None, "queue_length": 0, "last_result": None}
 FEEDBACK_STATUS_LOCK = threading.Lock()
 
+# Started lazily -- only once a human actually schedules an upload
+# auto-retry (see h_schedule_upload_retry), never unconditionally at
+# server start. Purely opt-in: nothing here ever decides on its own to
+# wait 24 hours and try again (see ds.schedule_upload_retry's own
+# comment on why do_upload never calls it automatically either).
+UPLOAD_RETRY_POLLER_LOCK = threading.Lock()
+UPLOAD_RETRY_POLLER_RUNNING = False
+UPLOAD_RETRY_POLL_INTERVAL_S = 300
+
 # In-memory cache of the credentials from the last successful
 # client_secret authorization (Settings' Save/Reauthorize action) --
 # an in-process speedup only; the actual persistence is the encrypted
@@ -341,6 +350,47 @@ def _run_feedback_queue():
         with FEEDBACK_STATUS_LOCK:
             FEEDBACK_STATUS["last_result"] = {"number": item["number"], "ok": error is None, "detail": error}
             FEEDBACK_STATUS["current"] = None
+
+
+def _run_upload_retry_poller():
+    """Background worker, started once when a human first schedules an
+    upload auto-retry (see h_schedule_upload_retry) and left running
+    indefinitely after that -- unlike the feedback queue, this can't
+    just exit once nothing's due right now, since the whole point is
+    noticing a retry that becomes due possibly a day+ later. Wakes every
+    UPLOAD_RETRY_POLL_INTERVAL_S and hands each due project's own
+    resolve_project_globals/do_upload/outcome-recording through
+    _STDOUT_ROUTER's per-thread target -- this poller runs on its own
+    dedicated thread, so its target persists across the whole loop
+    without disturbing any other concurrent request's own capture."""
+    _STDOUT_ROUTER.set_target(io.StringIO())  # discard this thread's own log noise by default
+    while True:
+        time.sleep(UPLOAD_RETRY_POLL_INTERVAL_S)
+        for name, retry in ds.due_upload_retry_projects():
+            ds.resolve_project_globals(name)
+            log = io.StringIO()
+            _STDOUT_ROUTER.set_target(log)
+            try:
+                result = ds.do_upload(retry["numbers"], force=False)
+            finally:
+                _STDOUT_ROUTER.set_target(io.StringIO())
+            pc = result.get("pending_confirmation")
+            if pc and (pc.get("already_published") or pc.get("diagnose")):
+                # Needs a human decision this poller can't make -- stop
+                # retrying an unresolvable state every poll indefinitely;
+                # the human resolves it manually next time they open
+                # Upload (the normal reactive flow handles it from there).
+                ds.cancel_upload_retry()
+                ds._write_upload_retry_result("needs_attention", log.getvalue())
+            elif pc and pc.get("upload_limit"):
+                # Hit the SAME limit again -- leave the (now-stale)
+                # schedule in place rather than deleting it; this poller
+                # never decides to reschedule on the human's behalf, same
+                # opt-in-only rule as scheduling itself.
+                ds._write_upload_retry_result("limit_again", log.getvalue())
+            else:
+                ds.cancel_upload_retry()
+                ds._write_upload_retry_result("done", log.getvalue())
 
 
 def h_preview_feedback(qs, body):
@@ -1115,6 +1165,43 @@ def h_upload_update_metadata(qs, body):
     finally:
         _STDOUT_ROUTER.clear_target()
     return {"log": log.getvalue()}
+
+
+def h_schedule_upload_retry(qs, body):
+    """Opt-in only -- the human's own choice, hours typed by them, no
+    default hardcoded (see ds.schedule_upload_retry's own comment). If
+    the poller isn't already running (this may be the very first retry
+    ever scheduled on this server), starts it."""
+    project = _project_from_body(body)
+    numbers = body["numbers"]
+    hours = float(body["hours"])
+    ds.schedule_upload_retry(numbers, hours)
+    global UPLOAD_RETRY_POLLER_RUNNING
+    with UPLOAD_RETRY_POLLER_LOCK:
+        start_poller = not UPLOAD_RETRY_POLLER_RUNNING
+        if start_poller:
+            UPLOAD_RETRY_POLLER_RUNNING = True
+    if start_poller:
+        threading.Thread(target=_run_upload_retry_poller, daemon=True).start()
+    return {"ok": True}
+
+
+def h_cancel_upload_retry(qs, body):
+    _project_from_body(body)
+    ds.cancel_upload_retry()
+    return {"ok": True}
+
+
+def h_upload_retry_status(qs, body):
+    project = _project_from_qs(qs)
+    ds.resolve_project_globals(project)
+    return {"pending": ds.get_pending_upload_retry(), "last_result": ds.get_upload_retry_last_result()}
+
+
+def h_dismiss_upload_retry_result(qs, body):
+    _project_from_body(body)
+    ds.dismiss_upload_retry_last_result()
+    return {"ok": True}
 
 
 def h_upload_rename_video(qs, body):
@@ -2289,6 +2376,10 @@ ROUTES = {
     ("POST", "/api/upload"): h_upload,
     ("POST", "/api/upload/rename-video"): h_upload_rename_video,
     ("POST", "/api/upload/update-metadata"): h_upload_update_metadata,
+    ("POST", "/api/upload/schedule-retry"): h_schedule_upload_retry,
+    ("POST", "/api/upload/cancel-retry"): h_cancel_upload_retry,
+    ("GET", "/api/upload/retry-status"): h_upload_retry_status,
+    ("POST", "/api/upload/dismiss-retry-result"): h_dismiss_upload_retry_result,
     ("GET", "/api/videos"): h_videos,
     ("POST", "/api/videos/move"): h_move_video,
     ("POST", "/api/videos/delete"): h_delete_video,
@@ -6420,9 +6511,11 @@ async function loadUploadTab(preservedScrollY) {
   // project that has nothing to do with channel X.
   container.innerHTML = projectChannelSection() +
     uploadTemplateSection(data.template, data.error) +
-    (data.error ? '<div class="muted">Fix the template above before uploading.</div>' : uploadActionForm());
+    (data.error ? '<div class="muted">Fix the template above before uploading.</div>' : uploadActionForm()) +
+    '<div id="upload-retry-status"></div>';
   window.scrollTo(0, scrollY);
   loadProjectChannelStatus();
+  refreshUploadRetryStatus();
 }
 
 // get_authenticated_service() (upload_dream.py) reuses whatever
@@ -8485,7 +8578,72 @@ async function runUploadNumbers(numbersStr, force) {
     await handleUploadMismatch(pc, data.log);
   } else if (pc.already_published) {
     await handleUploadAlreadyPublished(pc, data.log);
+  } else if (pc.upload_limit) {
+    handleUploadLimit(pc, data.log);
   }
+}
+
+// YouTube's own account-level upload cap, not a failure of this tool
+// (see do_upload's own comment) -- offers retry-now (hits the same
+// wall immediately if the cap hasn't actually lifted, but harmless to
+// try) or scheduling an unattended auto-retry after a human-chosen
+// delay. Never schedules anything on its own.
+function handleUploadLimit(pc, priorLog) {
+  const remaining = pc.remaining_numbers.join(',');
+  document.getElementById('results').innerHTML = `<div class="card">
+    <pre>${esc(priorLog)}</pre>
+    <p>#${pc.number} hit YouTube's upload limit. Not a failure of this tool -- ${esc(pc.upload_limit.error)}</p>
+    <div class="row" style="gap:0.5rem;align-items:center">
+      <button onclick="runUploadNumbers('${remaining}', false)">Try again now</button>
+      <label style="display:inline-flex;align-items:center;gap:0.3rem">Auto-retry in
+        <input type="number" id="upload-retry-hours" value="24" min="1" style="width:4em"> hours</label>
+      <button onclick="scheduleUploadRetry('${remaining}')">Schedule auto-retry</button>
+    </div></div>`;
+}
+
+async function scheduleUploadRetry(remainingStr) {
+  const hours = document.getElementById('upload-retry-hours').value;
+  const numbers = remainingStr.split(',').map(Number);
+  await api('POST', '/api/upload/schedule-retry', { project: state.project, numbers, hours });
+  await refreshUploadRetryStatus();
+}
+
+async function cancelUploadRetry() {
+  if (!await confirmModal('Cancel the scheduled auto-retry? Nothing will resume automatically until you upload again manually.')) return;
+  await api('POST', '/api/upload/cancel-retry', { project: state.project });
+  await refreshUploadRetryStatus();
+}
+
+async function dismissUploadRetryResult() {
+  await api('POST', '/api/upload/dismiss-retry-result', { project: state.project });
+  await refreshUploadRetryStatus();
+}
+
+// Called after loadUploadTab's own content is in place, and after
+// scheduling/cancelling/dismissing -- keeps the banner in sync without
+// requiring a full tab reload each time.
+async function refreshUploadRetryStatus() {
+  const el = document.getElementById('upload-retry-status');
+  if (!el) return;
+  let status;
+  try { status = await api('GET', `/api/upload/retry-status?project=${encodeURIComponent(state.project)}`); }
+  catch (e) { el.innerHTML = ''; return; }
+  const parts = [];
+  if (status.pending) {
+    const when = new Date(status.pending.resume_at).toLocaleString();
+    parts.push(`<div class="card">Auto-retry scheduled for #${status.pending.numbers.join(',')} at ${esc(when)}. ` +
+      `<button onclick="cancelUploadRetry()">Cancel</button></div>`);
+  }
+  if (status.last_result) {
+    const when = new Date(status.last_result.ran_at).toLocaleString();
+    const outcomeText = {
+      done: 'completed', needs_attention: 'stopped -- needs your input (open Upload to resolve)',
+      limit_again: 'hit the same limit again (schedule still active)',
+    }[status.last_result.outcome] || status.last_result.outcome;
+    parts.push(`<div class="card">Last auto-retry (${esc(when)}): ${esc(outcomeText)}. ` +
+      `<button onclick="dismissUploadRetryResult()">Dismiss</button><pre>${esc(status.last_result.log)}</pre></div>`);
+  }
+  el.innerHTML = parts.join('');
 }
 
 async function handleUploadMismatch(pc, priorLog) {

@@ -109,7 +109,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import vram_guard
@@ -5298,6 +5298,18 @@ def do_upload(numbers, force):
             return {"any_uploaded": any_uploaded,
                     "pending_confirmation": {"number": number, "already_published": parsed,
                                               "remaining_numbers": list(numbers[i:])}}
+        elif parsed and parsed.get("error_reason") == "uploadLimitExceeded":
+            # A real YouTube-side account limit, not a failure of this
+            # tool -- stops the same way already_published does, with a
+            # real choice, rather than just failing. Does NOT schedule
+            # anything on its own; whether/when to auto-retry is the
+            # human's call (see schedule_upload_retry, called only from
+            # a real user action), never assumed.
+            print(f"[dream_step] >>> #{number} hit YouTube's upload limit: {parsed.get('error')}. "
+                  f"Stopping here -- retry manually later, or schedule an auto-retry.")
+            return {"any_uploaded": any_uploaded,
+                    "pending_confirmation": {"number": number, "upload_limit": parsed,
+                                              "remaining_numbers": list(numbers[i:])}}
         else:
             # Full raw output ONLY here -- an actual failure is exactly
             # when a human needs to see everything, not just the summary.
@@ -5310,6 +5322,102 @@ def do_upload(numbers, force):
     else:
         print("[dream_step] Upload call complete.")
     return {"any_uploaded": any_uploaded, "pending_confirmation": None}
+
+
+PENDING_UPLOAD_RETRY_FILENAME = "pending_upload_retry.json"
+UPLOAD_RETRY_LAST_RESULT_FILENAME = "upload_retry_last_result.json"
+
+
+def _pending_upload_retry_path():
+    return DATA_DIR / PENDING_UPLOAD_RETRY_FILENAME
+
+
+def schedule_upload_retry(numbers, hours):
+    """Opt-in only -- never called automatically by do_upload itself
+    when it hits uploadLimitExceeded (see its own comment on that); this
+    is called ONLY from a real user action (the web UI's "Schedule
+    auto-retry" button, hours taken directly from what the human typed,
+    no hardcoded default baked in here). Persisted to disk (not just an
+    in-memory timer) so it survives a container restart within the
+    window -- a 24-hour-plus wait genuinely might outlive one process
+    lifetime."""
+    _pending_upload_retry_path().write_text(json.dumps({
+        "numbers": list(numbers),
+        "resume_at": (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat(),
+        "scheduled_at": datetime.now(timezone.utc).isoformat(),
+    }, indent=2), encoding="utf-8")
+
+
+def cancel_upload_retry():
+    path = _pending_upload_retry_path()
+    if path.exists():
+        path.unlink()
+
+
+def get_pending_upload_retry():
+    """Returns the pending retry dict (see schedule_upload_retry) if one
+    exists for the CURRENT project, else None. Used by the Upload tab to
+    show "auto-retry scheduled for #X at <time>" with a Cancel option."""
+    path = _pending_upload_retry_path()
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _write_upload_retry_result(outcome, log_text):
+    """Overwritten on every actual retry attempt (not on scheduling) --
+    the one thing the Upload tab has to show a human who wasn't there
+    when the unattended retry actually ran, whatever it did."""
+    (DATA_DIR / UPLOAD_RETRY_LAST_RESULT_FILENAME).write_text(json.dumps({
+        "ran_at": datetime.now(timezone.utc).isoformat(),
+        "outcome": outcome,
+        "log": log_text,
+    }, indent=2), encoding="utf-8")
+
+
+def get_upload_retry_last_result():
+    path = DATA_DIR / UPLOAD_RETRY_LAST_RESULT_FILENAME
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def dismiss_upload_retry_last_result():
+    path = DATA_DIR / UPLOAD_RETRY_LAST_RESULT_FILENAME
+    if path.exists():
+        path.unlink()
+
+
+def due_upload_retry_projects():
+    """Project names with a pending_upload_retry.json (see
+    schedule_upload_retry) whose resume_at has already passed -- pure
+    scan, no side effects, no stdout capture. web_ui.py's background
+    poller uses this to find work, then drives resolve_project_globals/
+    do_upload/schedule outcome recording itself, THROUGH _STDOUT_ROUTER's
+    per-thread target (see its own docstring) -- capturing output here
+    instead, via a straight sys.stdout reassignment, would risk one
+    project's do_upload call clobbering another concurrent request's
+    in-flight log capture, since sys.stdout is one process-global
+    attribute with no thread affinity of its own."""
+    due = []
+    for name in list_existing_projects():
+        retry_path = projects_root() / name / "_data" / PENDING_UPLOAD_RETRY_FILENAME
+        if not retry_path.exists():
+            continue
+        try:
+            retry = json.loads(retry_path.read_text(encoding="utf-8"))
+            resume_at = datetime.fromisoformat(retry["resume_at"])
+        except Exception:
+            continue
+        if datetime.now(timezone.utc) >= resume_at:
+            due.append((name, retry))
+    return due
 
 
 UPLOAD_TEMPLATE_REQUIRED_FIELDS = (

@@ -666,30 +666,32 @@ def diff_video_resource(live, expected_body):
 # itself, not anything wrong with the request. googleapiclient's raw
 # HttpError text (a stringified HTTP response body) is technically
 # complete but not something a human should have to decode themselves
-# to understand "this is expected, not broken, and here's what to do."
+# to understand "this is expected, not broken." Deliberately short and
+# light on specifics that could go stale (exact cap numbers, YouTube's
+# own menu paths) -- YouTube changes both without notice.
 FRIENDLY_HTTP_ERROR_REASONS = {
     "uploadLimitExceeded": (
-        "YouTube has temporarily blocked further uploads on this channel -- it enforces a "
-        "rolling-24-hour cap (commonly around 10 videos) on channels that haven't completed phone/"
-        "identity verification. This is a real YouTube-side limit, not a bug here. Either wait "
-        "~24 hours and resume from this number, or verify the channel's phone number in YouTube "
-        "Studio (Settings > Channel > Feature eligibility) to raise the limit."
+        "YouTube's own rolling upload cap for this channel, not a bug here. May be possible to "
+        "raise it via further verification on YouTube."
     ),
     "quotaExceeded": (
-        "This app's YouTube API quota (a separate daily unit budget from the upload-count limit "
-        "above, shared across ALL projects using these same API credentials) has been used up for "
-        "today. Resets at midnight Pacific time -- resume from this number after that."
+        "This app's YouTube API quota for today is used up (separate from the upload cap above, "
+        "shared across all projects using these credentials), not a bug here. Resets daily."
     ),
 }
 
 
 def friendly_http_error(e):
-    """Best-effort: pulls a known reason code out of an HttpError and
-    returns FRIENDLY_HTTP_ERROR_REASONS' explanation for it, prefixed
-    with the raw error too (never hides the real detail, just adds
-    context ahead of it). Falls back to the raw error alone for any
-    reason not in that small known list -- most HttpErrors ARE genuine,
-    specific problems worth seeing exactly as YouTube reported them."""
+    """Best-effort: pulls a known reason code out of an HttpError.
+    Returns (short_message, reason_code_or_None) -- short_message is
+    FRIENDLY_HTTP_ERROR_REASONS' explanation when the reason is
+    recognized, or the plain "YouTube API error: ..." text otherwise.
+    Deliberately does NOT append the full raw error text here -- the
+    caller puts that in a separate result field instead of folding it
+    into "error" directly, so the one-line failure summary a human
+    actually reads doesn't end up repeating the same long raw HttpError
+    text twice (once in the full JSON dump, once folded into the
+    summary line) -- confirmed a real complaint about exactly that."""
     reason = None
     try:
         for err in json.loads(e.content.decode("utf-8"))["error"]["errors"]:
@@ -699,8 +701,8 @@ def friendly_http_error(e):
     except Exception:
         pass
     if reason:
-        return f"{FRIENDLY_HTTP_ERROR_REASONS[reason]} (raw: {e})"
-    return f"YouTube API error: {e}"
+        return FRIENDLY_HTTP_ERROR_REASONS[reason], reason
+    return f"YouTube API error: {e}", None
 
 
 def verify_upload(youtube, video_id, expected_body):
@@ -804,7 +806,9 @@ def main():
             print(json.dumps(result))
             sys.exit(0 if ok else 1)
         except HttpError as e:
-            result["error"] = friendly_http_error(e)
+            result["error"], reason = friendly_http_error(e)
+            if reason: result["error_reason"] = reason
+            result["error_detail"] = str(e)
             print(json.dumps(result)); sys.exit(1)
         except Exception as e:
             result["error"] = str(e)
@@ -840,7 +844,9 @@ def main():
             print(json.dumps(result))
             sys.exit(0)
         except HttpError as e:
-            result["error"] = friendly_http_error(e)
+            result["error"], reason = friendly_http_error(e)
+            if reason: result["error_reason"] = reason
+            result["error_detail"] = str(e)
             print(json.dumps(result)); sys.exit(1)
         except Exception as e:
             result["error"] = str(e)
@@ -908,7 +914,9 @@ def main():
         print(json.dumps(result))
         sys.exit(0)
     except HttpError as e:
-        result["error"] = friendly_http_error(e)
+        result["error"], reason = friendly_http_error(e)
+        if reason: result["error_reason"] = reason
+        result["error_detail"] = str(e)
         print(json.dumps(result)); sys.exit(1)
     except Exception as e:
         result["error"] = str(e)
