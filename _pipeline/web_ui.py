@@ -1090,10 +1090,27 @@ def h_upload(qs, body):
     log = io.StringIO()
     _STDOUT_ROUTER.set_target(log)
     try:
-        ds.do_upload(numbers, force=False)
+        result = ds.do_upload(numbers, force=False)
     finally:
         _STDOUT_ROUTER.clear_target()
-    return {"log": log.getvalue()}
+    # pending_confirmation set means do_upload stopped mid-batch to ask a
+    # human before guessing which file is the right one -- surfaced here
+    # as its own field (not just buried in the log text) so the frontend
+    # can show a real Yes/No prompt instead of just displaying an error.
+    return {"log": log.getvalue(), "pending_confirmation": result.get("pending_confirmation")}
+
+
+def h_upload_rename_video(qs, body):
+    project = _project_from_body(body)
+    number = int(body["number"])
+    log = io.StringIO()
+    _STDOUT_ROUTER.set_target(log)
+    try:
+        result = ds.rename_upload_video(number)
+    finally:
+        _STDOUT_ROUTER.clear_target()
+    result["log"] = log.getvalue()
+    return result
 
 
 def h_videos(qs, body):
@@ -2253,6 +2270,7 @@ ROUTES = {
     ("GET", "/api/manage/feedback-queue-status"): h_feedback_queue_status,
     ("GET", "/api/active-jobs"): h_active_jobs,
     ("POST", "/api/upload"): h_upload,
+    ("POST", "/api/upload/rename-video"): h_upload_rename_video,
     ("GET", "/api/videos"): h_videos,
     ("POST", "/api/videos/move"): h_move_video,
     ("POST", "/api/videos/delete"): h_delete_video,
@@ -8358,21 +8376,61 @@ function showResult(html) {
 async function submitUpload() {
   showResult('<span class="badge">working</span> uploading...');
   try {
-    const data = await api('POST', '/api/upload', {
-      project: state.project, numbers: document.getElementById('upload-numbers').value,
-    });
-    // renderSidebar() alone left the "specs: X | rendered: Y | uploaded:
-    // Z" summary line (and the Upload tab's own ⚠ crumb) showing stale
-    // pre-upload counts -- that line is rendered by renderMenu() from
-    // state.status, and updating state.status alone doesn't re-render
-    // anything on its own. renderMenu() rebuilds #results too, so call
-    // it BEFORE showResult below, not after, or the fresh render wipes
-    // the log message right back out (same ordering requirement as
-    // saveManageRowContent's own reload-then-message pattern).
-    state.status = await api('GET', `/api/status?project=${encodeURIComponent(state.project)}`);
-    renderMenu('upload');
-    showResult(`<pre>${data.log}</pre>`);
+    await runUploadNumbers(document.getElementById('upload-numbers').value);
   } catch (e) { showResult(`<pre>ERROR: ${e.message}</pre>`); }
+}
+
+// Split out of submitUpload so a confirmed rename can resume the SAME
+// batch by re-calling this with the same numbers string -- do_upload
+// skips already-published numbers harmlessly (see its own docstring),
+// so this just continues from wherever it stopped, not a restart.
+async function runUploadNumbers(numbersStr) {
+  const data = await api('POST', '/api/upload', { project: state.project, numbers: numbersStr });
+  // renderSidebar() alone left the "specs: X | rendered: Y | uploaded:
+  // Z" summary line (and the Upload tab's own ⚠ crumb) showing stale
+  // pre-upload counts -- that line is rendered by renderMenu() from
+  // state.status, and updating state.status alone doesn't re-render
+  // anything on its own. renderMenu() rebuilds #results too, so call
+  // it BEFORE showResult below, not after, or the fresh render wipes
+  // the log message right back out (same ordering requirement as
+  // saveManageRowContent's own reload-then-message pattern).
+  state.status = await api('GET', `/api/status?project=${encodeURIComponent(state.project)}`);
+  renderMenu('upload');
+  showResult(`<pre>${esc(data.log)}</pre>`);
+
+  const pc = data.pending_confirmation;
+  if (!pc) return;
+  const d = pc.diagnose;
+
+  if (d.status === 'mismatch') {
+    // The one case safe to offer an automatic fix for -- exactly one
+    // .mp4 sits in the expected folder, just under a different name, so
+    // there's no ambiguity about which file is meant. Never renamed
+    // silently; always asks first (per explicit requirement).
+    const ok = await confirmModal(
+      `#${pc.number}'s expected video file "${d.expected}" was not found in ${d.folder} -- ` +
+      `"${d.found}" was found there instead. Rename "${d.found}" to "${d.expected}" and continue ` +
+      `uploading (starting from #${pc.number})?`);
+    if (ok) {
+      const renamed = await api('POST', '/api/upload/rename-video', { project: state.project, number: pc.number });
+      if (renamed.status !== 'ok') {
+        showResult(`<pre>${esc(data.log)}\n\nRename did not go through as expected: ` +
+          `${esc(JSON.stringify(renamed))}\n${esc(renamed.log || '')}</pre>`);
+        return;
+      }
+      await runUploadNumbers(numbersStr);
+    } else {
+      showResult(`<pre>${esc(data.log)}\n\nThe video for #${pc.number} is missing and may need to ` +
+        `be regenerated. Address by moving video "${d.found}" out of the Reviewed folder and ` +
+        `reworking, or uploading the correct video to ${d.folder}/${d.expected}.</pre>`);
+    }
+  } else if (d.status === 'ambiguous') {
+    // 2+ candidate files -- NOT safe to auto-pick one, so this only
+    // ever informs, never offers a rename.
+    showResult(`<pre>${esc(data.log)}\n\nMultiple video files found in ${d.folder} for #${pc.number}, ` +
+      `none named "${d.expected}": ${d.candidates.join(', ')}. Resolve manually by keeping only the ` +
+      `correct one, named "${d.expected}", then try uploading again.</pre>`);
+  }
 }
 
 function showNewProject() {

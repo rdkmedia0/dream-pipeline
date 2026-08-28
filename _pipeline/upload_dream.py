@@ -434,25 +434,39 @@ def query_channel(creds):
             "channel_handle": snippet.get("customUrl")}
 
 
-def find_video_file(project_dir, number, title, episode_label="Dream"):
+def _expected_folder_name(number, title, episode_label):
     """episode_label MUST match the project's actual upload_template.json
     setting (dream_step.py's get_episode_label(), also used to name the
     folder in the first place) -- a hardcoded "Dream" here would silently
     miss every project using a different label (e.g. "Tale"), since the
     real on-disk folder is named "<label> #N <title>", not "Dream #N
-    <title>". Checks both DREAMS_ROOT and DREAMS_ROOT/Reviewed -- the two
-    places list_media_folders() already knows a finished render can live,
-    since a human moves it from one to the other by hand after review.
+    <title>"."""
+    return sanitize_filename(f"{episode_label} #{number} {title}")
 
-    Within whichever folder is found, prefers the file matching the
-    folder's own name exactly, falling back to the first .mp4 present --
-    same convention list_media_folders() already uses, needed for the
-    same reason: a folder's video can end up named something else (a
-    manual rename, an older render's leftover naming, a raw workflow
-    output copied in directly) without a matching "<folder name>.mp4"
-    ever existing. Confirmed a real case of this: ChatAiMals #2's folder
-    contains only "lemmings.mp4", not "Tale #2 The Lemmings.mp4"."""
-    folder_name = sanitize_filename(f"{episode_label} #{number} {title}")
+
+def diagnose_video_file(project_dir, number, title, episode_label="Dream"):
+    """Filesystem-only check (no network, no YouTube auth -- safe to run
+    speculatively before every upload attempt) for whether this number's
+    video is exactly where it's expected. Checks both DREAMS_ROOT and
+    DREAMS_ROOT/Reviewed -- the two places list_media_folders() already
+    knows a finished render can live, since a human moves it from one to
+    the other by hand after review. Returns one of:
+      {"status": "ok", "path": str}
+      {"status": "missing", "checked": [str, ...]} -- no folder, or a
+        folder with no .mp4 in it at all, in either location
+      {"status": "mismatch", "folder": str, "expected": str, "found": str}
+        -- exactly one .mp4 present, but under a different name (a
+        manual rename, an older render's leftover naming, a raw
+        workflow output copied in directly -- confirmed a real case of
+        this: ChatAiMals #2's folder held only "lemmings.mp4", not
+        "Tale #2 The Lemmings.mp4"). Safe to offer an automatic rename
+        for -- there's exactly one file it could possibly be.
+      {"status": "ambiguous", "folder": str, "expected": str,
+       "candidates": [str, ...]} -- 2+ .mp4 files present, none matching
+        the expected name; NOT safe to auto-pick one, needs a human to
+        sort out which is actually correct."""
+    folder_name = _expected_folder_name(number, title, episode_label)
+    expected_name = f"{folder_name}.mp4"
     checked = []
     for base in (project_dir, project_dir / "Reviewed"):
         folder = base / folder_name
@@ -461,12 +475,50 @@ def find_video_file(project_dir, number, title, episode_label="Dream"):
             continue
         video_files = sorted(p.name for p in folder.iterdir()
                               if p.is_file() and p.suffix.lower() == ".mp4")
-        expected_name = f"{folder_name}.mp4"
         if expected_name in video_files:
-            return folder / expected_name
-        if video_files:
-            return folder / video_files[0]
+            return {"status": "ok", "path": str(folder / expected_name)}
+        if len(video_files) == 1:
+            return {"status": "mismatch", "folder": str(folder),
+                    "expected": expected_name, "found": video_files[0]}
+        if len(video_files) > 1:
+            return {"status": "ambiguous", "folder": str(folder),
+                    "expected": expected_name, "candidates": video_files}
         checked.append(str(folder) + " (folder exists, no .mp4 in it)")
+    return {"status": "missing", "checked": checked}
+
+
+def rename_video_to_expected(project_dir, number, title, episode_label="Dream"):
+    """Performs the rename diagnose_video_file's "mismatch" status offers
+    -- re-diagnoses first rather than trusting stale info from an earlier
+    call, since the file could have changed on disk in between (another
+    process, a human) -- only proceeds if it's STILL exactly a single-
+    candidate mismatch. Returns the same shape as diagnose_video_file:
+    {"status": "ok", "path": ...} on success (post-rename), or whatever
+    the fresh diagnosis actually found if the mismatch is no longer
+    real."""
+    diag = diagnose_video_file(project_dir, number, title, episode_label)
+    if diag["status"] != "mismatch":
+        return diag
+    folder = Path(diag["folder"])
+    src = folder / diag["found"]
+    dst = folder / diag["expected"]
+    src.rename(dst)
+    return {"status": "ok", "path": str(dst)}
+
+
+def find_video_file(project_dir, number, title, episode_label="Dream"):
+    """Strict -- the real upload path. Unlike diagnose_video_file, this
+    never silently substitutes a differently-named file; a caller that
+    wants that handled interactively should call diagnose_video_file (and
+    rename_video_to_expected, on confirmation) BEFORE this, the way
+    dream_step.py's do_upload() now does."""
+    folder_name = _expected_folder_name(number, title, episode_label)
+    checked = []
+    for base in (project_dir, project_dir / "Reviewed"):
+        mp4 = base / folder_name / f"{folder_name}.mp4"
+        checked.append(str(mp4))
+        if mp4.exists():
+            return mp4
     # RuntimeError, not SystemExit -- this is raised inside main()'s own
     # try/except Exception block, which SystemExit (a BaseException, not
     # an Exception) would silently skip straight past, bypassing the
@@ -624,6 +676,13 @@ def main():
                           "status to the ALREADY-uploaded video via videos.update. Use this to "
                           "fix metadata on a live upload without creating a duplicate video "
                           "(unlike --force, which re-uploads the file as a new video).")
+    ap.add_argument("--diagnose-file", action="store_true",
+                     help="Don't upload -- just check whether this number's video file is where "
+                          "it's expected (see diagnose_video_file). Filesystem-only, no network.")
+    ap.add_argument("--rename-video", action="store_true",
+                     help="Don't upload -- perform the rename diagnose_video_file's \"mismatch\" "
+                          "status offers (a single, unambiguous differently-named .mp4 found in "
+                          "the expected folder). Filesystem-only, no network.")
     args = ap.parse_args()
 
     import dream_step as ds
@@ -652,6 +711,15 @@ def main():
         result["error"] = f"missing {template_path} -- create the channel upload template first"
         print(json.dumps(result)); sys.exit(1)
     template = json.loads(template_path.read_text(encoding="utf-8"))
+    episode_label = template.get("episode_label", "Dream")
+
+    if args.diagnose_file:
+        diag = diagnose_video_file(project_dir, args.number, spec["title"], episode_label)
+        print(json.dumps(diag)); sys.exit(0 if diag["status"] == "ok" else 1)
+
+    if args.rename_video:
+        result_r = rename_video_to_expected(project_dir, args.number, spec["title"], episode_label)
+        print(json.dumps(result_r)); sys.exit(0 if result_r["status"] == "ok" else 1)
 
     if args.check_only:
         video_id = entry.get("youtube_video_id")
@@ -702,8 +770,7 @@ def main():
         print(json.dumps(result)); sys.exit(1)
 
     try:
-        video_path = find_video_file(project_dir, args.number, spec["title"],
-                                      template.get("episode_label", "Dream"))
+        video_path = find_video_file(project_dir, args.number, spec["title"], episode_label)
         youtube = get_authenticated_service(youtube_dir, template.get("channel_handle"))
         body = build_metadata(spec, template, args.number)
         media = MediaFileUpload(str(video_path), chunksize=-1, resumable=True, mimetype="video/mp4")

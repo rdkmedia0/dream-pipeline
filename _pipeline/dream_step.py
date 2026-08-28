@@ -5127,55 +5127,100 @@ def format_number_ranges(numbers):
     return ", ".join(parts)
 
 
+def _upload_dream_subprocess(*extra_args):
+    """Shared plumbing for every upload_dream.py subprocess call this
+    file makes -- captures stdout/stderr (see do_upload's own comment on
+    why capturing beats inheriting here), echoes both verbatim for full
+    transparency, and returns (returncode, parsed_json_or_None)."""
+    cmd = [sys.executable, str(PIPELINE_DIR / "upload_dream.py"),
+           "--project", PROJECT_DIR.name, *extra_args]
+    result = subprocess.run(cmd, cwd=str(PIPELINE_DIR), capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
+    if result.stderr:
+        print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", flush=True)
+    parsed = None
+    for line in reversed(result.stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                parsed = json.loads(line)
+            except Exception:
+                pass
+            break
+    return result.returncode, parsed
+
+
+def diagnose_upload_video(number):
+    """Filesystem-only pre-check (see upload_dream.py's own
+    diagnose_video_file) for whether #number's video is where do_upload
+    is about to look for it. Returns the parsed {"status": ...} dict, or
+    a synthetic {"status": "error", "error": ...} if the subprocess
+    itself produced no parseable result at all."""
+    returncode, parsed = _upload_dream_subprocess("--number", str(number), "--diagnose-file")
+    if parsed is not None:
+        return parsed
+    return {"status": "error", "error": "no JSON result line found in its output"}
+
+
+def rename_upload_video(number):
+    """Performs the rename a "mismatch" diagnosis offers -- see
+    upload_dream.py's rename_video_to_expected, which re-diagnoses
+    before actually renaming rather than trusting stale info. Returns
+    the same shape as diagnose_upload_video."""
+    returncode, parsed = _upload_dream_subprocess("--number", str(number), "--rename-video")
+    if parsed is not None:
+        return parsed
+    return {"status": "error", "error": "no JSON result line found in its output"}
+
+
 def do_upload(numbers, force):
     """Call upload_dream.py for each listed number, in order, stopping on
     the first failure -- same discipline as do_rework. upload_dream.py
     itself refuses to re-upload an already-published number unless --force
     is passed, so accidentally re-listing an already-uploaded number is
-    safe by default (prints a message, does not create a duplicate video)."""
+    safe by default (prints a message, does not create a duplicate video).
+
+    Before each real upload attempt, runs a cheap filesystem-only
+    diagnose_upload_video() first -- catches the specific case of the
+    video's folder holding a single, differently-named .mp4 (a manual
+    rename, an older render's leftover naming, ...) and stops the whole
+    batch to ask a human before silently guessing OR silently failing.
+    Never auto-renames on its own; that decision belongs to whoever is
+    driving this (see h_upload's "needs_confirmation" field, and the web
+    UI's confirm-then-retry flow). Returns a dict describing what
+    happened: {"any_uploaded": bool, "pending_confirmation": {...}|None}
+    -- pending_confirmation is set (and the loop stops there, leaving
+    remaining numbers untouched) exactly when a human decision is
+    needed; CLI callers that don't care can just ignore the return
+    value, same as before this was added."""
     any_uploaded = False
     for number in numbers:
+        diag = diagnose_upload_video(number)
+        if diag["status"] in ("mismatch", "ambiguous"):
+            print(f"[dream_step] >>> #{number}'s video file isn't where expected -- "
+                  f"{diag}. Stopping here to ask before guessing.")
+            return {"any_uploaded": any_uploaded,
+                    "pending_confirmation": {"number": number, "diagnose": diag}}
         print(f"[dream_step] uploading #{number} via upload_dream.py", flush=True)
-        cmd = [sys.executable, str(PIPELINE_DIR / "upload_dream.py"),
-               "--project", PROJECT_DIR.name, "--number", str(number)]
+        extra = ["--number", str(number)]
         if force:
-            cmd.append("--force")
-        # Captured rather than inherited -- letting the child write straight
-        # to this process's own stdout/stderr meant its one JSON result
-        # line (the actual reason for a failure) never got a "[dream_step]
-        # >>>" prefix, and the web UI's own failure summary
-        # (renderFailureCallout) only ever pulls out lines with that
-        # prefix -- so the real error was always technically "printed
-        # above" in the raw log, but silently absent from the human-
-        # readable summary a person actually reads. Still echoed verbatim
-        # below for full transparency, but now ALSO parsed and folded
-        # into the ">>>" line itself so it survives into that summary.
-        result = subprocess.run(cmd, cwd=str(PIPELINE_DIR), capture_output=True, text=True)
-        if result.stdout:
-            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
-        if result.stderr:
-            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", flush=True)
-        if result.returncode == 0:
+            extra.append("--force")
+        returncode, parsed = _upload_dream_subprocess(*extra)
+        if returncode == 0:
             any_uploaded = True
         else:
-            error_detail = None
-            for line in reversed(result.stdout.splitlines()):
-                line = line.strip()
-                if line.startswith("{"):
-                    try:
-                        error_detail = json.loads(line).get("error")
-                    except Exception:
-                        pass
-                    break
+            error_detail = parsed.get("error") if parsed else None
             reason = f": {error_detail}" if error_detail else " -- no JSON result line found in its output"
             print(f"[dream_step] >>> #{number} upload did not succeed{reason} -- this may be an "
                   f"intentional skip (already published) rather than a real failure. Stopping here "
                   f"either way rather than continuing past it silently.")
-            return
+            return {"any_uploaded": any_uploaded, "pending_confirmation": None}
     if not any_uploaded:
         print("[dream_step] Nothing was uploaded this run.")
     else:
         print("[dream_step] Upload call complete.")
+    return {"any_uploaded": any_uploaded, "pending_confirmation": None}
 
 
 UPLOAD_TEMPLATE_REQUIRED_FIELDS = (
