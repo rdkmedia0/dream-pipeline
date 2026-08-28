@@ -661,6 +661,48 @@ def diff_video_resource(live, expected_body):
     return (len(mismatches) == 0), mismatches, {"snippet": live_snippet, "status": live_status}
 
 
+# YouTube's own reason codes for a small set of well-known, NOT-a-bug-in-
+# this-pipeline conditions -- account/quota limits enforced by YouTube
+# itself, not anything wrong with the request. googleapiclient's raw
+# HttpError text (a stringified HTTP response body) is technically
+# complete but not something a human should have to decode themselves
+# to understand "this is expected, not broken, and here's what to do."
+FRIENDLY_HTTP_ERROR_REASONS = {
+    "uploadLimitExceeded": (
+        "YouTube has temporarily blocked further uploads on this channel -- it enforces a "
+        "rolling-24-hour cap (commonly around 10 videos) on channels that haven't completed phone/"
+        "identity verification. This is a real YouTube-side limit, not a bug here. Either wait "
+        "~24 hours and resume from this number, or verify the channel's phone number in YouTube "
+        "Studio (Settings > Channel > Feature eligibility) to raise the limit."
+    ),
+    "quotaExceeded": (
+        "This app's YouTube API quota (a separate daily unit budget from the upload-count limit "
+        "above, shared across ALL projects using these same API credentials) has been used up for "
+        "today. Resets at midnight Pacific time -- resume from this number after that."
+    ),
+}
+
+
+def friendly_http_error(e):
+    """Best-effort: pulls a known reason code out of an HttpError and
+    returns FRIENDLY_HTTP_ERROR_REASONS' explanation for it, prefixed
+    with the raw error too (never hides the real detail, just adds
+    context ahead of it). Falls back to the raw error alone for any
+    reason not in that small known list -- most HttpErrors ARE genuine,
+    specific problems worth seeing exactly as YouTube reported them."""
+    reason = None
+    try:
+        for err in json.loads(e.content.decode("utf-8"))["error"]["errors"]:
+            if err.get("reason") in FRIENDLY_HTTP_ERROR_REASONS:
+                reason = err["reason"]
+                break
+    except Exception:
+        pass
+    if reason:
+        return f"{FRIENDLY_HTTP_ERROR_REASONS[reason]} (raw: {e})"
+    return f"YouTube API error: {e}"
+
+
 def verify_upload(youtube, video_id, expected_body):
     """Fetches the live video via a fresh videos.list() call, then diffs
     it (see diff_video_resource). Used by --check-only, an independent
@@ -762,7 +804,7 @@ def main():
             print(json.dumps(result))
             sys.exit(0 if ok else 1)
         except HttpError as e:
-            result["error"] = f"YouTube API error: {e}"
+            result["error"] = friendly_http_error(e)
             print(json.dumps(result)); sys.exit(1)
         except Exception as e:
             result["error"] = str(e)
@@ -798,7 +840,7 @@ def main():
             print(json.dumps(result))
             sys.exit(0)
         except HttpError as e:
-            result["error"] = f"YouTube API error: {e}"
+            result["error"] = friendly_http_error(e)
             print(json.dumps(result)); sys.exit(1)
         except Exception as e:
             result["error"] = str(e)
@@ -866,7 +908,7 @@ def main():
         print(json.dumps(result))
         sys.exit(0)
     except HttpError as e:
-        result["error"] = f"YouTube API error: {e}"
+        result["error"] = friendly_http_error(e)
         print(json.dumps(result)); sys.exit(1)
     except Exception as e:
         result["error"] = str(e)
