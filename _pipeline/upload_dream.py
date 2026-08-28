@@ -442,14 +442,31 @@ def find_video_file(project_dir, number, title, episode_label="Dream"):
     real on-disk folder is named "<label> #N <title>", not "Dream #N
     <title>". Checks both DREAMS_ROOT and DREAMS_ROOT/Reviewed -- the two
     places list_media_folders() already knows a finished render can live,
-    since a human moves it from one to the other by hand after review."""
+    since a human moves it from one to the other by hand after review.
+
+    Within whichever folder is found, prefers the file matching the
+    folder's own name exactly, falling back to the first .mp4 present --
+    same convention list_media_folders() already uses, needed for the
+    same reason: a folder's video can end up named something else (a
+    manual rename, an older render's leftover naming, a raw workflow
+    output copied in directly) without a matching "<folder name>.mp4"
+    ever existing. Confirmed a real case of this: ChatAiMals #2's folder
+    contains only "lemmings.mp4", not "Tale #2 The Lemmings.mp4"."""
     folder_name = sanitize_filename(f"{episode_label} #{number} {title}")
     checked = []
     for base in (project_dir, project_dir / "Reviewed"):
-        mp4 = base / folder_name / f"{folder_name}.mp4"
-        checked.append(str(mp4))
-        if mp4.exists():
-            return mp4
+        folder = base / folder_name
+        if not folder.is_dir():
+            checked.append(str(folder) + " (no such folder)")
+            continue
+        video_files = sorted(p.name for p in folder.iterdir()
+                              if p.is_file() and p.suffix.lower() == ".mp4")
+        expected_name = f"{folder_name}.mp4"
+        if expected_name in video_files:
+            return folder / expected_name
+        if video_files:
+            return folder / video_files[0]
+        checked.append(str(folder) + " (folder exists, no .mp4 in it)")
     # RuntimeError, not SystemExit -- this is raised inside main()'s own
     # try/except Exception block, which SystemExit (a BaseException, not
     # an Exception) would silently skip straight past, bypassing the
