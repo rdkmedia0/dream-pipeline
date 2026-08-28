@@ -6538,11 +6538,13 @@ function uploadActionForm() {
   return `<div class="card"><label>Number(s) <input id="upload-numbers" placeholder="e.g. 83 or all"></label>
     <label class="row" style="gap:0.4rem"><input type="checkbox" id="upload-force" style="width:auto"> Force
       re-upload <span class="mf-help" title="Off by default, a number already marked published is skipped
-      (safe -- won't accidentally create a duplicate). Turn this on to re-upload anyway -- e.g. you deleted
-      the video directly on YouTube and want to push it again. This creates a genuinely NEW video (a new
-      URL/ID), it does NOT edit or restore the old one -- YouTube's API has no way to replace a video's
-      file in place. If you only need to fix the title/description/tags on a video that's still live, use
-      Update metadata below instead -- no re-upload, no duplicate, no delete needed.">?</span></label>
+      (safe -- uploads nothing). Turn this on to rebuild it -- e.g. the render was wrong and needed
+      reworking, or you deleted the video directly on YouTube. DESTRUCTIVE: if a video is currently live for
+      this number, it is DELETED first, then the current file is uploaded fresh as a replacement (a genuine
+      overwrite, new URL/ID -- YouTube's API has no way to replace a video's file in place, so delete-then-
+      upload is the only way to avoid leaving the old, wrong video live as an orphaned duplicate). Cannot be
+      undone. If you only need to fix the title/description/tags and the video FILE itself is already
+      correct, use Update metadata below instead -- no delete, no re-upload, much cheaper.">?</span></label>
     <button class="btn-primary" onclick="submitUpload()">Upload</button>
     <button onclick="submitUpdateMetadata()" title="Pushes freshly-built title/description/tags/status
       (from each number's current spec + this template) to its ALREADY-uploaded video via YouTube's
@@ -8404,10 +8406,26 @@ function showResult(html) {
 }
 
 async function submitUpload() {
+  const numbersStr = document.getElementById('upload-numbers').value;
+  const force = document.getElementById('upload-force').checked;
+  if (force) {
+    // Force now genuinely deletes the currently-live video (if any)
+    // before uploading the replacement -- a real, irreversible
+    // destructive action, not just "upload again alongside the old
+    // one" -- always confirm before it, same as every other
+    // destructive action in this app (Clear content, delete project,
+    // ...). do_upload only actually deletes numbers that ARE already
+    // published; an unpublished number in the same batch just uploads
+    // normally, so this warns generally rather than trying to
+    // pre-compute exactly which of possibly several numbers are live.
+    if (!await confirmModal(
+      `Force re-upload #${numbersStr}? Any of these that are already live on YouTube will be DELETED ` +
+      `first, then the current file uploaded fresh in its place. Cannot be undone. If you only need to ` +
+      `fix text (title/description/tags), cancel this and use Update metadata instead.`)) return;
+  }
   showResult('<span class="badge">working</span> uploading...');
   try {
-    const force = document.getElementById('upload-force').checked;
-    await runUploadNumbers(document.getElementById('upload-numbers').value, force);
+    await runUploadNumbers(numbersStr, force);
   } catch (e) { showResult(`<pre>ERROR: ${e.message}</pre>`); }
 }
 
@@ -8466,7 +8484,7 @@ async function runUploadNumbers(numbersStr, force) {
           `${esc(JSON.stringify(renamed))}\n${esc(renamed.log || '')}</pre>`);
         return;
       }
-      await runUploadNumbers(numbersStr);
+      await runUploadNumbers(numbersStr, force);
     } else {
       showResult(`<pre>${esc(data.log)}\n\nThe video for #${pc.number} is missing and may need to ` +
         `be regenerated. Address by moving video "${d.found}" out of the Reviewed folder and ` +

@@ -5199,7 +5199,16 @@ def do_upload(numbers, force):
     the first failure -- same discipline as do_rework. upload_dream.py
     itself refuses to re-upload an already-published number unless --force
     is passed, so accidentally re-listing an already-uploaded number is
-    safe by default (prints a message, does not create a duplicate video).
+    safe by default (prints a message, uploads nothing). force is a real
+    overwrite, not a second upload alongside the first: upload_dream.py
+    deletes the currently-live video before sending the replacement, so
+    there's never an orphaned duplicate left on the channel -- see its
+    own comment on why (YouTube's API has no "replace this video's
+    file" call, delete-then-insert is the only way to get that
+    behavior). For a text-only fix (title/description/tags) on a video
+    that's already correct otherwise, do_update_metadata is the right,
+    much cheaper tool instead -- it edits the live video in place, no
+    delete, no re-upload.
 
     Before each real upload attempt, runs a cheap filesystem-only
     diagnose_upload_video() first -- catches the specific case of the
@@ -5239,11 +5248,14 @@ def do_upload(numbers, force):
             if parsed is None:
                 _print_raw_subprocess_output(stdout, stderr)
                 print(f"[dream_step] #{number} uploaded, but no JSON result line was found to confirm details.")
-            elif parsed.get("verified") is False:
-                print(f"[dream_step] #{number} uploaded: {parsed.get('url')} -- WARNING: live metadata "
-                      f"doesn't match what was intended: {parsed.get('mismatches')}")
             else:
-                print(f"[dream_step] #{number} uploaded: {parsed.get('url')}")
+                warnings = []
+                if parsed.get("delete_warning"):
+                    warnings.append(parsed["delete_warning"])
+                if parsed.get("verified") is False:
+                    warnings.append(f"live metadata doesn't match what was intended: {parsed.get('mismatches')}")
+                suffix = f" -- WARNING: {'; '.join(warnings)}" if warnings else ""
+                print(f"[dream_step] #{number} uploaded: {parsed.get('url')}{suffix}")
         else:
             # Full raw output ONLY here -- an actual failure is exactly
             # when a human needs to see everything, not just the summary.

@@ -777,9 +777,27 @@ def main():
         result["error"] = f"#{args.number} is already marked published -- pass --force to re-upload"
         print(json.dumps(result)); sys.exit(1)
 
+    # A genuine overwrite when --force is re-uploading over something
+    # already live, not just a second insert() left alongside the old
+    # one -- YouTube's API has no "replace this video's file" call, so
+    # the only way to avoid an orphaned duplicate staying live forever
+    # is to delete the old video BEFORE sending the new one. Only fires
+    # when there's an actual old video_id to delete (a first-time
+    # upload has nothing to delete). Best-effort: if the delete fails
+    # (already gone, permissions, a stale/wrong id), that's noted in the
+    # result rather than blocking the upload -- the goal (correct
+    # content ends up live) is still worth pursuing either way.
+    old_video_id = entry.get("youtube_video_id") if args.force else None
+    delete_warning = None
+
     try:
         video_path = find_video_file(project_dir, args.number, spec["title"], episode_label)
         youtube = get_authenticated_service(youtube_dir, template.get("channel_handle"))
+        if old_video_id:
+            try:
+                youtube.videos().delete(id=old_video_id).execute()
+            except HttpError as e:
+                delete_warning = f"could not delete the previous video ({old_video_id}): {e}"
         body = build_metadata(spec, template, args.number)
         media = MediaFileUpload(str(video_path), chunksize=-1, resumable=True, mimetype="video/mp4")
         request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
@@ -789,6 +807,8 @@ def main():
         video_id = response["id"]
         update_index_published(data_dir, args.number, video_id)
         result.update({"ok": True, "video_id": video_id, "url": f"https://youtu.be/{video_id}"})
+        if delete_warning:
+            result["delete_warning"] = delete_warning
 
         # Review is part of the workflow, not a separate manual step --
         # verify what actually landed immediately after every upload,
