@@ -5140,14 +5140,37 @@ def do_upload(numbers, force):
                "--project", PROJECT_DIR.name, "--number", str(number)]
         if force:
             cmd.append("--force")
-        result = subprocess.run(cmd, cwd=str(PIPELINE_DIR))
+        # Captured rather than inherited -- letting the child write straight
+        # to this process's own stdout/stderr meant its one JSON result
+        # line (the actual reason for a failure) never got a "[dream_step]
+        # >>>" prefix, and the web UI's own failure summary
+        # (renderFailureCallout) only ever pulls out lines with that
+        # prefix -- so the real error was always technically "printed
+        # above" in the raw log, but silently absent from the human-
+        # readable summary a person actually reads. Still echoed verbatim
+        # below for full transparency, but now ALSO parsed and folded
+        # into the ">>>" line itself so it survives into that summary.
+        result = subprocess.run(cmd, cwd=str(PIPELINE_DIR), capture_output=True, text=True)
+        if result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
+        if result.stderr:
+            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", flush=True)
         if result.returncode == 0:
             any_uploaded = True
         else:
-            print(f"[dream_step] >>> #{number} upload did not succeed (see output above) "
-                  f"-- this may be an intentional skip (already published) rather than a "
-                  f"real failure; check the JSON line it printed. Stopping here either way "
-                  f"rather than continuing past it silently.")
+            error_detail = None
+            for line in reversed(result.stdout.splitlines()):
+                line = line.strip()
+                if line.startswith("{"):
+                    try:
+                        error_detail = json.loads(line).get("error")
+                    except Exception:
+                        pass
+                    break
+            reason = f": {error_detail}" if error_detail else " -- no JSON result line found in its output"
+            print(f"[dream_step] >>> #{number} upload did not succeed{reason} -- this may be an "
+                  f"intentional skip (already published) rather than a real failure. Stopping here "
+                  f"either way rather than continuing past it silently.")
             return
     if not any_uploaded:
         print("[dream_step] Nothing was uploaded this run.")
@@ -5274,11 +5297,28 @@ def do_update_metadata(numbers):
         print(f"[dream_step] updating #{number}'s live metadata via upload_dream.py --update-metadata", flush=True)
         cmd = [sys.executable, str(PIPELINE_DIR / "upload_dream.py"),
                "--project", PROJECT_DIR.name, "--number", str(number), "--update-metadata"]
-        result = subprocess.run(cmd, cwd=str(PIPELINE_DIR))
+        # Captured, not inherited -- see do_upload's identical comment:
+        # the child's JSON result line has no "[dream_step] >>>" prefix,
+        # so the web UI's failure summary never surfaced it on its own.
+        result = subprocess.run(cmd, cwd=str(PIPELINE_DIR), capture_output=True, text=True)
+        if result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
+        if result.stderr:
+            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", flush=True)
         if result.returncode == 0:
             any_updated = True
         else:
-            print(f"[dream_step] >>> #{number} metadata update did not succeed (see output above). "
+            error_detail = None
+            for line in reversed(result.stdout.splitlines()):
+                line = line.strip()
+                if line.startswith("{"):
+                    try:
+                        error_detail = json.loads(line).get("error")
+                    except Exception:
+                        pass
+                    break
+            reason = f": {error_detail}" if error_detail else " -- no JSON result line found in its output"
+            print(f"[dream_step] >>> #{number} metadata update did not succeed{reason}. "
                   f"Stopping here rather than continuing past it silently.")
             return
     if not any_updated:
