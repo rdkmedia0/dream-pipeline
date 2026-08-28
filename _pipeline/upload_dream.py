@@ -617,18 +617,23 @@ def build_metadata(spec, template, number):
     }
 
 
-def verify_upload(youtube, video_id, expected_body):
-    """Fetch the live video and diff it against what we intended to send.
-    Returns (ok, mismatches, live_snippet_status) -- ok is True only if
-    every checked field matches exactly. This is real verification against
-    what YouTube actually stored, not just trusting that videos.insert
-    returned 200 (a 200 confirms the request was accepted, not that every
-    field landed the way we expect)."""
-    resp = youtube.videos().list(part="snippet,status", id=video_id).execute()
-    items = resp.get("items", [])
-    if not items:
-        return False, [f"video {video_id} not found via videos.list"], None
-    live = items[0]
+def diff_video_resource(live, expected_body):
+    """Pure diff, no network -- live is a videos resource dict (the
+    "snippet"/"status" parts of it, at least), expected_body is what we
+    intended. Returns (ok, mismatches, live_snippet_status), same shape
+    verify_upload always returned. Split out so a fresh insert()/
+    update() response -- which YouTube returns immediately, already
+    reflecting exactly what it accepted for the "part"s requested -- can
+    be diffed directly, instead of always re-fetching via a separate
+    videos.list() call. That separate re-fetch is genuinely useful for
+    --check-only (an independent status check, no write response to
+    diff against), but for the two call sites that check RIGHT AFTER
+    writing, diffing the write's own response is both faster and more
+    accurate: no read-replica propagation lag to wait out (confirmed a
+    real case of that lag producing false "mismatch" warnings for
+    already-correct tags), and a mismatch found here means YouTube
+    itself altered/rejected something, a genuine problem worth
+    surfacing immediately rather than something to retry past."""
     live_snippet = live.get("snippet", {})
     live_status = live.get("status", {})
 
@@ -656,26 +661,18 @@ def verify_upload(youtube, video_id, expected_body):
     return (len(mismatches) == 0), mismatches, {"snippet": live_snippet, "status": live_status}
 
 
-def verify_upload_after_write(youtube, video_id, expected_body, retries=2, delay_s=3):
-    """verify_upload(), retried a few times with a short delay, for the
-    two call sites that check IMMEDIATELY after writing (a fresh upload,
-    an --update-metadata push) -- YouTube's API is not instantly
-    consistent, confirmed a real case of this: a metadata push whose
-    tags were all genuinely saved (visually confirmed live on YouTube
-    right after) still failed this exact check on the first try,
-    because the very next read hadn't caught up yet. A real, persistent
-    mismatch still gets reported normally after these retries are
-    exhausted -- this only smooths over the transient case, it doesn't
-    hide an actual problem. NOT used by --check-only, which is a
-    standalone status check run independently well after the write (no
-    lag to smooth over there, and no reason to slow down a simple
-    status check)."""
-    for attempt in range(retries + 1):
-        ok, mismatches, live = verify_upload(youtube, video_id, expected_body)
-        if ok or attempt == retries:
-            return ok, mismatches, live
-        time.sleep(delay_s)
-    return ok, mismatches, live
+def verify_upload(youtube, video_id, expected_body):
+    """Fetches the live video via a fresh videos.list() call, then diffs
+    it (see diff_video_resource). Used by --check-only, an independent
+    status check with no write response available to diff against
+    directly. NOT used right after a write -- see diff_video_resource's
+    own docstring for why the write response itself is the better,
+    faster, lag-free source of truth there."""
+    resp = youtube.videos().list(part="snippet,status", id=video_id).execute()
+    items = resp.get("items", [])
+    if not items:
+        return False, [f"video {video_id} not found via videos.list"], None
+    return diff_video_resource(items[0], expected_body)
 
 
 def update_index_published(data_dir, number, video_id):
@@ -780,19 +777,22 @@ def main():
             youtube = get_authenticated_service(youtube_dir, template.get("channel_handle"))
             body = build_metadata(spec, template, args.number)
             body["id"] = video_id
-            youtube.videos().update(part="snippet,status", body=body).execute()
+            update_response = youtube.videos().update(part="snippet,status", body=body).execute()
             # "ok" reflects whether the actual videos.update() call
             # succeeded (it did, or this line would have raised) -- NOT
-            # whether the immediate re-check sees it live yet. Same
+            # whether a mismatch shows up in the diff below. Same
             # philosophy as the real upload branch below: a mismatch
             # here is surfaced as "verified"/"mismatches" for the caller
             # to warn about, not treated as the update itself having
-            # failed. Confirmed a real false failure this caused: a
-            # title update succeeded, but the very next verify_upload
-            # call still saw the OLD title -- YouTube's API is not
-            # instantly consistent, and this exit(1)'d as if the update
-            # never happened at all.
-            ok, mismatches, live = verify_upload_after_write(youtube, video_id, body)
+            # failed. Diffs the update's OWN response directly (see
+            # diff_video_resource) rather than a separate re-fetch --
+            # confirmed a real false failure the old separate-refetch
+            # approach caused: a title update succeeded, but the very
+            # next videos.list() call still saw the OLD title, since
+            # YouTube's read replicas aren't instantly consistent even
+            # though the write itself already landed and its own
+            # response already reflected it correctly.
+            ok, mismatches, live = diff_video_resource(update_response, body)
             result.update({"ok": True, "video_id": video_id, "url": entry.get("youtube_url"),
                             "verified": ok, "mismatches": mismatches or None})
             print(json.dumps(result))
@@ -851,15 +851,17 @@ def main():
             result["delete_warning"] = delete_warning
 
         # Review is part of the workflow, not a separate manual step --
-        # verify what actually landed immediately after every upload,
-        # rather than trusting the 200 response alone.
+        # diffs the insert response ITSELF (see diff_video_resource) --
+        # it already reflects exactly what YouTube accepted for
+        # part=snippet,status, instantly, with no separate re-fetch and
+        # no read-replica propagation lag to produce a false mismatch.
         try:
-            ok, mismatches, live = verify_upload_after_write(youtube, video_id, body)
+            ok, mismatches, live = diff_video_resource(response, body)
             result["verified"] = ok
             result["mismatches"] = mismatches or None
         except Exception as e:
             result["verified"] = False
-            result["mismatches"] = [f"verification call itself failed: {e}"]
+            result["mismatches"] = [f"verification itself failed: {e}"]
 
         print(json.dumps(result))
         sys.exit(0)

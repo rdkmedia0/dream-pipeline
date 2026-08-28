@@ -6348,6 +6348,16 @@ function renderMenu(activeKey) {
     `<span class="crumb-current">${esc(state.project)}</span>`,
     ...visible.map(crumbLink),
   ];
+  // renderMenu replaces the ENTIRE #app innerHTML -- called after every
+  // upload/render/save action to refresh state.status into the summary
+  // line, not just on tab switches. Wholesale-replacing the DOM this way
+  // momentarily shrinks the page's scroll height (old content gone,
+  // new content not laid out yet), and the browser clamps the current
+  // scroll position down to fit -- same root cause, same fix, as
+  // loadManageTable's identical scrollY capture/restore around its own
+  // innerHTML replace. Without this, e.g. finishing an upload job while
+  // scrolled down mid-page snapped the view back to the very top.
+  const scrollY = window.scrollY;
   app.innerHTML = `
     <nav class="breadcrumb" id="nav">${crumbs.join('<span class="crumb-sep">/</span>')}</nav>
     <div class="card"><h3>${active.title}</h3>${active.body(s)}</div>
@@ -6357,8 +6367,17 @@ function renderMenu(activeKey) {
       master list: <span id="concept-list-stats">${s.concept_list_path} (${s.concept_list_total} entries, ${s.concept_list_remaining} remaining)</span>
       <button type="button" style="font-size:0.75em;padding:0.15rem 0.5rem;margin-left:0.4rem" onclick="openConceptListModal()">Manage</button>
     </div>`;
-  if (activeKey === 'upload') loadUploadTab();
-  if (activeKey === 'manage' && localStorage.getItem(manageNumbersKey())) loadManageTable();
+  window.scrollTo(0, scrollY);
+  // Passing scrollY through here matters -- these loaders fill their
+  // real content in ASYNCHRONOUSLY, after the restore just above already
+  // ran against the still-short placeholder. Without threading the
+  // ORIGINAL value through, each loader's own "restore after real
+  // content lands" would capture window.scrollY fresh at that point --
+  // but by then it's already been clamped down by the restore above, so
+  // it would just be preserving the wrong (already-corrupted) position
+  // instead of the one from before any of this started.
+  if (activeKey === 'upload') loadUploadTab(scrollY);
+  if (activeKey === 'manage' && localStorage.getItem(manageNumbersKey())) loadManageTable(scrollY);
   if (activeKey === 'creative') loadCreativeEditor();
   if (activeKey === 'analytics') loadAnalyticsTab();
 }
@@ -6367,9 +6386,23 @@ function uploadForm() {
   return `<div id="upload-tab-content"><div class="muted">loading upload template...</div></div>`;
 }
 
-async function loadUploadTab() {
+async function loadUploadTab(preservedScrollY) {
   const container = document.getElementById('upload-tab-content');
   if (!container) return;
+  // renderMenu's own scrollY restore (right before this runs) only
+  // covers ITS synchronous replace -- this fills the real content in
+  // asynchronously, growing the page well after that restore already
+  // ran, from the still-short "loading upload template..." placeholder.
+  // Same clamp-then-doesn't-un-clamp issue loadManageTable's identical
+  // fix addresses: restore again once the real content is actually in.
+  // preservedScrollY (passed by renderMenu) is the value from BEFORE
+  // any of this started -- capturing window.scrollY fresh here instead
+  // would just re-read the value renderMenu's OWN restore already
+  // clamped down, one step too late. Falls back to a fresh capture when
+  // called directly (e.g. nothing else calls this today, but keeps the
+  // function correct on its own terms rather than silently depending on
+  // always being called through renderMenu).
+  const scrollY = preservedScrollY !== undefined ? preservedScrollY : window.scrollY;
   let data;
   try {
     data = await api('GET', `/api/upload-template?project=${encodeURIComponent(state.project)}`);
@@ -6388,6 +6421,7 @@ async function loadUploadTab() {
   container.innerHTML = projectChannelSection() +
     uploadTemplateSection(data.template, data.error) +
     (data.error ? '<div class="muted">Fix the template above before uploading.</div>' : uploadActionForm());
+  window.scrollTo(0, scrollY);
   loadProjectChannelStatus();
 }
 
