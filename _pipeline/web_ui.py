@@ -8361,9 +8361,17 @@ async function submitUpload() {
     const data = await api('POST', '/api/upload', {
       project: state.project, numbers: document.getElementById('upload-numbers').value,
     });
-    showResult(`<pre>${data.log}</pre>`);
+    // renderSidebar() alone left the "specs: X | rendered: Y | uploaded:
+    // Z" summary line (and the Upload tab's own ⚠ crumb) showing stale
+    // pre-upload counts -- that line is rendered by renderMenu() from
+    // state.status, and updating state.status alone doesn't re-render
+    // anything on its own. renderMenu() rebuilds #results too, so call
+    // it BEFORE showResult below, not after, or the fresh render wipes
+    // the log message right back out (same ordering requirement as
+    // saveManageRowContent's own reload-then-message pattern).
     state.status = await api('GET', `/api/status?project=${encodeURIComponent(state.project)}`);
-    renderSidebar();
+    renderMenu('upload');
+    showResult(`<pre>${data.log}</pre>`);
   } catch (e) { showResult(`<pre>ERROR: ${e.message}</pre>`); }
 }
 
