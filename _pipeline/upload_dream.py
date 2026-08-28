@@ -434,13 +434,29 @@ def query_channel(creds):
             "channel_handle": snippet.get("customUrl")}
 
 
-def find_video_file(project_dir, number, title):
-    folder_name = sanitize_filename(f"Dream #{number} {title}")
-    dest_dir = project_dir / folder_name
-    mp4 = dest_dir / f"{folder_name}.mp4"
-    if not mp4.exists():
-        raise SystemExit(f"[upload_dream] expected video not found: {mp4}")
-    return mp4
+def find_video_file(project_dir, number, title, episode_label="Dream"):
+    """episode_label MUST match the project's actual upload_template.json
+    setting (dream_step.py's get_episode_label(), also used to name the
+    folder in the first place) -- a hardcoded "Dream" here would silently
+    miss every project using a different label (e.g. "Tale"), since the
+    real on-disk folder is named "<label> #N <title>", not "Dream #N
+    <title>". Checks both DREAMS_ROOT and DREAMS_ROOT/Reviewed -- the two
+    places list_media_folders() already knows a finished render can live,
+    since a human moves it from one to the other by hand after review."""
+    folder_name = sanitize_filename(f"{episode_label} #{number} {title}")
+    checked = []
+    for base in (project_dir, project_dir / "Reviewed"):
+        mp4 = base / folder_name / f"{folder_name}.mp4"
+        checked.append(str(mp4))
+        if mp4.exists():
+            return mp4
+    # RuntimeError, not SystemExit -- this is raised inside main()'s own
+    # try/except Exception block, which SystemExit (a BaseException, not
+    # an Exception) would silently skip straight past, bypassing the
+    # proper JSON {"ok": false, "error": ...} result line every other
+    # failure here produces and leaving just a bare, unparseable stderr
+    # message instead.
+    raise RuntimeError(f"expected video not found -- checked: {', '.join(checked)}")
 
 
 def compute_schedule_date(anchor_date, days_of_week, index):
@@ -669,7 +685,8 @@ def main():
         print(json.dumps(result)); sys.exit(1)
 
     try:
-        video_path = find_video_file(project_dir, args.number, spec["title"])
+        video_path = find_video_file(project_dir, args.number, spec["title"],
+                                      template.get("episode_label", "Dream"))
         youtube = get_authenticated_service(youtube_dir, template.get("channel_handle"))
         body = build_metadata(spec, template, args.number)
         media = MediaFileUpload(str(video_path), chunksize=-1, resumable=True, mimetype="video/mp4")
