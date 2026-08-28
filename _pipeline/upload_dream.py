@@ -656,6 +656,28 @@ def verify_upload(youtube, video_id, expected_body):
     return (len(mismatches) == 0), mismatches, {"snippet": live_snippet, "status": live_status}
 
 
+def verify_upload_after_write(youtube, video_id, expected_body, retries=2, delay_s=3):
+    """verify_upload(), retried a few times with a short delay, for the
+    two call sites that check IMMEDIATELY after writing (a fresh upload,
+    an --update-metadata push) -- YouTube's API is not instantly
+    consistent, confirmed a real case of this: a metadata push whose
+    tags were all genuinely saved (visually confirmed live on YouTube
+    right after) still failed this exact check on the first try,
+    because the very next read hadn't caught up yet. A real, persistent
+    mismatch still gets reported normally after these retries are
+    exhausted -- this only smooths over the transient case, it doesn't
+    hide an actual problem. NOT used by --check-only, which is a
+    standalone status check run independently well after the write (no
+    lag to smooth over there, and no reason to slow down a simple
+    status check)."""
+    for attempt in range(retries + 1):
+        ok, mismatches, live = verify_upload(youtube, video_id, expected_body)
+        if ok or attempt == retries:
+            return ok, mismatches, live
+        time.sleep(delay_s)
+    return ok, mismatches, live
+
+
 def update_index_published(data_dir, number, video_id):
     index_path = data_dir / "index.json"
     index = json.loads(index_path.read_text(encoding="utf-8"))
@@ -770,7 +792,7 @@ def main():
             # call still saw the OLD title -- YouTube's API is not
             # instantly consistent, and this exit(1)'d as if the update
             # never happened at all.
-            ok, mismatches, live = verify_upload(youtube, video_id, body)
+            ok, mismatches, live = verify_upload_after_write(youtube, video_id, body)
             result.update({"ok": True, "video_id": video_id, "url": entry.get("youtube_url"),
                             "verified": ok, "mismatches": mismatches or None})
             print(json.dumps(result))
@@ -832,7 +854,7 @@ def main():
         # verify what actually landed immediately after every upload,
         # rather than trusting the 200 response alone.
         try:
-            ok, mismatches, live = verify_upload(youtube, video_id, body)
+            ok, mismatches, live = verify_upload_after_write(youtube, video_id, body)
             result["verified"] = ok
             result["mismatches"] = mismatches or None
         except Exception as e:
