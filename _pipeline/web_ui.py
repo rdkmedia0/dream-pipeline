@@ -6481,6 +6481,13 @@ function uploadTemplateSection(template, error) {
       <label>Default tags (comma-separated) <input id="ut-default_tags" value="${esc(tags)}"></label>
       <h4>Schedule</h4>
       <label class="row" style="gap:0.4rem"><input type="checkbox" id="ut-schedule_enabled" style="width:auto" ${sch.enabled !== false ? 'checked' : ''}> Enabled</label>
+      <p class="muted" style="margin:0 0 0.5rem">Set once, not per video: the anchor is the ONE fixed
+        reference point ("video #[anchor number] publishes on [anchor date]") every other video's date
+        is auto-calculated from, walking forward through your chosen days of week below. Uploading
+        video after video does not move it -- e.g. anchor #1 = 2026-09-01 with a Mon/Thu schedule
+        means #2 auto-lands on the next Mon/Thu after that, #3 the one after, and so on, with nothing
+        to reset in between. Only change the anchor to deliberately shift the whole schedule (e.g. you
+        missed a week and want everything pushed later) or when starting a fresh numbering run.</p>
       <label>Anchor number (the video number the schedule counts from) <input id="ut-schedule_anchor_number" value="${esc(sch.anchor_number ?? 1)}"></label>
       <label>Anchor date (YYYY-MM-DD) <input id="ut-schedule_anchor_date" value="${esc(sch.anchor_date)}"></label>
       <label>Days of week it publishes on (comma-separated) <input id="ut-schedule_days" value="${esc(days)}"></label>
