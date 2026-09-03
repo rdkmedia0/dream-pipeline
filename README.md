@@ -406,8 +406,10 @@ GPU; a stranger reaching Dream Pipeline can post to your channel.
 
 ### If you think it was exposed
 
-Disconnect the channel from Settings (this deletes the stored OAuth
-token), revoke the app's access at
-[myaccount.google.com/permissions](https://myaccount.google.com/permissions),
-and rotate your Gemini API key in Google AI Studio. Then fix the port
-binding before starting it again.
+Revoke the app's access at
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions)
+(this invalidates every stored YouTube token at once), rotate your
+Gemini API key in Google AI Studio and paste the new one into Settings,
+and delete the old token files: each project's `_data/youtube/` folder
+and `youtube/test_token.json.enc` in the state directory. Then fix the
+port binding before starting it again.
