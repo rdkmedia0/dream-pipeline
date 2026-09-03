@@ -113,26 +113,31 @@ UPLOAD_RETRY_POLL_INTERVAL_S = 300
 # tested before.
 _YOUTUBE_TEST_CREDS = None
 
-# Request-origin guard. "No auth, bound to 127.0.0.1" (module docstring)
-# keeps OTHER MACHINES out, but not other WEB PAGES in this same browser:
-# any site the human has open can fire
+# Cross-site request guard. "No auth, bound to 127.0.0.1" (module
+# docstring) keeps OTHER MACHINES out, but not other WEB PAGES in this
+# same browser: any site the human has open can fire
 # fetch("http://127.0.0.1:8420/api/project/delete", {method: "POST", ...})
 # at this server (cross-site request forgery -- the JSON body doesn't
 # need a preflight when sent as text/plain, and nothing here checked the
-# content type), and a DNS-rebinding page can point its own hostname at
-# 127.0.0.1 to read responses too. Two cheap checks in Handler._dispatch
-# close both without introducing real auth/sessions:
-#   * the Host header must name a loopback address, the explicit --host
-#     this server was started with, or something listed in
-#     DREAM_PIPELINE_ALLOWED_HOSTS (comma-separated) -- a rebinding
-#     page's requests carry the attacker's domain there instead;
-#   * a POST that carries an Origin header must come from one of those
-#     same hosts -- a cross-site page's browser always sends its OWN
-#     origin. Requests with no Origin at all (curl, scripts, the
-#     .claude/settings.json allowlist) are unaffected.
-# DREAM_PIPELINE_ALLOWED_HOSTS exists for the one legitimate case this
-# would otherwise block: a Docker deployment deliberately published on
-# a LAN hostname instead of 127.0.0.1 (see docker-compose.yml).
+# content type). Handler._dispatch closes that with one check that needs
+# no configuration and works behind any reverse proxy under any name:
+#   a POST carrying an Origin header must have the SAME hostname as the
+#   Host header the request arrived with. A browser always sends the
+#   page's own origin, so a page on evil.example posting to this server
+#   (however it's named) carries Origin: https://evil.example and fails;
+#   the GUI's own page carries the same name it was loaded under and
+#   passes. Requests with no Origin at all (curl, scripts, the
+#   .claude/settings.json allowlist) are unaffected.
+# Optional hardening, DREAM_PIPELINE_ALLOWED_HOSTS (comma-separated
+# hostnames): when set, the Host header itself must ALSO be one of those
+# names (or loopback, or the explicit --host this server bound). That
+# additionally defeats DNS rebinding -- an attacker pointing their own
+# domain at this server's address, so Origin and Host would both read
+# evil.example and match. It is opt-in because the correct value is
+# whatever name the human types into the browser, which only they know;
+# defaulting it to loopback-only (2026-09-03, v1.0.2-v1.0.4) broke every
+# existing reverse-proxy deployment on upgrade. See docker-compose.yml /
+# .env.example for the setting.
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _BOUND_HOST = "127.0.0.1"  # what serve() actually bound; read by _allowed_hosts()
 # Keyframe uploads arrive as base64 inside the JSON body (h_image_upload)
@@ -143,10 +148,14 @@ MAX_BODY_BYTES = 64 * 1024 * 1024
 
 
 def _allowed_hosts():
+    """None when DREAM_PIPELINE_ALLOWED_HOSTS is unset (no Host pinning --
+    the default), else the set of hostnames the Host header may carry."""
+    extra = os.environ.get("DREAM_PIPELINE_ALLOWED_HOSTS", "").strip()
+    if not extra:
+        return None
     hosts = set(_LOOPBACK_HOSTS)
     if _BOUND_HOST and _BOUND_HOST not in ("0.0.0.0", "::", ""):
         hosts.add(_BOUND_HOST.lower())
-    extra = os.environ.get("DREAM_PIPELINE_ALLOWED_HOSTS", "")
     hosts.update(h.strip().lower() for h in extra.split(",") if h.strip())
     return hosts
 
@@ -2663,19 +2672,23 @@ class Handler(BaseHTTPRequestHandler):
         return re.sub(r'(?i)\b(key|token|api_key|access_token|refresh_token)=[^&\s"\']+', r'\1=***', text)
 
     def _dispatch(self, method):
-        # See _allowed_hosts()'s own comment for what these two checks
-        # defend against (CSRF / DNS rebinding) and why they're enough.
+        # See the comment above _LOOPBACK_HOSTS for what these checks
+        # defend against and why the Host pin is opt-in.
+        request_host = _hostname_of(self.headers.get("Host"))
         allowed = _allowed_hosts()
-        if _hostname_of(self.headers.get("Host")) not in allowed:
-            self._send_json({"error": "Host header isn't an allowed hostname for this server -- "
-                                      "reach it via http://127.0.0.1:<port>/ (or set "
-                                      "DREAM_PIPELINE_ALLOWED_HOSTS for a deliberate LAN name)"}, 403)
+        if allowed is not None and request_host not in allowed:
+            self._send_json({"error": "Host header isn't in DREAM_PIPELINE_ALLOWED_HOSTS -- add the "
+                                      "name you type into the browser to that setting, or unset it"}, 403)
             return
         if method == "POST":
             origin = self.headers.get("Origin")
-            if origin and _hostname_of(origin) not in allowed:
-                self._send_json({"error": "cross-origin request refused"}, 403)
-                return
+            if origin:
+                origin_host = _hostname_of(origin)
+                same_site = bool(origin_host) and (origin_host == request_host
+                                                   or (allowed is not None and origin_host in allowed))
+                if not same_site:
+                    self._send_json({"error": "cross-origin request refused"}, 403)
+                    return
         parsed = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(parsed.query)
         body = {}
@@ -2809,7 +2822,7 @@ INDEX_HTML = r"""<!doctype html>
 <link rel="stylesheet" href="/static/theme.css"><link rel="stylesheet" href="/static/app.css"></head>
 <body>
 <div class="app-header">
-  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Semantic versioning (MAJOR.MINOR.PATCH) -- bump PATCH for fixes, MINOR for new features, MAJOR for breaking changes. Bump this by hand in web_ui.py whenever the UI changes; it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">v1.0.4</span></h1>
+  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Semantic versioning (MAJOR.MINOR.PATCH) -- bump PATCH for fixes, MINOR for new features, MAJOR for breaking changes. Bump this by hand in web_ui.py whenever the UI changes; it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">v1.0.5</span></h1>
   <div class="w-auto row">
     <button onclick="openHelp()">&#128214; Help</button>
     <button onclick="openSettings()">&#9881; Settings</button>

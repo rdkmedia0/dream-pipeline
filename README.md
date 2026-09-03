@@ -390,17 +390,19 @@ GPU; a stranger reaching Dream Pipeline can post to your channel.
 
    then open `http://127.0.0.1:8420` on your own machine. Only people
    who can log in over SSH can reach the GUI.
-3. **If you really must publish it on a LAN address** (a trusted home
-   network, say), also set `DREAM_PIPELINE_ALLOWED_HOSTS` to the name
-   you'll type into the browser (see `.env.example`). Without it the GUI
-   refuses the request. Understand that anyone on that network then has
-   full control.
+3. **A reverse proxy on the same machine is fine.** nginx (or similar)
+   forwarding a LAN name to `127.0.0.1:8420` works with no extra
+   configuration. Understand that anyone who can reach the proxy then
+   has full control, so keep the proxy itself LAN-only.
 4. **Keep the machine's own browser in mind.** Because there is no
    login, any web page you have open could in principle send requests to
-   `127.0.0.1:8420` behind your back (a cross-site request). The GUI
-   blocks this by refusing requests whose `Host` or `Origin` header
-   isn't a loopback address, so this works without you doing anything —
-   it is why rule 3 needs the explicit allow-list.
+   the GUI behind your back (a cross-site request). The GUI blocks this
+   by refusing any `POST` whose `Origin` doesn't match the name the
+   request came in on, which works under any name or proxy without
+   setup. Optional extra hardening: set `DREAM_PIPELINE_ALLOWED_HOSTS`
+   to the exact name(s) you type into the browser (see `.env.example`)
+   and the GUI also refuses any other `Host` header, which defeats DNS
+   rebinding. Leave it unset if unsure.
 5. **Back up, and never share, the `state` directory** (or
    `_pipeline/gemini/`, `_pipeline/youtube/` and `config.json` on a
    bare install). It holds your Gemini key and YouTube OAuth token.
