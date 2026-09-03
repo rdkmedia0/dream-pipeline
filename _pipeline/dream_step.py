@@ -5705,8 +5705,13 @@ def do_new_project(name, args):
     # agent-authored: matches the existing "never write/edit CREATIVE.md"
     # rule, this just gives the human a real, already-working starting
     # point via code, not the model.
-    if not INDEX_PATH.exists():
-        INDEX_PATH.write_text("[]", encoding="utf-8")
+    # The NEW project's own index -- not the module-level INDEX_PATH, which
+    # still points at whatever project was last selected (or is None on a
+    # fresh server, which made the very first "New project" click on a
+    # clean install fail with an AttributeError).
+    index_path = data_dir / "index.json"
+    if not index_path.exists():
+        index_path.write_text("[]", encoding="utf-8")
     (project_dir / "Reviewed").mkdir(exist_ok=True)
     creative_stub_path = data_dir / "CREATIVE.md"
     if not creative_stub_path.exists():

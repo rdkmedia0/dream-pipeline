@@ -86,6 +86,43 @@ with inline diagnostics for whatever's misconfigured.
 
 ![Settings](docs/screenshots/settings.png)
 
+## Before you start
+
+Dream Pipeline renders nothing itself. It is a control panel on top of
+other software you must already have running, or be willing to install.
+Check this list before `docker compose up`, or the GUI will open to a
+Settings screen full of red pills and nothing will work yet.
+
+| You need | Why | Required? |
+|---|---|---|
+| **ComfyUI**, reachable over HTTP, with the model files for at least one bundled workflow (`workflow_api_*.json`) installed | Every video and keyframe is rendered by ComfyUI. Dream Pipeline only sends it jobs. | **Yes** |
+| **An NVIDIA GPU** on whichever machine runs ComfyUI, with enough VRAM for the checkpoint you pick (the default LTX workflow is heavy; check the checkpoint's own requirements) | ComfyUI's renders run on it. Dream Pipeline itself needs no GPU. | **Yes** |
+| **Ollama** with a text model and a vision model pulled, **or** a **Gemini API key** (paid, billed per call) | Script and idea writing, vision QC of rendered frames, concept research. Either one covers all three. | **One of the two** |
+| **Docker** (or Python 3.12+ for a bare install) | Runs the GUI. | **Yes** |
+| A **Google Cloud OAuth client** with the YouTube Data and YouTube Analytics APIs enabled | The Upload and Analytics tabs only. Everything else works without it. | No |
+| **Disk**: ~250 MB for the GUI image; ~10 GB more for the bundled Ollama and ComfyUI images; ~52 GB more for the default models | See the size table under Quick start. | Depends on profile |
+
+The **Complete** Docker profile installs Ollama and ComfyUI and downloads
+the default models for you, but the GPU and the disk are still yours to
+provide, and the whole first run is a ~62 GB download. The **Lite**
+profile assumes you already run ComfyUI and Ollama somewhere. Settings
+shows a live OK/NOK pill for each dependency, with the reason on hover,
+so you can see exactly what is still missing.
+
+None of the backend locations are hardcoded: `ollama_url` and
+`comfyui_url` are plain settings, local or remote.
+
+**A note on the built-in web search.** "Need new ideas?" and the chat
+assistant can look things up online through `web_search_mcp.py`. It
+queries Wikipedia's official API, and for general search it fetches
+DuckDuckGo's HTML results page directly (with Bing via a headless
+browser as a fallback) rather than going through a paid search API.
+That is a convenience for a personal tool, not something those sites
+formally offer, so use it lightly and check their terms if you run it
+at any scale. Swapping in a real search API means replacing the two
+functions in that file; nothing else in the pipeline depends on how
+the results are obtained.
+
 ## Quick start (Docker — recommended)
 
 Three ways to run this, all via the same `docker-compose.yml` — plain
@@ -296,35 +333,6 @@ present locally (kept out of the repo itself — development tooling, not
 part of the distributable app), or ask an agent working in this repo to
 read the source directly — `web_ui.py` and `dream_step.py` are the
 ground truth.
-
-## Requirements
-
-- **A reachable ComfyUI instance, with model files installed for
-  whatever workflow(s) you use — required.** Dream Pipeline does not
-  render video itself; it's strictly an orchestration layer on top of
-  ComfyUI's own API (checked live from Settings; no local GPU is needed
-  for Dream Pipeline itself, it only ever talks to ComfyUI over HTTP).
-- **Ollama and/or a Gemini API key — required for script/idea
-  generation, vision QC, and concept research** (either one covers all
-  three; a Gemini key also unlocks reference-image generation for
-  keyframes that would otherwise need a local image model).
-- **A Google Cloud OAuth client with the YouTube Data + Analytics APIs
-  enabled — optional**, only needed for the Upload and Analytics tabs.
-  Everything else works fully without it.
-
-**A note on the built-in web search.** "Need new ideas?" and the chat
-assistant can look things up online through `web_search_mcp.py`. It
-queries Wikipedia's official API, and for general search it fetches
-DuckDuckGo's HTML results page directly (with Bing via a headless
-browser as a fallback) rather than going through a paid search API.
-That is a convenience for a personal tool, not something those sites
-formally offer, so use it lightly and check their terms if you run it
-at any scale. Swapping in a real search API means replacing the two
-functions in that file; nothing else in the pipeline depends on how
-the results are obtained.
-
-None of the above are hardcoded — `ollama_url`/`comfyui_url` are plain
-config values, local or remote, set from Settings.
 
 ## Tested models
 
