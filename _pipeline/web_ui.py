@@ -2074,13 +2074,31 @@ def h_youtube_analytics_refresh(qs, body):
     existing = youtube_analytics.load_cache(youtube_dir)
     daily_trend = youtube_analytics.fetch_daily_trend(youtube_dir, existing.get("daily_trend") or [], expected_handle)
 
+    # Live totals at this moment, appended per Refresh. The reporting
+    # feed's day-by-day series (daily_trend) can never contain today or
+    # the last couple of days, so this is the only record of how the
+    # ACTUAL numbers moved over time -- one point per Refresh, sums of
+    # the per-video live counters, never mixed with daily_trend.
+    fetched_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    snapshots = [s for s in (existing.get("live_snapshots") or []) if isinstance(s, dict)]
+    snapshots.append({
+        "at": fetched_at,
+        "views": sum(v.get("views", 0) for v in videos),
+        "likes": sum(v.get("likes", 0) for v in videos),
+        "comments": sum(v.get("comments", 0) for v in videos),
+        "videos_live": sum(1 for v in videos if v.get("counts_source") == "live"),
+        "videos_total": len(videos),
+    })
+    snapshots = snapshots[-2000:]
+
     cache = {
-        "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "fetched_at": fetched_at,
         "date_range": {"start": youtube_analytics._EARLIEST_POSSIBLE_DATE,
                         "end": time.strftime("%Y-%m-%d")},
         "videos": videos,
         "correlation": correlation,
         "daily_trend": daily_trend,
+        "live_snapshots": snapshots,
         "ai_review": existing.get("ai_review"),  # preserved -- a stats refresh shouldn't wipe it
     }
     youtube_analytics.save_cache(youtube_dir, cache)
@@ -8716,7 +8734,54 @@ function analyticsTrendHtml(dailyTrend) {
       ${state.analyticsCompareEnabled ? analyticsPeriodPickerHtml('B', dailyTrend, minDate, maxDate) : ''}
     </div>
     <div id="analytics-trend-chart">${analyticsTrendChartSvg(dailyTrend)}</div>
+    ${analyticsSinceReportingHtml(dailyTrend)}
+    ${analyticsLiveSnapshotsHtml()}
   </div>`;
+}
+
+// The chart above can only ever show YouTube's reporting feed, which has
+// no row for today and lags 1-3 days. This states exactly how much has
+// happened since the feed's last day, from the live counters: the
+// per-video live total minus the per-video reported total. Real views,
+// just not yet attributable to a day -- shown as its own figure, never
+// drawn onto the chart as if it were a day.
+function analyticsSinceReportingHtml(dailyTrend) {
+  const videos = (state.analytics || {}).videos || [];
+  if (!videos.length || !dailyTrend.length) return '';
+  const sum = k => videos.reduce((t, v) => t + (v[k] || 0), 0);
+  const gap = { views: sum('views') - sum('views_reported'), likes: sum('likes') - sum('likes_reported'), comments: sum('comments') - sum('comments_reported') };
+  const reportingEnd = dailyTrend[dailyTrend.length - 1].date;
+  const liveCount = videos.filter(v => v.counts_source === 'live').length;
+  if (!liveCount) return `<div class="muted mt-4">Live counters not available yet -- Refresh to fetch them.</div>`;
+  const anyGap = gap.views || gap.likes || gap.comments;
+  return `<div class="mt-4">
+    <strong>Since reporting ended (${esc(reportingEnd)}):</strong>
+    ${anyGap ? `<strong>+${gap.views.toLocaleString()}</strong> views, <strong>+${gap.likes.toLocaleString()}</strong> likes, <strong>+${gap.comments.toLocaleString()}</strong> comments`
+             : 'nothing -- reporting has caught up with the live counters'}
+    <span class="muted">(live counters as of the last refresh; real, but YouTube hasn't attributed them to days yet, so they can't be drawn on the chart above)</span>
+  </div>`;
+}
+
+// One row per Refresh: the live totals at that moment and the change
+// since the previous refresh -- the actual growth over time, as opposed
+// to the reporting feed's lagging day-by-day series. Starts being useful
+// from the second refresh.
+function analyticsLiveSnapshotsHtml() {
+  const snaps = ((state.analytics || {}).live_snapshots || []).filter(s => s && s.at);
+  if (!snaps.length) return '';
+  if (snaps.length < 2) {
+    return `<div class="muted mt-4">Live totals are recorded at every Refresh (${snaps.length} so far) -- refresh again later and the actual growth between refreshes shows here.</div>`;
+  }
+  const recent = snaps.slice(-12);
+  const rows = recent.map((s, i) => {
+    const prev = i === 0 ? snaps[snaps.length - recent.length - 1] : recent[i - 1];
+    const d = k => prev ? ` <span class="muted">(${s[k] - prev[k] >= 0 ? '+' : ''}${(s[k] - prev[k]).toLocaleString()})</span>` : '';
+    return `<tr><td>${esc(s.at.replace('T', ' '))}</td><td>${s.views.toLocaleString()}${d('views')}</td><td>${s.likes.toLocaleString()}${d('likes')}</td><td>${s.comments.toLocaleString()}${d('comments')}</td></tr>`;
+  }).join('');
+  return `<details class="mt-4">
+    <summary class="pointer">Live totals at each refresh (${snaps.length} recorded) -- the actual growth, in brackets the change since the previous refresh</summary>
+    <table class="w-full text-sm mt-3"><thead><tr><th>Refreshed</th><th>Views</th><th>Likes</th><th>Comments</th></tr></thead><tbody>${rows}</tbody></table>
+  </details>`;
 }
 
 // One period's picker controls, labeled by which side it is (A/B) -- the
@@ -8918,7 +8983,7 @@ function analyticsTrendChartSvg(dailyTrend) {
     ${seriesShape}
     ${hoverCols}
   </svg>
-  <div class="muted">${totalA.toLocaleString()} total ${esc(metric.replace('_', ' '))}, peak day ${Math.max(...valuesA).toLocaleString()}${compareNote} -- hover anywhere over a day's column for its exact value</div>`;
+  <div class="muted">${totalA.toLocaleString()} ${esc(metric.replace('_', ' '))} in this period per YouTube's reporting feed, peak day ${Math.max(...valuesA).toLocaleString()}${compareNote} -- hover anywhere over a day's column for its exact value</div>`;
 }
 
 function analyticsCorrelationTableHtml(rows, keyName, keyLabel) {
