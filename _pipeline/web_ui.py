@@ -2809,7 +2809,7 @@ INDEX_HTML = r"""<!doctype html>
 <link rel="stylesheet" href="/static/theme.css"><link rel="stylesheet" href="/static/app.css"></head>
 <body>
 <div class="app-header">
-  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Semantic versioning (MAJOR.MINOR.PATCH) -- bump PATCH for fixes, MINOR for new features, MAJOR for breaking changes. Bump this by hand in web_ui.py whenever the UI changes; it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">v1.0.3</span></h1>
+  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Semantic versioning (MAJOR.MINOR.PATCH) -- bump PATCH for fixes, MINOR for new features, MAJOR for breaking changes. Bump this by hand in web_ui.py whenever the UI changes; it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">v1.0.4</span></h1>
   <div class="w-auto row">
     <button onclick="openHelp()">&#128214; Help</button>
     <button onclick="openSettings()">&#9881; Settings</button>
@@ -8384,6 +8384,7 @@ function renderAnalyticsTab() {
   container.innerHTML = `
     <div class="items-center justify-between wrap gap-5 mb-8 row">
       <span class="muted">${hasData ? `Last refreshed: ${esc(a.fetched_at)} (${analyticsPublishStatusSummary(a.videos)})` : 'Never refreshed yet.'}</span>
+      ${hasData ? analyticsTotalsHtml(a.videos) : ''}
       <span class="w-auto gap-4 items-end row">
         <label class="w-auto">From
           <input type="date" id="analytics-range-from" class="mb-0" ${rangeMin ? `min="${rangeMin}"` : ''} max="${rangeMax}"
@@ -8467,6 +8468,32 @@ function analyticsPublishStatusSummary(videos) {
   return `${published} published, ${scheduledVideos.length} scheduled/private${range}`;
 }
 
+// Channel totals from the LIVE per-video counters (Data API statistics,
+// current to within minutes -- see youtube_analytics.fetch_channel_analytics
+// for the one rule that picks them). Summed here, never mixed with the
+// Analytics API's lagging *_reported figures; the gap between the two is
+// shown as one number so it's visible how far behind reporting is
+// rather than silently folded in.
+function analyticsTotalsHtml(videos) {
+  videos = videos || [];
+  const sum = k => videos.reduce((t, v) => t + (v[k] || 0), 0);
+  const views = sum('views'), likes = sum('likes'), comments = sum('comments');
+  const liveCount = videos.filter(v => v.counts_source === 'live').length;
+  const allLive = videos.length > 0 && liveCount === videos.length;
+  const reportedViews = sum('views_reported');
+  const lag = allLive && reportedViews ? views - reportedViews : null;
+  const src = allLive
+    ? `live counters as of the refresh${lag !== null ? `; YouTube's reporting feed is ${lag.toLocaleString()} views behind` : ''}`
+    : (liveCount ? `${liveCount} of ${videos.length} videos on live counters, the rest on lagging reporting figures`
+                 : 'reporting figures only (lag 1-3 days) -- refresh to pick up live counters');
+  return `<span class="w-auto gap-6 items-center wrap row" title="views, likes, comments = YouTube's live lifetime counters (the numbers Studio shows). Retention, watch time and subscriber figures come from the Analytics reporting API, which lags 1-3 days. The two are never combined.">
+    <strong>${views.toLocaleString()}</strong><span class="muted">views</span>
+    <strong>${likes.toLocaleString()}</strong><span class="muted">likes</span>
+    <strong>${comments.toLocaleString()}</strong><span class="muted">comments</span>
+    <span class="muted">(${src})</span>
+  </span>`;
+}
+
 function analyticsLeaderboardHtml(videos) {
   videos = videos || [];
   const n = state.analyticsTopN;
@@ -8477,11 +8504,19 @@ function analyticsLeaderboardHtml(videos) {
     const sorted = videos.filter(v => (v[metric] || 0) > 0)
       .sort((x, y) => (y[metric] || 0) - (x[metric] || 0)).slice(0, n);
     const fmt = v => metric === 'engagement_rate' ? (v * 100).toFixed(1) + '%' : v.toLocaleString();
+    // Live counter is the number; the Analytics reporting figure is
+    // shown beside it only when it differs, so the lag is visible per
+    // video instead of being a mystery. Never blended.
+    const reported = v => {
+      const key = metric + '_reported';
+      if (v.counts_source !== 'live' || v[key] === undefined || v[key] === (v[metric] || 0)) return '';
+      return ` <span class="muted" title="What YouTube's reporting feed has caught up to (lags 1-3 days). Not added to the live number.">(reporting: ${fmt(v[key] || 0)})</span>`;
+    };
     return `<div class="card" style="flex:1 1 220px">
       <h4>${label}</h4>
       ${sorted.map(v => `<div class="my-3">` +
           `<a href="https://youtu.be/${esc(v.video_id)}" target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a>` +
-          `<br><span class="muted">${fmt(v[metric] || 0)}</span></div>`).join('') || '<div class="muted">none yet</div>'}
+          `<br><span class="muted">${fmt(v[metric] || 0)}</span>${reported(v)}</div>`).join('') || '<div class="muted">none yet</div>'}
     </div>`;
   };
   return `<div id="analytics-leaderboard">
@@ -8515,6 +8550,13 @@ function analyticsLeaderboardHtml(videos) {
 // same for month"). Switching the period TYPE dropdown re-derives sane
 // defaults for both A and B at the new granularity.
 const ANALYTICS_MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+// Same window youtube_analytics._TREND_REFETCH_TAIL_DAYS re-fetches: the
+// Analytics API's per-day rows for roughly the last 3 days are partial and
+// still revise, and today never has a row at all.
+const ANALYTICS_PROVISIONAL_DAYS = 3;
+function analyticsDayIsProvisional(dateStr) {
+  return dateStr >= addDaysToDate(new Date().toISOString().slice(0, 10), -(ANALYTICS_PROVISIONAL_DAYS - 1));
+}
 
 function addDaysToDate(dateStr, n) {
   const d = new Date(dateStr + 'T00:00:00Z');
@@ -8653,7 +8695,7 @@ function analyticsTrendHtml(dailyTrend) {
           <option value="year" ${state.analyticsPeriodType === 'year' ? 'selected' : ''}>Year</option>
         </select>
       </label>
-      <span class="muted">(${esc(minDate)} to ${esc(maxDate)} cached)</span>
+      <span class="muted">(${esc(minDate)} to ${esc(maxDate)} cached; per-day figures come from YouTube's reporting feed, so the last ${ANALYTICS_PROVISIONAL_DAYS} days are provisional and today is not in it yet -- the live totals above are)</span>
     </div>
     <div class="items-center gap-6 wrap mb-5 row">
       ${analyticsPeriodPickerHtml('A', dailyTrend, minDate, maxDate)}
@@ -8748,7 +8790,7 @@ function analyticsDayChartHtml(dailyTrend, metric) {
     const v = day ? (day[metric] || 0) : 0;
     const widthPct = day ? Math.max(2, (v / maxV) * 100) : 0;
     return `<div class="my-4">
-      <div class="muted">${esc(label)}</div>
+      <div class="muted">${esc(label)}${day && analyticsDayIsProvisional(day.date) ? ' <span class="badge badge-warn" title="YouTube reporting still revises this day for up to 3 days">PROVISIONAL</span>' : ''}</div>
       <div style="background:var(--border); border-radius:4px; height:22px; position:relative">
         <div style="background:${color}; width:${widthPct}%; height:100%; border-radius:4px"></div>
       </div>

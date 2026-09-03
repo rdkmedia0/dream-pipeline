@@ -15,9 +15,13 @@ around that:
 - **YouTube uploads** — connect a channel, set a publish template, and
   schedule a batch to go out on a defined cadence instead of manually
   uploading each one.
-- **Performance trend analysis** — pull real YouTube Analytics data back
-  in (views, engagement, per-workflow/per-tag correlation) and get an
-  AI-written review of what's actually working. Optionally feed that
+- **Performance trend analysis** — pull real YouTube data back in
+  (views, engagement, per-workflow/per-tag correlation) and get an
+  AI-written review of what's actually working. Views, likes and
+  comments use YouTube's live counters, so a video published today
+  counts today; retention, watch-time and day-by-day figures come from
+  YouTube's reporting feed, which lags 1-3 days and is labelled as such.
+  The two are never combined. Optionally feed that
   same performance data back into idea and script generation (see
   Performance trend mode below), so the next batch can build on it.
 

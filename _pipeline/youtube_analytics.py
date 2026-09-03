@@ -167,21 +167,33 @@ def merge_daily_trend(existing, fresh):
 
 
 def _fetch_video_snippets(v3_client, video_ids):
-    """title/publishedAt (snippet) + privacyStatus/publishAt (status) per
-    video, via the Data API -- the Analytics API's own rows are just
-    numbers keyed by video id, nothing human-readable or status-aware.
-    "status" is what distinguishes a genuinely published video from one
-    still scheduled/private -- worth surfacing since
-    a scheduled video sitting at 0 views looks identical to a published
-    one still waiting on YouTube's own reporting lag otherwise."""
+    """title/publishedAt (snippet), privacyStatus/publishAt (status) and
+    the LIVE view/like/comment counters (statistics) per video, via the
+    Data API -- the Analytics API's own rows are just numbers keyed by
+    video id, nothing human-readable or status-aware, and they LAG: the
+    Analytics API is a reporting system whose rows for the last 1-3 days
+    are missing or partial, so a video published today shows 0 views
+    there while YouTube Studio already shows real numbers. "statistics"
+    is that same live counter Studio shows (updated within minutes), and
+    it rides along on the call this function already makes -- no extra
+    request or quota. "status" is what distinguishes a genuinely
+    published video from one still scheduled/private -- worth surfacing
+    since a scheduled video sitting at 0 views looks identical to a
+    published one still waiting on YouTube's own reporting lag otherwise."""
     snippets = {}
     for batch in _chunks(video_ids, _VIDEO_LIST_BATCH):
-        result = v3_client.videos().list(part="snippet,status", id=",".join(batch)).execute()
+        result = v3_client.videos().list(part="snippet,status,statistics", id=",".join(batch)).execute()
         for item in result.get("items", []):
             merged = dict(item.get("snippet", {}))
             status = item.get("status", {})
             merged["privacy_status"] = status.get("privacyStatus")
             merged["scheduled_publish_at"] = status.get("publishAt")
+            stats = item.get("statistics") or {}
+            # None (not 0) when YouTube omits a counter, so the caller can
+            # tell "no live figure" from "genuinely zero".
+            for key, field in (("live_views", "viewCount"), ("live_likes", "likeCount"),
+                               ("live_comments", "commentCount")):
+                merged[key] = int(stats[field]) if stats.get(field) is not None else None
             snippets[item["id"]] = merged
     return snippets
 
@@ -296,14 +308,33 @@ def fetch_channel_analytics(youtube_dir, expected_channel_handle=None):
     rows_by_id = _query_analytics_rows(analytics_client, video_ids)
     snippets = _fetch_video_snippets(v3_client, video_ids)
 
+    # ONE rule for the headline numbers, applied per video, never blended:
+    # "views"/"likes"/"comments" are the Data API's live lifetime counters
+    # (the same figures YouTube Studio shows, current to within minutes),
+    # so a video published today counts today. The Analytics API's own
+    # views/likes/comments for the same video are kept as *_reported --
+    # a lagging (1-3 day) reporting figure, useful only to see how far
+    # behind reporting is. The two are never added or averaged together;
+    # counts_source says which one the headline numbers came from (a
+    # video the Data API returned no counter for falls back to reported,
+    # whole-video, so a single video is always one source or the other).
+    # Retention/watch-time/subscriber metrics exist ONLY in the Analytics
+    # API, so those stay reporting figures and lag accordingly.
     videos = []
     for vid in video_ids:
         row = rows_by_id.get(vid, {})
-        views = int(row.get("views", 0) or 0)
-        likes = int(row.get("likes", 0) or 0)
-        comments = int(row.get("comments", 0) or 0)
+        views_reported = int(row.get("views", 0) or 0)
+        likes_reported = int(row.get("likes", 0) or 0)
+        comments_reported = int(row.get("comments", 0) or 0)
         dislikes = row.get("dislikes")
         snippet = snippets.get(vid, {})
+        live_ok = snippet.get("live_views") is not None
+        if live_ok:
+            views = snippet["live_views"]
+            likes = snippet["live_likes"] if snippet.get("live_likes") is not None else likes_reported
+            comments = snippet["live_comments"] if snippet.get("live_comments") is not None else comments_reported
+        else:
+            views, likes, comments = views_reported, likes_reported, comments_reported
         videos.append({
             "video_id": vid,
             "title": snippet.get("title", ""),
@@ -313,6 +344,10 @@ def fetch_channel_analytics(youtube_dir, expected_channel_handle=None):
             "views": views,
             "likes": likes,
             "comments": comments,
+            "counts_source": "live" if live_ok else "reported",
+            "views_reported": views_reported,
+            "likes_reported": likes_reported,
+            "comments_reported": comments_reported,
             "dislikes": int(dislikes) if dislikes is not None else None,
             "avg_view_percentage": float(row.get("averageViewPercentage", 0) or 0),
             "estimated_minutes_watched": float(row.get("estimatedMinutesWatched", 0) or 0),
@@ -518,6 +553,12 @@ def run_ai_review(cache_data, project_name):
         "project": project_name,
         "video_count": len(videos),
         "date_range": cache_data.get("date_range"),
+        "data_notes": ("views/likes/comments (per video, channel_baseline, top_by_*, by_workflow, "
+                       "by_tag) are live lifetime counters current as of the refresh time, so "
+                       "they include today. avg_view_percentage, estimated_minutes_watched, "
+                       "subscribers_gained and everything in trend_highlights come from YouTube's "
+                       "reporting system, which lags 1-3 days -- treat the most recent days there "
+                       "as incomplete, not as a decline."),
         "channel_baseline": channel_baseline,
         "trend_highlights": build_trend_highlights(cache_data.get("daily_trend", [])),
         "by_workflow": correlation.get("by_workflow", []),
