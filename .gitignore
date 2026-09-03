@@ -14,6 +14,9 @@ _pipeline/gemini/
 _pipeline/youtube/
 _pipeline/gemini/usage.json
 _pipeline/model_check_cache.json
+# Which uploaded workflow_api_*.json is active per type -- written by
+# Settings' Workflow files section, per-install state like config.json.
+_pipeline/custom_workflows.json
 
 # Project data (rendered videos, keyframes, specs, index.json) and Docker
 # state (config.json + secrets) -- both live entirely outside this repo in

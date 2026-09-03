@@ -1,0 +1,20 @@
+# Compile + lint every push and pull request. No test suite exists yet, so
+# this is the whole automated gate: a syntax error or an undefined name
+# (pyflakes) fails the build before it can reach a user.
+name: lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # same as the Dockerfile's base image
+      - run: pip install pyflakes==3.2.0
+      - run: python -m compileall -q _pipeline
+      - run: python -m pyflakes _pipeline/*.py

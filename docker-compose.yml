@@ -53,6 +53,12 @@ services:
       # than relying on its single-model auto-detect fallback.
       - CREATIVE_MODEL=${CREATIVE_MODEL:-}
       - VISION_MODEL=${VISION_MODEL:-}
+      # Only needed if you deliberately change the ports: line above to
+      # publish on a LAN name/address instead of 127.0.0.1 -- web_ui.py
+      # refuses requests whose Host header isn't loopback (its CSRF /
+      # DNS-rebinding guard, see _allowed_hosts() there), so list the
+      # hostname(s) you'll type into the browser here, comma-separated.
+      - DREAM_PIPELINE_ALLOWED_HOSTS=${DREAM_PIPELINE_ALLOWED_HOSTS:-}
     restart: unless-stopped
 
   # ---------------------------------------------------------------------

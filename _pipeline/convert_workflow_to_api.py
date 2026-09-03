@@ -41,7 +41,7 @@ def flatten_subgraphs(workflow):
 
             new_links = []
             for l in links:
-                origin_id, target_id = l[1], l[3]
+                origin_id = l[1]
                 # Any link that used the subgraph instance as its origin (i.e.
                 # something outside consumed the subgraph's output) gets
                 # rewired to the subgraph's real internal source node.

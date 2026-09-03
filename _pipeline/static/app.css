@@ -1,0 +1,751 @@
+/* Dream Pipeline -- GUI stylesheet (the page web_ui.py serves at /).
+   Tokens (colors, radii, shadows, theme names) live in theme.css, which
+   the page loads first; everything here only references them. Served
+   by web_ui.py's /static/ route and re-read from disk on every request,
+   so edits show on a browser reload -- no server restart. */
+* { box-sizing: border-box; }
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 15px; line-height: 1.5; color: var(--fg); background: var(--bg);
+  /* The manage table's own columns easily exceed a narrower cap on a
+     wide monitor, so a narrower cap would make a wider browser window
+     give zero benefit to how many columns fit before needing to
+     scroll. Still capped, not unbounded, so ultra-wide monitors don't
+     stretch single-column text content (video list, chat, etc.)
+     uncomfortably wide. */
+  max-width: 2400px; margin: 0 auto; padding: 0 1.25rem 3rem;
+}
+h1, h2, h3, h4 { line-height: 1.25; font-weight: 650; }
+h1 { margin: 0; font-size: 1.25rem; letter-spacing: 0.01em; color: var(--fg); }
+h2 { font-size: 1.1rem; margin: 0 0 0.75rem; }
+h3 { font-size: 0.95rem; margin: 0 0 0.5rem; }
+h4 { font-size: 0.9rem; margin: 0 0 0.4rem; }
+a { color: var(--accent); }
+
+/* color-scheme:light dark alone lets native form controls pick their OWN
+   background/text color from the OS theme, independently of whatever
+   the page's own background happens to be -- on a light page with a
+   dark-mode OS this renders white text on a white input (looks empty
+   but has a spellcheck squiggle under invisible text).
+   Setting background/color explicitly here removes that ambiguity. */
+input, select, textarea {
+  width: 100%; box-sizing: border-box; padding: 0.45rem 0.6rem; margin: 0.25rem 0;
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--field-bg); color: var(--fg); font-family: inherit; font-size: 0.92em;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+textarea { min-height: 8rem; }
+
+.app-header {
+  display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+  padding: 1.1rem 0.15rem; position: sticky; top: 0; z-index: 30;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--border-soft); margin-bottom: 1.25rem;
+}
+.app-header h1::before {
+  content: ""; display: inline-block; width: 0.6em; height: 0.6em; border-radius: 3px;
+  background: var(--accent); margin-right: 0.5em;
+}
+.app-header label { width: auto; margin: 0; display: flex; align-items: center; gap: 0.4rem; font-size: 0.85em; color: var(--muted-fg); }
+.app-header select { width: auto; margin: 0; border-color: var(--border); }
+
+.layout { display: flex; gap: 1.5rem; align-items: flex-start; }
+.layout #app { flex: 1 1 auto; min-width: 0; }
+
+/* The sidebar itself is the thing pinned to the viewport (not the player
+   card alone) -- it's a fixed-height flex column that clips its own
+   overflow, so the ONLY thing that ever scrolls inside it is the video
+   list. Nesting two independently-sticky/scrolling elements (a sticky
+   player + a tall auto-height list card below it) let the page's own
+   scroll and the list's internal scroll fight each other and the list
+   card could end up positioned behind the player.
+   border-left gives the panel a clear visual edge -- the toggle tab
+   (a separate, always-fixed element positioned by JS, see
+   positionSidebarToggle) is placed flush against this exact border, so
+   resizing the panel and clicking the tab both reference the same edge.
+   Resizing is a custom drag handle on that same left border (see
+   .sidebar-resize-handle / startSidebarResize), not native CSS `resize`
+   -- native resize only offers a bottom-right-corner handle that grows
+   the RIGHT edge, wrong for a panel whose right edge is the viewport
+   boundary and whose LEFT edge (against the manage table) is the one
+   that should move under drag.
+   flex-basis is explicitly 'auto' (not a fixed px value) so the width
+   JS sets via drag actually takes effect -- flex-basis: 340px would
+   keep re-asserting the original width over top of it. */
+.sidebar {
+  flex: 0 0 auto; width: 340px; min-width: 260px; max-width: 640px;
+  position: sticky; top: 5rem; max-height: calc(100vh - 6rem);
+  display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden;
+  border-left: 1px solid var(--border); padding-left: 1rem;
+}
+.sidebar-resize-handle {
+  position: absolute; top: 0; bottom: 0; left: -1px; width: 6px;
+  cursor: ew-resize; z-index: 1;
+}
+.sidebar-resize-handle:hover { background: var(--accent-soft); }
+@media (max-width: 900px) {
+  .layout { flex-direction: column; }
+  /* .layout's align-items:flex-start only matters on the CROSS axis,
+     which becomes WIDTH once
+     flex-direction switches to column here -- without an explicit
+     width, #app sizes to its own intrinsic content width instead of
+     filling the column (min-width:0 alone, correct for the desktop
+     ROW-flex case, does nothing for this axis). A wide child (the
+     manage table) then pushes #app -- and the whole page -- far
+     wider than the actual viewport, instead of being clipped/
+     scrolled inside it. */
+  .layout #app { width: 100%; }
+  .sidebar { width: 100% !important; flex: 1 1 auto; position: static; max-height: none; overflow: visible; border-left: none; padding-left: 0; }
+  .sidebar-resize-handle { display: none; }
+  /* Touch target sizing (WCAG 2.5.5 / ~44px guideline) -- desktop's
+     tighter padding stays as-is (mouse pointers don't need this, and
+     widening it there would just waste density on the manage table's
+     many small per-cell buttons), scoped here to widths where input is
+     actually touch-driven. */
+  button { min-height: 44px; padding: 0.6rem 1rem; }
+  input, select, textarea { min-height: 44px; }
+  input[type="checkbox"], input[type="radio"] { min-height: 0; width: 1.2rem; height: 1.2rem; }
+}
+/* Collapsed, the sidebar leaves the flex layout ENTIRELY (position:fixed
+   takes it out of flow) and docks as a small tab at the right edge of
+   the viewport -- #app then has the full layout width to itself for the
+   manage table, not just "whatever the sidebar didn't take". */
+.sidebar.collapsed {
+  position: fixed; top: 6rem; right: 0; flex: 0 0 0; width: 0 !important; min-width: 0 !important;
+  max-height: none; z-index: 20; border-left: none; padding-left: 0;
+}
+.sidebar.collapsed .card, .sidebar.collapsed .sidebar-resize-handle { display: none; }
+/* A fixed, always-vertical tab STACK -- Videos and Chat are two
+   separate tabs on the same dock, not one panel with a nested toggle.
+   The stack's own position (not each button individually) is set by JS
+   (see positionSidebarToggle) from the sidebar's REAL rendered box
+   rather than an assumed width -- required once the panel became
+   resizable, a hardcoded offset would drift out of sync the moment
+   it's dragged. */
+#sidebar-tabs { position: fixed; z-index: 25; display: flex; flex-direction: column; }
+.sidebar-toggle {
+  writing-mode: vertical-rl; padding: 0.8rem 0.4rem; border-radius: 10px 0 0 10px;
+  background: var(--card-bg); box-shadow: var(--shadow-md); margin: 0 0 -10px 0; position: relative; z-index: 1;
+}
+/* Real file-tab overlap: whichever is selected sits on top of its
+   neighbor instead of the two just touching edge-to-edge -- both stay
+   aligned on the same edge, only stacking order (z-index) changes. */
+.sidebar-toggle.active {
+  background: var(--accent); color: var(--accent-fg); border-color: var(--accent);
+  z-index: 2;
+}
+.sidebar-player { flex: 0 0 auto; }
+/* An unbounded <video> at its native aspect ratio could run 400-500px
+   tall, leaving almost nothing for the list below it in the sidebar's
+   fixed height -- confirmed: the list card was still there in the DOM,
+   just squeezed to a sliver, which LOOKED like it had vanished. Capping
+   the player's own height guarantees the list always gets real room. */
+.sidebar-player video, .sidebar-player img {
+  max-height: 220px; width: 100%; object-fit: contain; background: #000;
+  border-radius: var(--radius-sm); display: block;
+}
+/* Fullscreen bug fix: the 220px cap above is author CSS that some
+   browsers keep applying to the <video> even once it's the fullscreen
+   element, squashing it into a tiny letterboxed strip with its controls
+   bar shoved off-frame ("loses the controls" in fullscreen). Fullscreening
+   the WRAPPER (not the <video> itself) and letting the video size to it
+   sidesteps that, and doubles as the mount point for the custom
+   prev/next/move overlay below (native <video> fullscreen has no concept
+   of "next video in this project"). */
+.player-fs-wrap { position: relative; }
+.player-fs-wrap:fullscreen {
+  background: #000; display: flex; align-items: center; justify-content: center;
+}
+.player-fs-wrap:fullscreen video {
+  max-height: 100vh; max-width: 100vw; width: auto; height: auto; object-fit: contain;
+}
+.player-fs-controls {
+  display: none; position: absolute; top: 0; left: 0; right: 0;
+  padding: 0.6rem; gap: 0.4rem; z-index: 5;
+  background: linear-gradient(rgba(0,0,0,0.65), transparent);
+}
+.player-fs-wrap:fullscreen .player-fs-controls { display: flex; }
+.player-fs-controls button {
+  background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
+}
+.player-fs-controls button:hover { background: rgba(0,0,0,0.85); }
+.player-fs-controls button:disabled { opacity: 0.4; cursor: default; }
+.player-fs-controls .fs-spacer { flex: 1 1 auto; }
+/* Same top-bar pattern as .player-fs-controls, pinned to the BOTTOM
+   instead -- without position:absolute this box was a plain sibling
+   of the centered <video> inside player-fs-wrap's flex row, so it
+   landed to the video's right instead of under it. display:none
+   outside :fullscreen for the same reason as .player-fs-controls: it
+   only makes sense as an overlay ON the fullscreen video, not as a
+   plain white row wedged into the small player card. */
+/* color:#fff is the fallback for any plain text in here that isn't a
+   .chat-msg bubble (which gets its own override below); align-items:
+   flex-start (not center) since the chat log can be much taller than
+   a single button row. */
+/* A solid bordered panel, not the transparent-to-black GRADIENT this
+   used before -- the gradient made the chat log read as loose text
+   floating on the video with no visible boundary, while the reply
+   textarea (which has its own border) looked like a separate, unrelated
+   box below it -- confirmed via screenshot: a human circled the
+   textarea specifically as "chat window", not recognizing the message
+   bubble above it as part of the same interface. One shared background
+   + border here makes the log and the reply box read as ONE enclosed
+   window, the log naturally at the top of it and the input at the
+   bottom, rather than two disconnected floating pieces. */
+/* max-height:VH, not a % -- confirmed the earlier 60% attempt was a
+   complete no-op: percentage height on a position:absolute element
+   only resolves against its containing block's height if that
+   ancestor has an EXPLICIT height, and .player-fs-wrap doesn't
+   declare one (the Fullscreen API visually fills the screen, but
+   that's not the same as a CSS height value) -- per spec, a %
+   height on an absolutely-positioned descendant of an auto-height
+   ancestor computes to auto, i.e. is silently ignored entirely,
+   which is exactly what the screenshot showed (panel still grew to
+   cover the video). vh resolves against the real viewport instead,
+   with no such ancestor dependency. Also shrunk outright (32vh, was
+   60%) per explicit request: if this is going to sit above part of
+   the video at all, smaller is better. resize:none on this panel's
+   textareas closes the OTHER way a human could grow it past this cap
+   (a native resize-handle drag); the log's own overflow:auto is what
+   actually handles a conversation longer than this fixed box allows. */
+.player-fs-feedback {
+  display: none; position: absolute; left: 0.6rem; right: 0.6rem; bottom: 0.6rem;
+  max-height: 32vh; padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff;
+  flex-direction: column; align-items: stretch;
+  background: rgba(20,20,20,0.92); border: 1px solid rgba(255,255,255,0.18);
+  border-radius: var(--radius);
+}
+.player-fs-feedback > .row { width: 100%; box-sizing: border-box; }
+.player-fs-feedback .muted { color: rgba(255,255,255,0.7); }
+/* .chat-msg bubbles (chat-user/chat-assistant) use theme-derived
+   LIGHT background colors (--accent-soft/--border-soft), meant for a
+   normal light card -- inheriting this container's color:#fff for
+   plain text left the bubbles themselves nearly illegible (white
+   text on a light bubble). Forcing dark bubble text here specifically
+   is safe regardless of the app's current light/dark theme, since
+   both bubble backgrounds stay light-toned either way. */
+.player-fs-feedback .chat-log { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
+.player-fs-feedback .chat-msg { color: #111; }
+/* --accent-soft is only ~12% alpha (a light TINT, meant to sit on a
+   normal light card background) -- confirmed via screenshot: against
+   this panel's dark background that read as barely-there dark text on
+   an almost fully transparent bubble, functionally illegible. A solid
+   light color here, not the theme's translucent one, matches
+   .chat-assistant's already-solid --border-soft treatment. */
+.player-fs-feedback .chat-user { background: rgba(255,255,255,0.85); }
+/* More specific than .player-fs-feedback .muted above (two classes
+   vs one), so this correctly wins for the "via <model>" line inside a
+   bubble -- that line is a DIRECT match for both rules (equal
+   specificity would fall to source order, fragile), and the white-ish
+   color meant for bare text on the dark video backdrop was nearly
+   invisible against the SAME light bubble background .chat-msg above
+   was just fixed for. */
+.player-fs-feedback .chat-msg .muted { color: rgba(0,0,0,0.55); }
+.player-fs-feedback .chat-msg .row { margin-top: 0.4rem; }
+.player-fs-wrap:fullscreen .player-fs-feedback { display: flex; }
+.player-fs-feedback textarea {
+  background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
+  border-radius: var(--radius-sm); padding: 0.4rem 0.5rem; resize: none;
+}
+.player-fs-feedback textarea::placeholder { color: rgba(255,255,255,0.65); }
+.player-fs-feedback button {
+  background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
+}
+.player-fs-feedback button:hover { background: rgba(0,0,0,0.85); }
+/* Feedback-rework status, as a small corner overlay ON the video --
+   NOT gated by :fullscreen (unlike the two rules above) since this
+   needs to show in the small player card too, not just true
+   fullscreen. Scoped per-video by pollFeedbackQueueOnce (only ever
+   describes whatever's CURRENTLY on screen), so unlike the old plain
+   block-level banner it replaced -- which was a flex sibling of the
+   centered <video> in fullscreen and landed to its right, and kept
+   showing stale text about a different video after navigating away --
+   this hides itself via display:none/flex per-poll instead of always
+   occupying flow space. */
+/* top:3.4rem (not 0.6rem) clears .player-fs-controls' own button row --
+   both pin to the top, and a fixed corner position collided with it in
+   fullscreen. left instead of right so it never depends on the
+   controls row's actual width (Prev/Next/Review mode/Move/Exit don't
+   wrap the same way at every viewport size). In the small (non-
+   fullscreen) player, .player-fs-controls isn't shown at all, so this
+   just reads as a modest gap from the video's top edge -- not a
+   collision with anything there either. */
+.player-status-overlay {
+  display: none; position: absolute; top: 3.4rem; left: 0.6rem; z-index: 6;
+  background: rgba(0,0,0,0.65); color: #fff; padding: 0.25rem 0.7rem;
+  border-radius: 999px; font-size: 0.78em; max-width: 80%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sidebar-list-card { flex: 1 1 auto; min-height: 220px; display: flex; flex-direction: column; overflow: hidden; }
+.video-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: 0.5rem; }
+@media (max-width: 900px) { .sidebar-list-card { flex: 1 1 auto; overflow: visible; min-height: 0; } .video-list { max-height: 55vh; } }
+.video-item { border-bottom: 1px solid var(--border-soft); padding: 0.5rem 0.5rem; cursor: pointer; border-radius: var(--radius-sm); transition: background 0.1s ease; }
+.video-item:last-child { border-bottom: none; }
+.video-item:hover { background: var(--border-soft); }
+.video-item.selected { background: var(--accent-soft); }
+.video-title { font-size: 0.88em; }
+#media-tabs button.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+#media-filter { margin-top: 0.5rem; }
+
+.card {
+  border: 1px solid var(--border); background: var(--card-bg); border-radius: var(--radius);
+  padding: 1.1rem; margin: 1rem 0; box-shadow: var(--shadow);
+  /* Undoes flex/grid's default min-width:auto wherever a .card sits
+   inside one (e.g. #app) -- otherwise a wide intrinsic-content child
+   (the manage table) can push its OWN ancestor card wider than the
+   viewport instead of being clipped/scrolled inside it. No effect on
+   a .card that isn't itself a flex/grid item. */
+  min-width: 0;
+}
+
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 50;
+  display: flex; align-items: flex-start; justify-content: center; padding: 4rem 1rem;
+  overflow-y: auto;
+}
+.modal-card {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-md); padding: 1.25rem; width: 100%; max-width: 34rem;
+}
+.modal-card.wide { max-width: 40rem; }
+.settings-section { padding: 0.9rem 0; border-top: 1px solid var(--border); }
+.settings-section:first-of-type { border-top: none; padding-top: 0.2rem; }
+/* Title + help icon on the left, one at-a-glance status pill on the
+   right (when a section has one) -- flex+space-between puts the pill
+   at the end of the row for free, no separate always-visible status
+   line needed for the simple pass/fail cases. Full detail lives in
+   the pill's own hover title=. */
+.settings-section h4 {
+  margin: 0 0 0.6rem; font-size: 0.78em; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted-fg);
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+}
+.settings-section h4 .badge { margin-right: 0; }
+/* Same title+status-pill row shape as .settings-section h4 above, for
+   section headers outside the Settings modal (Creative fields, golden
+   rules) that want the identical convention: OK/NOK pill flush right,
+   adjacent to the title, detail on hover -- not a bespoke layout per
+   form. */
+h4.pill-h4 { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+/* Same title-left/pill-right convention as h4, for a sub-field within
+   a section that has its own independent status (e.g. "Model files"
+   within the ComfyUI section, which already has its own URL-
+   reachability pill in the section h4) -- keeps every pill in the
+   form at the same conventional position, not just the section-level
+   ones. */
+.field-label-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+}
+.field-label-row .badge { margin-right: 0; }
+/* A field itself "glows" its own status color (border + soft ring)
+   instead of only reporting it in a separate line below -- the
+   input/select IS the thing the status is about, so the color lives
+   right on it. Works in both themes via the existing --success/
+   --danger tokens. */
+.field-ok { border-color: var(--success) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 35%, transparent); }
+.field-error { border-color: var(--danger) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent); }
+/* Matches badge-warn's amber, for a field whose sibling pill is
+   non-critical NOK (amber, not red) -- glowing red on any failure would
+   disagree with an amber "not critical right now" pill next to it. */
+.field-warn { border-color: var(--warning) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 35%, transparent); }
+/* Secondary detail/action line for a field whose primary pass/fail
+   pill lives in the section title instead (see h4's own comment)
+   -- a plain wrapping line, since content here can be a genuine
+   sentence or grow multi-line (missing-file lists, buttons), not a
+   single fixed-width row. */
+.field-status { margin: -0.35rem 0 0.6rem; font-size: 0.85em; }
+
+/* Plain buttons are a solid but non-accent surface (--border-soft) --
+   deliberately NOT --accent: --accent-soft is already the row-hover/
+   selection highlight color throughout the app (.video-item.selected,
+   table row hover), so an accent-tinted button sitting inside a
+   highlighted row/cell would blend into that highlight instead of
+   reading as a button. --border-soft keeps color reserved for actual
+   meaning (accent = primary action/selection, red = destructive,
+   purple = generate) while still giving every button a real, visible
+   surface rather than a flat/neutral outline. */
+button {
+  cursor: pointer; padding: 0.45rem 0.9rem; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--border-soft); color: var(--fg);
+  font-size: 0.9em; font-weight: 500; transition: background 0.12s ease, border-color 0.12s ease, transform 0.06s ease;
+}
+button:hover { background: var(--border); }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.btn-primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+  font-weight: 600; box-shadow: var(--shadow);
+}
+button.btn-primary:hover { filter: brightness(1.08); }
+button.btn-danger {
+  background: var(--danger); border-color: var(--danger); color: #fff;
+  font-weight: 600; box-shadow: var(--shadow);
+}
+button.btn-danger:hover { filter: brightness(1.08); }
+/* Confirms a completed, non-reversible-in-place action (e.g. an
+   accepted golden-rules proposal) -- the button itself becomes the
+   state signal instead of a separate banner elsewhere on the page. */
+button.btn-success {
+  background: var(--success); border-color: var(--success); color: #fff;
+  font-weight: 600; box-shadow: var(--shadow); cursor: default;
+}
+button.btn-success:hover { filter: none; }
+/* Current-render progress (see pollManageJobs) -- percent-filled once a
+   real step/max is known, otherwise .mf-indeterminate-bar's sliding
+   animation while still in the model-loading phase. */
+.mf-progress-bar {
+  background: var(--border-soft); border-radius: 4px; height: 0.5rem;
+  margin: 0.3rem 0; overflow: hidden;
+}
+.mf-progress-bar-fill { background: var(--accent); height: 100%; transition: width 0.6s ease; }
+/* Custom confirm() replacement (see confirmModal) -- a native confirm()
+   dialog is silently auto-rejected by the automated browser tool this
+   app is regularly driven through, making every confirm-gated button
+   look completely dead with no visible prompt at all. */
+.mf-confirm-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+}
+.mf-confirm-card { max-width: 28rem; box-shadow: var(--shadow-md); }
+.mf-confirm-message { white-space: pre-wrap; margin: 0 0 1rem 0; }
+.breadcrumb {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem;
+  margin-bottom: 1.5rem; font-size: 1.05em;
+}
+.breadcrumb a {
+  color: var(--muted-fg); cursor: pointer; text-decoration: none;
+  padding: 0.2rem 0.4rem; border-radius: var(--radius-sm); transition: background 0.12s ease, color 0.12s ease;
+}
+.breadcrumb a:hover { background: var(--border-soft); color: var(--fg); }
+.breadcrumb a.active { color: var(--accent); font-weight: 700; }
+.breadcrumb .crumb-current { font-weight: 700; color: var(--fg); padding: 0.2rem 0.1rem; }
+.breadcrumb .crumb-sep { color: var(--border); }
+
+pre {
+  background: var(--border-soft); padding: 0.75rem; border-radius: var(--radius-sm);
+  white-space: pre-wrap; word-break: break-word; max-height: 24rem; overflow-y: auto;
+  font-size: 0.85em; line-height: 1.5;
+}
+.row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+/* 0.85em, not 0.9em -- that's the size the overwhelming majority of
+   .muted usages across the app were already redundantly re-declaring
+   inline (style="font-size:0.85em" right next to class="muted"), with
+   a handful of spots that happened to omit it silently falling back
+   to a DIFFERENT, slightly larger 0.9em -- an inconsistency purely
+   from which instances remembered to override and which didn't.
+   Baking in the size everyone actually wanted removes the need for
+   that inline duplication anywhere. */
+.muted { opacity: 0.85; color: var(--muted-fg); font-size: 0.85em; }
+.badge {
+  display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
+  background: var(--border-soft); color: var(--muted-fg); font-weight: 600;
+  margin-right: 0.3rem; letter-spacing: 0.01em; flex-shrink: 0; white-space: nowrap;
+  /* Fixed rem, NOT em -- a badge next to an h4 (0.78em context) vs next
+     to a plain <label> (~0.92em/1em context) would otherwise render at
+     two visibly different sizes for the exact same pill, purely from
+     inheriting its container's font-size. Every status pill in this
+     form should look identical regardless of where it's placed.
+     line-height must be pinned too, separately from font-size -- same
+     11.2px text still came out visibly TALLER inside a <label> (whose
+     ambient line-height is looser) than inside an h4 (tighter), purely
+     from inheriting each container's own line-height. */
+  font-size: 0.7rem; line-height: 1;
+}
+/* Hints there's a hover tooltip (title=) worth reading -- used on
+   status pills that carry their detail message that way instead of
+   always-visible inline text (see .field-status). */
+.badge[title] { cursor: help; }
+.badge-ok { background: var(--success); color: #fff; }
+.badge-danger { background: var(--danger); color: #fff; }
+.badge-warn { background: var(--warning); color: #fff; }
+
+/* Failure callout -- the human-readable "what happened /
+   what to do" summary shown above the raw log on a failed render, see
+   renderFailureCallout. Warning-tinted, not danger-red -- most of what
+   lands here is a normal "needs an answer" refusal, not catastrophic. */
+.mf-failure-callout {
+  background: color-mix(in srgb, var(--warning) 12%, var(--card-bg));
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  border-radius: var(--radius-sm); padding: 0.6rem 0.75rem; margin: 0.5rem 0;
+  font-size: 0.92em; line-height: 1.5;
+}
+.mf-failure-callout code {
+  background: var(--border-soft); padding: 0.1rem 0.3rem; border-radius: 3px;
+  font-size: 0.9em; word-break: break-word;
+}
+/* Briefly highlights a row jumpToManageRow scrolled to, so "jump to
+   #N" actually draws the eye instead of leaving a human to guess which
+   of many rows just got scrolled into view. */
+.mf-row-flash { animation: mf-row-flash-anim 2s ease-out; }
+@keyframes mf-row-flash-anim {
+  0% { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+  100% { background: transparent; }
+}
+
+/* table-layout:fixed + colgroup widths keep every row a uniform height
+   -- multiline fields show a one-line ellipsis preview by default
+   (.mf-cell-preview) and only grow when a cell is clicked into edit
+   mode, so the table reads like a spreadsheet, not a stack of unevenly
+   sized text boxes. */
+/* Bounded height (not just overflow-x) so the horizontal scrollbar sits
+   at a fixed, always-reachable spot on screen -- with only overflow-x,
+   this div grows as tall as ALL the rows combined, so its horizontal
+   scrollbar would end up wherever that total height happens to end,
+   often far below the visible viewport on a table with many rows,
+   forcing a scroll-down-then-scroll-right-then-scroll-back-up cycle
+   just to see another column. Capping height and adding overflow-y
+   here instead turns this into its own self-contained scrolling
+   viewport (the thead's existing position:sticky keeps the header
+   pinned to ITS top, same visual effect, just relative to this box
+   instead of the page).*/
+/* max-width:100% (not just overflow:auto) is load-bearing -- without an
+   explicit cap, this div's own box grows to match its ~2000px-wide
+   table (table-layout:fixed's column widths force that intrinsic
+   size) instead of staying capped to its container, so overflow:auto
+   never has anything to actually scroll -- the whole PAGE stretches
+   horizontally on mobile instead of just this one element getting its
+   own internal scrollbar. min-width:0 undoes the default
+   min-width:auto that lets a block child's intrinsic content width
+   push a flex/grid ancestor wider than intended, the same class of bug
+   at the container level. */
+.manage-table-scroll { overflow: auto; max-height: 70vh; max-width: 100%; min-width: 0; }
+/* border-collapse:separate (+ spacing:0), not collapse -- position:sticky
+   on a <td>/<th> is silently ignored by Chromium-based browsers when
+   the table uses border-collapse:collapse (a long-standing,
+   well-documented limitation), which would break the sticky
+   checkbox/row-number columns below -- their computed position would
+   read "sticky" but they'd scroll off-screen like any normal cell.
+   Each cell already draws its own 1px border, so cells still look
+   bordered as before; the only visible difference is adjacent cells no
+   longer share a single collapsed border line between them. Also
+   drops the table's own overflow:hidden (there to clip content to the
+   table's rounded corners) -- an ancestor with overflow != visible
+   becomes its own scroll container for position:sticky purposes even
+   when nothing inside it actually scrolls, which would silently
+   redirect the sticky columns' containing block away from the REAL
+   scrolling ancestor (.manage-table-scroll) and make them track the
+   horizontal scroll like any other cell instead of staying pinned.
+   Corner-rounding is cosmetic and border-radius on a <table> is never
+   reliably clipped by real browsers anyway -- not a meaningful loss. */
+/* width:100% -- table-layout:fixed's <col> widths become PROPORTIONS
+   (not literal values) once the table's own width is a definite length
+   like this, so columns flex to fit the container dynamically instead
+   of forcing a permanent giant table + horizontal scroll for everyone
+   regardless of window size. (A cell min-width was tried as a per-
+   column floor here, but the table algorithm and the buttons/inputs'
+   own width:100% resolved against different pre/post-adjustment
+   widths, leaving a visible gap next to the controls -- reverted. Each
+   column's <col> width below is just its plain proportional share.) */
+.manage-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 0.85em; table-layout: fixed; background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); }
+.manage-table th, .manage-table td { border: 1px solid var(--border-soft); padding: 0.4rem 0.5rem; vertical-align: top; text-align: left; overflow: hidden; }
+.manage-table thead th {
+  position: sticky; top: 0; z-index: 2; background: var(--border-soft);
+  vertical-align: top; font-weight: 650; border-bottom: 1px solid var(--border);
+}
+.manage-table tbody tr:hover { background: var(--accent-soft); }
+/* Freezes the checkbox + row-number columns while scrolling
+   horizontally -- on a narrow screen this table is ~2000px wide (12
+   columns, mostly 13rem text fields), and without a fixed reference
+   column, scrolling right to reach a later field loses all track of
+   which row you're even editing. left offsets match mf-col-select's own 2.2rem width exactly
+   so the second sticky column starts right where the first ends, no
+   gap or overlap. z-index:3 (above both the plain top-sticky header at
+   2 and these same two columns' own body cells at 1) is only needed on
+   the header row, where sticky-top and sticky-left intersect -- that
+   corner cell must stay above everything scrolling underneath it in
+   BOTH directions at once. */
+.manage-table td:nth-child(1), .manage-table td:nth-child(2) {
+  position: sticky; z-index: 1; background: var(--card-bg);
+  box-shadow: 2px 0 4px -2px rgba(0,0,0,0.15);
+}
+.manage-table thead th:nth-child(1), .manage-table thead th:nth-child(2) {
+  z-index: 3;
+}
+.manage-table td:nth-child(1), .manage-table th:nth-child(1) { left: 0; }
+.manage-table td:nth-child(2), .manage-table th:nth-child(2) { left: 2.2rem; }
+/* Row hover normally comes from the row's own background (tr:hover),
+   but a cell's OWN background (needed above, to stay opaque while
+   other cells scroll underneath it) always paints over that -- these
+   two columns would otherwise never visibly highlight on hover.
+   var(--accent-soft) itself is translucent (e.g. #4a90e21f, ~12%
+   alpha) -- fine as an overlay tint on a normal cell, but on a STICKY
+   cell it let whatever's scrolled underneath show straight through,
+   defeating the whole point of td:nth-child(1)/(2)'s opaque
+   background above. color-mix here bakes the same tint onto the
+   card's own opaque background instead of layering a see-through one
+   on top. */
+.manage-table tbody tr:hover td:nth-child(1),
+.manage-table tbody tr:hover td:nth-child(2) { background: color-mix(in srgb, var(--accent) 12%, var(--card-bg)); }
+/* Filters live inside the header cell itself, under the label -- Excel-
+   style, instead of a separate filter row (which left the header row's
+   own empty space unused and needed its own sticky-offset math). */
+.mf-th-label { white-space: nowrap; cursor: help; margin-bottom: 0.3rem; }
+.manage-table thead input, .manage-table thead select {
+  font-size: 0.8em; font-weight: normal; padding: 0.25rem 0.4rem; margin: 0; cursor: default;
+}
+/* Placeholder for header cells with no sensible filter (Image(s), etc)
+   -- keeps every header cell the same shape instead of some having a
+   filter box and others just trailing off into empty space. */
+.mf-th-filler { height: 1.6rem; border-bottom: 1px solid var(--border-soft); }
+.mf-help {
+  opacity: 0.6; font-size: 0.75em; border: 1px solid currentColor; border-radius: 50%;
+  width: 1.1em; height: 1.1em; display: inline-flex; align-items: center; justify-content: center; cursor: help;
+}
+.mf-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; opacity: 1; }
+.manage-table input, .manage-table select { width: 100%; margin: 0; box-sizing: border-box; }
+.manage-table col.mf-col-select { width: 2.2rem; }
+/* 4.5rem clipped the "rendered"/"uploaded" status badges below the row
+   number -- .badge's own pill padding plus white-space:nowrap made
+   them wider than that, and the cell's overflow:hidden cut off their
+   trailing edge. 6rem is enough for the widest of those labels. */
+.manage-table col.mf-col-num { width: 6rem; }
+.manage-table col.mf-col-narrow { width: 8rem; }
+.manage-table col.mf-col-wide { width: 13rem; }
+.manage-table col.mf-col-type { width: 12rem; }
+.mf-spinner {
+  display: inline-block; width: 0.9em; height: 0.9em; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%; animation: mf-spin 0.7s linear infinite;
+  margin-right: 0.4rem; vertical-align: -0.1em;
+}
+@keyframes mf-spin { to { transform: rotate(360deg); } }
+/* Indeterminate (not percent-driven) render progress -- a sliding bar
+   instead of a filled-width one, since a real render is several separate
+   ComfyUI stages each with their own local step count; showing that as a
+   single 0-100% width was misleading (looked "done" at each stage's
+   100%, then silently jumped back to 0% for the next one). */
+.mf-indeterminate-bar {
+  background: var(--border-soft); border-radius: 4px; height: 0.5rem;
+  margin: 0.3rem 0; overflow: hidden; position: relative;
+}
+.mf-indeterminate-bar div {
+  position: absolute; top: 0; bottom: 0; width: 40%; background: var(--accent);
+  border-radius: 4px; animation: mf-indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes mf-indeterminate {
+  0% { left: -40%; }
+  100% { left: 100%; }
+}
+.manage-table col.mf-col-images { width: 11rem; }
+
+.mf-cell-row { display: flex; align-items: center; gap: 0.15rem; }
+.mf-cell-preview {
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: text;
+  padding: 0.2rem 0.3rem; min-height: 1.3em; border-radius: var(--radius-sm); transition: background 0.1s ease;
+}
+.mf-cell-preview:hover { background: var(--accent-soft); }
+.mf-cell-clear {
+  flex: 0 0 auto; width: auto; padding: 0 0.35rem; margin: 0; border: none; background: none;
+  color: var(--muted-fg); font-size: 1em; line-height: 1; cursor: pointer;
+}
+.mf-cell-clear:hover { color: var(--fg); }
+.mf-cell textarea { width: 100%; box-sizing: border-box; resize: both; min-height: 4.5rem; margin: 0; }
+.mf-tags-pills {
+  display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; min-height: 1.9rem;
+  padding: 0.3rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--field-bg); cursor: text; max-width: 100%; box-sizing: border-box;
+}
+/* negative_prompt terms can be whole phrases, not just short tags --
+   white-space:nowrap on a long one has no wrap point, so it would
+   overflow straight out of the cell/table instead of wrapping
+   ("leaks"). flex-wrap on the
+   container only wraps whole PILLS onto new lines; it never helps a
+   single pill that's itself wider than the row. max-width caps an
+   individual pill to the container's own width (flex items don't
+   shrink below content size by default -- same class of bug as the
+   mobile manage-table fix), and overflow-wrap lets its text actually
+   break instead of pushing the box wider than that cap. */
+.mf-tag-pill {
+  display: inline-flex; align-items: center; gap: 0.3rem; background: var(--accent-soft);
+  color: var(--fg); border-radius: 999px; padding: 0.1rem 0.55rem; font-size: 0.78em;
+  white-space: normal; overflow-wrap: anywhere; max-width: 100%;
+}
+.mf-tag-remove {
+  background: none; border: none; padding: 0; margin: 0; width: auto; height: auto;
+  cursor: pointer; font-size: 1em; line-height: 1; color: var(--muted-fg);
+}
+.mf-tag-remove:hover { color: var(--fg); }
+.mf-tags-input { border: none; outline: none; flex: 1 1 4rem; min-width: 4rem; padding: 0.1rem; margin: 0; background: transparent; font-size: 0.85em; }
+
+.chat-log {
+  max-height: 260px; overflow-y: auto; display: flex; flex-direction: column;
+  gap: 0.5rem; padding: 0.4rem 0.1rem; margin-top: 0.4rem;
+}
+.chat-msg { padding: 0.4rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.85em; white-space: pre-wrap; word-break: break-word; }
+.chat-user { background: var(--accent-soft); align-self: flex-end; max-width: 88%; }
+.chat-assistant { background: var(--border-soft); align-self: flex-start; max-width: 96%; }
+.chat-proposals { margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px solid var(--border); }
+.chat-proposals ul { margin: 0.3rem 0; padding-left: 1.1rem; }
+.chat-proposals li { margin-bottom: 0.15rem; }
+#chat-input { min-height: unset; }
+.mf-slot { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.6rem; }
+.mf-slot:last-child { margin-bottom: 0; }
+.mf-slot textarea { width: 100%; box-sizing: border-box; }
+
+/* subtle themed scrollbars (webkit only -- harmless no-op elsewhere) */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-fg); }
+
+/* ---- Utility classes -------------------------------------------------
+   Replacements for the repeated inline style="..." attributes the page
+   markup and its JS templates used to carry (web_ui.py, 2026-09-03).
+   Naming: a trailing number is the value in tenths of a rem (mt-3 =
+   margin-top: 0.3rem, gap-10 = gap: 1rem); r = rem widths (w-6r);
+   text-sm/xs/xxs = 0.85em/0.7em/0.75em, the three sizes the markup
+   actually used. !important on every rule is deliberate: an inline
+   style beats any stylesheet rule, so a plain class here would LOSE to
+   existing, more specific rules (e.g. `.manage-table input { width:
+   100% }` vs a cell's w-auto) and silently change layout the inline
+   attribute had been winning. !important restores exactly that
+   precedence. One-off, computed (${...}) and display:none styles --
+   the latter toggled by JS through element.style -- stay inline. */
+.w-auto { width: auto !important; }  .w-full { width: 100% !important; }
+.w-60 { width: 60% !important; }  .w-6r { width: 6rem !important; }
+.max-w-44r { max-width: 44rem !important; }  .min-w-0 { min-width: 0 !important; }
+.flex-1 { flex: 1 !important; }  .flex-auto { flex: 1 1 auto !important; }
+.flex-none { flex: 0 0 auto !important; }
+.flex-10r { flex: 1 1 10rem !important; }  .flex-12r { flex: 1 1 12rem !important; }
+.m-0 { margin: 0 !important; }
+.my-2 { margin: 0.2rem 0 !important; }  .my-3 { margin: 0.3rem 0 !important; }
+.my-4 { margin: 0.4rem 0 !important; }  .my-5 { margin: 0.5rem 0 !important; }
+.mt-0 { margin-top: 0 !important; }  .mt-2 { margin-top: 0.2rem !important; }
+.mt-3 { margin-top: 0.3rem !important; }  .mt-4 { margin-top: 0.4rem !important; }
+.mt-5 { margin-top: 0.5rem !important; }  .mt-6 { margin-top: 0.6rem !important; }
+.mt-8 { margin-top: 0.8rem !important; }  .mt-9 { margin-top: 0.9rem !important; }
+.mt-15 { margin-top: 1.5rem !important; }
+.mb-0 { margin-bottom: 0 !important; }  .mb-2 { margin-bottom: 0.2rem !important; }
+.mb-3 { margin-bottom: 0.3rem !important; }  .mb-4 { margin-bottom: 0.4rem !important; }
+.mb-5 { margin-bottom: 0.5rem !important; }  .mb-6 { margin-bottom: 0.6rem !important; }
+.mb-8 { margin-bottom: 0.8rem !important; }  .mb-9 { margin-bottom: 0.9rem !important; }
+.ml-4 { margin-left: 0.4rem !important; }  .ml-auto { margin-left: auto !important; }
+.py-6 { padding: 0.6rem 0 !important; }
+.gap-2 { gap: 0.2rem !important; }  .gap-3 { gap: 0.3rem !important; }
+.gap-4 { gap: 0.4rem !important; }  .gap-5 { gap: 0.5rem !important; }
+.gap-6 { gap: 0.6rem !important; }  .gap-9 { gap: 0.9rem !important; }
+.gap-10 { gap: 1rem !important; }
+.items-center { align-items: center !important; }  .items-start { align-items: flex-start !important; }
+.items-end { align-items: flex-end !important; }
+.justify-between { justify-content: space-between !important; }  .justify-end { justify-content: flex-end !important; }
+.wrap { flex-wrap: wrap !important; }  .nowrap { flex-wrap: nowrap !important; }
+.flex { display: flex !important; }  .inline-flex { display: inline-flex !important; }
+.block { display: block !important; }  .flex-col { flex-direction: column !important; }
+.text-sm { font-size: 0.85em !important; }  .text-xs { font-size: 0.7em !important; }
+.text-xxs { font-size: 0.75em !important; }  .fw-600 { font-weight: 600 !important; }
+.mono { font-family: monospace !important; }  .pre-wrap { white-space: pre-wrap !important; }
+.text-muted { color: var(--muted-fg) !important; }  .text-danger { color: var(--danger) !important; }
+.pointer { cursor: pointer !important; }  .float-right { float: right !important; }
+.overflow-y-auto { overflow-y: auto !important; }
+
+/* Click-to-enlarge overlay for manage-table thumbnails (enlargeSlotImage). */
+.img-zoom-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 9999;
+  display: flex; align-items: center; justify-content: center; cursor: zoom-out;
+}
+.img-zoom-overlay img {
+  max-width: 90vw; max-height: 90vh; object-fit: contain; border-radius: 6px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+}

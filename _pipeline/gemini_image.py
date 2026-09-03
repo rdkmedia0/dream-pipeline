@@ -301,7 +301,7 @@ def generate_reference_image(prompt, dest_path, api_key=None, model=None):
     if not candidates:
         block_reason = (data.get("promptFeedback") or {}).get("blockReason")
         raise GeminiContentBlocked(
-            f"Gemini returned no candidates"
+            "Gemini returned no candidates"
             + (f" (blocked: {block_reason})" if block_reason else "")
             + f" -- full response: {json.dumps(data)[:500]}")
     parts = ((candidates[0].get("content") or {}).get("parts")) or []
@@ -359,7 +359,7 @@ def edit_image(prompt, source_image_paths, dest_path, api_key=None, model=None):
     if not candidates:
         block_reason = (data.get("promptFeedback") or {}).get("blockReason")
         raise GeminiContentBlocked(
-            f"Gemini returned no candidates"
+            "Gemini returned no candidates"
             + (f" (blocked: {block_reason})" if block_reason else "")
             + f" -- full response: {json.dumps(data)[:500]}")
     parts = ((candidates[0].get("content") or {}).get("parts")) or []

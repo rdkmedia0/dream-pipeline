@@ -528,49 +528,6 @@ def missing_models(comfyui_dir):
     return check_models_status(comfyui_dir)[1]
 
 
-def pull_comfyui_models_noninteractive(comfyui_dir):
-    """Non-interactive counterpart to pull_comfyui_models() -- downloads
-    every missing manifest file without prompting, used by web_ui.py's
-    "Download missing models" background job (which can't prompt for
-    input, same reasoning as install_comfyui_noninteractive()). Raises if
-    comfyui_dir doesn't look like a real ComfyUI install; otherwise keeps
-    going past individual file failures (one bad URL/network blip
-    shouldn't abort the other 16 files) and raises at the end if anything
-    failed, so the job status still reports failure."""
-    comfyui_dir = Path(comfyui_dir)
-    models_dir = comfyui_dir / "models"
-    if not models_dir.is_dir():
-        raise RuntimeError(f"{models_dir} doesn't exist -- comfyui_dir doesn't look like a ComfyUI install")
-
-    to_fetch = missing_models(comfyui_dir)
-    total = len(to_fetch)
-    if not total:
-        print("All model files already present -- nothing to download.")
-        return
-    failed = []
-    for i, entry in enumerate(to_fetch, 1):
-        if not entry.get("source"):
-            print(f"[{i}/{total}] {entry['filename']} -- SKIPPED: no known download source. "
-                  f"Search: {entry.get('search_url', '(none)')}")
-            failed.append(entry["filename"])
-            continue
-        target_dir = models_dir / entry["target_dir"]
-        target_path = target_dir / entry["filename"]
-        size = f"{entry['size_gb']} GB" if entry.get("size_gb") else "size unknown"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        url = install_manifest.resolve_url(entry["source"])
-        print(f"[{i}/{total}] downloading {entry['filename']} ({size}) from {url} ...")
-        try:
-            urllib.request.urlretrieve(url, target_path)
-            print(f"[{i}/{total}] {entry['filename']} -- done.")
-        except Exception as e:
-            print(f"[{i}/{total}] {entry['filename']} -- FAILED: {e}")
-            target_path.unlink(missing_ok=True)
-            failed.append(entry["filename"])
-    if failed:
-        raise RuntimeError(f"{len(failed)} of {total} model file(s) failed to download: {', '.join(failed)}")
-
-
 def pull_comfyui_models(comfyui_dir):
     print("\n=== ComfyUI models ===")
     if comfyui_dir is None:

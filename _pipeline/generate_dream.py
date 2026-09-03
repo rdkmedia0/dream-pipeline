@@ -39,7 +39,6 @@ import copy
 import json
 import random
 import shutil
-import subprocess
 import sys
 import time
 import urllib.request
@@ -579,7 +578,7 @@ def queue_prompt(comfyui_base, prompt):
     # websocket events to the connection whose clientId matches whichever
     # prompt is currently executing (comfy_execution/progress.py,
     # execution.py's `self.server.client_id = extra_data["client_id"]`), so
-    # dream_step.query_comfyui_progress() needs a client_id it can reliably
+    # web_ui's _comfyui_progress_listener needs a client_id it can reliably
     # reconnect with at any time, not one it would have to learn from this
     # specific subprocess call. Safe as a shared constant: this pipeline
     # only ever runs one render at a time (vram_guard's whole point), so
@@ -791,8 +790,8 @@ def try_online_first_frame(spec, dest_dir, scene_prompt, dest_path, force=False)
     print(f"[generate_dream] online first-frame vision review:\n"
           f"{dream_step.sanitize_review_text_for_log(review_text)}", flush=True)
     if passed is False:
-        print(f"[generate_dream] online first frame failed review -- "
-              f"falling back to local T2I generation", flush=True)
+        print("[generate_dream] online first frame failed review -- "
+              "falling back to local T2I generation", flush=True)
         dest_path.unlink(missing_ok=True)
         return None
     return dest_path
@@ -979,7 +978,7 @@ def generate_keyframes(spec, keyframe_prompts, comfyui_base, comfyui_output_dir,
         generate_one_attempt_gemini (a real billed Gemini image-edit
         call) instead of the local ComfyUI I2I pass -- see
         kf_middle_last_backend."""
-        last_path, last_review = None, None
+        last_path = None
         for attempt in range(1, MAX_IMAGE_RETRIES + 2):
             path = (generate_one_attempt_gemini(role, dest_index, gemini_reference_image_path)
                     if gemini_reference_image_path is not None
@@ -1002,7 +1001,7 @@ def generate_keyframes(spec, keyframe_prompts, comfyui_base, comfyui_output_dir,
             print(f"[generate_dream] keyframe '{role}' attempt {attempt}/"
                   f"{MAX_IMAGE_RETRIES + 1} vision review:\n"
                   f"{dream_step.sanitize_review_text_for_log(review_text)}", flush=True)
-            last_path, last_review = path, review_text
+            last_path = path
             if passed is not False:  # True (passed) or None (couldn't check) -- accept
                 return path
             print(f"[generate_dream] '{role}' keyframe failed review, "

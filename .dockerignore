@@ -18,6 +18,7 @@ _pipeline/model_check_cache.json
 # read.
 _pipeline/config.json
 _pipeline/gemini/usage.json
+_pipeline/custom_workflows.json
 
 # Project data (rendered videos, keyframes) -- not needed to BUILD the
 # image at all (it's runtime data, mounted via the /data volume), and

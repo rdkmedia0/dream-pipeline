@@ -16,7 +16,6 @@ fall back to a real test render + human confirmation (see web_ui.py's
 workflow-file Settings flow) rather than guessing.
 """
 import json
-import re
 from pathlib import Path
 
 import setup_installer
@@ -249,7 +248,7 @@ def detect_image_nodes(path_or_graph, type_):
 _SEED_FIELD_NAMES = ("noise_seed", "seed")
 
 
-def detect_seed_nodes(path_or_graph, comfyui_url=None, sampler_node_ids=None, cache=None):
+def detect_seed_nodes(path_or_graph, comfyui_url=None, cache=None):
     """Detects every node holding a literal noise seed -- a direct
     whole-graph scan for a literal (non-link) "noise_seed"/"seed" input,
     NOT tied to whatever detect_prompt_nodes() identified as a "sampler"
@@ -266,7 +265,7 @@ def detect_seed_nodes(path_or_graph, comfyui_url=None, sampler_node_ids=None, ca
     generate_dream.build_prompt: every workflow_cfg["seeds"] entry is a
     node ID whose inputs["noise_seed"] gets written directly, always a
     literal on that node itself, never reached via a link) and needs no
-    /object_info calls. comfyui_url/sampler_node_ids/cache are accepted
+    /object_info calls. comfyui_url/cache are accepted
     but unused -- kept for a stable signature alongside the other
     detect_* functions."""
     graph = path_or_graph if isinstance(path_or_graph, dict) else _load_graph(path_or_graph)

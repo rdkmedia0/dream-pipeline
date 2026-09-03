@@ -113,6 +113,58 @@ UPLOAD_RETRY_POLL_INTERVAL_S = 300
 # tested before.
 _YOUTUBE_TEST_CREDS = None
 
+# Request-origin guard. "No auth, bound to 127.0.0.1" (module docstring)
+# keeps OTHER MACHINES out, but not other WEB PAGES in this same browser:
+# any site the human has open can fire
+# fetch("http://127.0.0.1:8420/api/project/delete", {method: "POST", ...})
+# at this server (cross-site request forgery -- the JSON body doesn't
+# need a preflight when sent as text/plain, and nothing here checked the
+# content type), and a DNS-rebinding page can point its own hostname at
+# 127.0.0.1 to read responses too. Two cheap checks in Handler._dispatch
+# close both without introducing real auth/sessions:
+#   * the Host header must name a loopback address, the explicit --host
+#     this server was started with, or something listed in
+#     DREAM_PIPELINE_ALLOWED_HOSTS (comma-separated) -- a rebinding
+#     page's requests carry the attacker's domain there instead;
+#   * a POST that carries an Origin header must come from one of those
+#     same hosts -- a cross-site page's browser always sends its OWN
+#     origin. Requests with no Origin at all (curl, scripts, the
+#     .claude/settings.json allowlist) are unaffected.
+# DREAM_PIPELINE_ALLOWED_HOSTS exists for the one legitimate case this
+# would otherwise block: a Docker deployment deliberately published on
+# a LAN hostname instead of 127.0.0.1 (see docker-compose.yml).
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_BOUND_HOST = "127.0.0.1"  # what serve() actually bound; read by _allowed_hosts()
+# Keyframe uploads arrive as base64 inside the JSON body (h_image_upload)
+# and are the largest legitimate request by far; nothing real comes
+# anywhere near this. Without a cap, `rfile.read(Content-Length)` would
+# allocate whatever a client claimed.
+MAX_BODY_BYTES = 64 * 1024 * 1024
+
+
+def _allowed_hosts():
+    hosts = set(_LOOPBACK_HOSTS)
+    if _BOUND_HOST and _BOUND_HOST not in ("0.0.0.0", "::", ""):
+        hosts.add(_BOUND_HOST.lower())
+    extra = os.environ.get("DREAM_PIPELINE_ALLOWED_HOSTS", "")
+    hosts.update(h.strip().lower() for h in extra.split(",") if h.strip())
+    return hosts
+
+
+def _hostname_of(value):
+    """'127.0.0.1:8420', 'http://localhost:8420', '[::1]:8420' -> the bare
+    hostname, lowercased; '' for anything unparseable (or 'null', the
+    Origin a sandboxed/file:// page sends -- never a legitimate caller
+    of this server)."""
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "//" + value
+    try:
+        return (urllib.parse.urlsplit(value).hostname or "").lower()
+    except ValueError:
+        return ""
+
 # Guards against a real race: clicking "Test connection" while a
 # "Reauthorize" job is still mid-flight (before its browser consent
 # completes and a cached token exists) sees no cache yet and would start
@@ -736,7 +788,7 @@ def h_creative_fields_get(qs, body):
     option lists (genre/style/duration/resolution) so the form's
     datalists stay server-defined, one source, instead of a duplicated
     JS copy that could drift from dream_step.py's own constants."""
-    project = _project_from_qs(qs)
+    _project_from_qs(qs)
     fields = ds.creative_fields()
     return {
         **fields,
@@ -1035,7 +1087,6 @@ def h_models_missing(qs, body):
     buttons: open the browser, the human places the file themselves, no
     local disk write from this process."""
     import setup_installer
-    config = ds.load_config()
     # Model-file completeness is ALWAYS a real, checked dependency, local
     # or remote ComfyUI alike: a workflow fails identically either way if
     # a model is genuinely missing wherever ComfyUI actually runs.
@@ -1172,7 +1223,7 @@ def h_schedule_upload_retry(qs, body):
     default hardcoded (see ds.schedule_upload_retry's own comment). If
     the poller isn't already running (this may be the very first retry
     ever scheduled on this server), starts it."""
-    project = _project_from_body(body)
+    _project_from_body(body)
     numbers = body["numbers"]
     hours = float(body["hours"])
     ds.schedule_upload_retry(numbers, hours)
@@ -1205,7 +1256,7 @@ def h_dismiss_upload_retry_result(qs, body):
 
 
 def h_upload_rename_video(qs, body):
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     log = io.StringIO()
     _STDOUT_ROUTER.set_target(log)
@@ -1223,13 +1274,13 @@ def h_videos(qs, body):
 
 
 def h_move_video(qs, body):
-    project = _project_from_body(body)
+    _project_from_body(body)
     ds.move_media_folder(body["folder"], body["from"], body["to"])
     return {"ok": True}
 
 
 def h_delete_video(qs, body):
-    project = _project_from_body(body)
+    _project_from_body(body)
     ds.delete_media_folder(body["folder"], body["location"])
     return {"ok": True}
 
@@ -1284,7 +1335,7 @@ def h_spec_row_save(qs, body):
     """Writes this row's spec -- non-blank fields save verbatim, any
     blank required field is composed by AI automatically (see
     write_row_spec). No separate 'enable AI' flag."""
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     workflow = ds.TYPE_TO_WORKFLOW.get((body.get("type") or "t2v").strip().lower(), "fp8_t2v")
     fields = body.get("fields") or {}
@@ -1311,7 +1362,7 @@ def h_keyframes_row_save(qs, body):
     verbatim, any still-needed blank prompt is composed by AI
     automatically (see write_row_keyframes). No separate 'enable AI'
     flag."""
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     workflow = ds.TYPE_TO_WORKFLOW.get((body.get("type") or "t2v").strip().lower(), "fp8_t2v")
     fields = body.get("fields") or {}
@@ -1321,7 +1372,7 @@ def h_keyframes_row_save(qs, body):
 
 
 def h_image_upload(qs, body):
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     slot = body["slot"]
     filename = body.get("filename") or ""
@@ -1334,7 +1385,7 @@ def h_image_upload(qs, body):
 
 
 def h_manage_reference_photo(qs, body):
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     slot = body["slot"]
     query = (body.get("query") or "").strip() or ds.guess_animal_query(body.get("title") or "")
@@ -1352,7 +1403,7 @@ def h_manage_generate_keyframe_image(qs, body):
     -- same as h_manage_reference_photo's scene_prompt, so a human can
     tweak the prompt and try it immediately without a separate Save
     first."""
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     workflow = ds.TYPE_TO_WORKFLOW.get((body.get("type") or "t2v").strip().lower(), "fp8_t2v")
     slot = body["slot"]
@@ -1363,7 +1414,7 @@ def h_manage_generate_keyframe_image(qs, body):
 
 
 def h_manage_clear_staged_image(qs, body):
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     slot = body["slot"]
     ds.clear_staged_upload(number, slot)
@@ -1371,7 +1422,7 @@ def h_manage_clear_staged_image(qs, body):
 
 
 def h_manage_delete_image(qs, body):
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     slot = body["slot"]
     changed = ds.delete_slot_image(number, slot)
@@ -1382,7 +1433,7 @@ def h_manage_rename_image(qs, body):
     """The manage table's per-slot "Use as..." reassignment -- swaps
     (never overwrites) an existing fml2v slot's image into a different
     slot, e.g. reusing an already-generated 'middle' pose as 'first'."""
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     workflow = body["workflow"]
     changed = ds.rename_slot_image(number, workflow, body["from_slot"], body["to_slot"])
@@ -1393,7 +1444,7 @@ def h_manage_guide_strengths_save(qs, body):
     """Saves the manage table's per-slot fml2v "weight" input (guide
     strength) -- how strongly that keyframe anchors motion at that point
     in the render."""
-    project = _project_from_body(body)
+    _project_from_body(body)
     number = int(body["number"])
     strengths = body["strengths"]
     ds.save_guide_strengths(number, strengths)
@@ -1401,13 +1452,13 @@ def h_manage_guide_strengths_save(qs, body):
 
 
 def h_upload_template_get(qs, body):
-    project = _project_from_qs(qs)
+    _project_from_qs(qs)
     template, error = ds.load_upload_template()
     return {"template": template, "error": error}
 
 
 def h_upload_template_save(qs, body):
-    project = _project_from_body(body)
+    _project_from_body(body)
     template = ds.write_upload_template(body["fields"])
     return {"template": template}
 
@@ -1834,7 +1885,7 @@ def h_youtube_project_channel_status(qs, body):
     reusable session gets the same live verification, and is adopted as
     this project's own once confirmed to reach the right channel."""
     import upload_dream
-    project = _project_from_qs(qs)
+    _project_from_qs(qs)
     template, _template_error = ds.load_upload_template()
     expected_handle = (template or {}).get("channel_handle")
     youtube_dir = ds.DATA_DIR / "youtube"
@@ -1952,7 +2003,7 @@ def _token_enc_path():
 
 def h_youtube_token_status(qs, body):
     import secret_store
-    project = _project_from_qs(qs)
+    _project_from_qs(qs)
     plaintext = ds.DATA_DIR / "youtube" / "token.json"
     secret_store.migrate_plaintext_if_present(plaintext, _token_enc_path())
     present, decryptable, reason = secret_store.decrypt_status(_token_enc_path())
@@ -1960,7 +2011,7 @@ def h_youtube_token_status(qs, body):
 
 
 def h_youtube_token_clear(qs, body):
-    project = _project_from_body(body)
+    _project_from_body(body)
     _token_enc_path().unlink(missing_ok=True)
     return {"ok": True}
 
@@ -1971,7 +2022,7 @@ def h_youtube_analytics_status(qs, body):
     the whole cache body -- currently unused by the tab itself (which reads
     the full cache via h_youtube_analytics_get anyway) but kept as a light
     endpoint other views could check without paying for the full payload."""
-    project = _project_from_qs(qs)
+    _project_from_qs(qs)
     import youtube_analytics
     cache = youtube_analytics.load_cache(ds.DATA_DIR / "youtube")
     return {"fetched_at": cache.get("fetched_at"), "date_range": cache.get("date_range"),
@@ -1982,7 +2033,7 @@ def h_youtube_analytics_get(qs, body):
     """Pure local-file read -- NEVER touches the network. This is what the
     Analytics tab calls on open/reload/project-switch; only the Refresh
     button (h_youtube_analytics_refresh) is allowed to pull from YouTube."""
-    project = _project_from_qs(qs)
+    _project_from_qs(qs)
     import youtube_analytics
     return youtube_analytics.load_cache(ds.DATA_DIR / "youtube")
 
@@ -1997,7 +2048,7 @@ def h_youtube_analytics_refresh(qs, body):
     whichever of those channel videos DO have a matching index.json entry
     with a workflow recorded -- the rest still show in the raw stats/
     leaderboards, just without a style bucket."""
-    project = _project_from_body(body)
+    _project_from_body(body)
     import youtube_analytics
     template, _template_error = ds.load_upload_template()
     expected_handle = (template or {}).get("channel_handle")
@@ -2034,7 +2085,7 @@ def h_youtube_analytics_get_trend_range(qs, body):
     youtube_analytics.ensure_daily_trend_range), so picking a period and
     clicking this is safe to do repeatedly without re-pulling data that's
     already there."""
-    project = _project_from_body(body)
+    _project_from_body(body)
     import youtube_analytics
     from datetime import datetime as _datetime
     start = _datetime.strptime(body["start"], "%Y-%m-%d").date()
@@ -2580,6 +2631,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _serve_static(self, name):
+        """The GUI's stylesheets (_pipeline/static/theme.css, app.css,
+        help.css) -- read from disk on every request, same reasoning as
+        /help: hand-edited files, so a change shows on reload without a
+        server restart. The route regex in _dispatch (a bare .css
+        filename, no separators) is the whole traversal defense; nothing
+        else under _pipeline/ is reachable through this."""
+        path = ds.PIPELINE_DIR / "static" / name
+        if not path.is_file():
+            self.send_response(404)
+            self.end_headers()
+            return
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/css; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     @staticmethod
     def _scrub_secret_text(text):
         # Unlike the explicit HTTPError branch below, this catch-all
@@ -2592,11 +2663,30 @@ class Handler(BaseHTTPRequestHandler):
         return re.sub(r'(?i)\b(key|token|api_key|access_token|refresh_token)=[^&\s"\']+', r'\1=***', text)
 
     def _dispatch(self, method):
+        # See _allowed_hosts()'s own comment for what these two checks
+        # defend against (CSRF / DNS rebinding) and why they're enough.
+        allowed = _allowed_hosts()
+        if _hostname_of(self.headers.get("Host")) not in allowed:
+            self._send_json({"error": "Host header isn't an allowed hostname for this server -- "
+                                      "reach it via http://127.0.0.1:<port>/ (or set "
+                                      "DREAM_PIPELINE_ALLOWED_HOSTS for a deliberate LAN name)"}, 403)
+            return
+        if method == "POST":
+            origin = self.headers.get("Origin")
+            if origin and _hostname_of(origin) not in allowed:
+                self._send_json({"error": "cross-origin request refused"}, 403)
+                return
         parsed = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(parsed.query)
         body = {}
         if method == "POST":
-            length = int(self.headers.get("Content-Length", 0))
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length > MAX_BODY_BYTES:
+                self._send_json({"error": "request body too large"}, 413)
+                return
             raw = self.rfile.read(length) if length else b"{}"
             try:
                 body = json.loads(raw.decode("utf-8"))
@@ -2649,6 +2739,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(page)
             return
 
+        m = re.match(r"^/static/([a-z0-9_-]+\.css)$", parsed.path)
+        if method == "GET" and m:
+            self._serve_static(m.group(1))
+            return
+
         if parsed.path == "/help" and method == "GET":
             # Read from disk fresh each time (not embedded like INDEX_HTML)
             # so editing help.html directly takes effect without a server
@@ -2692,6 +2787,8 @@ def serve(port=8420, host="127.0.0.1", initial_project=None):
     # this GUI was built for. A container passes host="0.0.0.0" itself
     # (see dream_step.py's --host) since it's already network-isolated
     # by Docker; a bare install should never need to change this.
+    global _BOUND_HOST
+    _BOUND_HOST = host
     server = ThreadingHTTPServer((host, port), Handler)
     display_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
     url = f"http://{display_host}:{port}/"
@@ -2709,722 +2806,11 @@ def serve(port=8420, host="127.0.0.1", initial_project=None):
 
 INDEX_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dream Pipeline</title>
-<style>
-  :root {
-    color-scheme: light dark;
-    --accent: #4a90e2; --accent-fg: #ffffff; --accent-soft: #4a90e21f;
-    --success: #2f9e59; --danger: #d64545; --warning: #d99a2b;
-    --bg: #f6f7f9; --fg: #16181d; --card-bg: #ffffff; --field-bg: #ffffff;
-    --border: #d9dce2; --border-soft: #e8eaed; --muted-fg: #6b7280;
-    --shadow: 0 1px 2px rgba(16,24,40,0.05), 0 1px 3px rgba(16,24,40,0.06);
-    --shadow-md: 0 4px 10px rgba(16,24,40,0.08), 0 2px 4px rgba(16,24,40,0.06);
-    --radius: 10px; --radius-sm: 6px;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #14161a; --fg: #e8e9ec; --card-bg: #1d2025; --field-bg: #1a1d22;
-      --border: #33373f; --border-soft: #282c33; --muted-fg: #9aa0ab;
-      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.25);
-      --shadow-md: 0 6px 16px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.3);
-    }
-  }
-  html[data-theme="forest"]  { --accent: #2f9e59; --accent-fg: #ffffff; --accent-soft: #2f9e591f; --success: #4caf6d; --danger: #c94b3f; --warning: #d1972e; }
-  html[data-theme="sunset"]  { --accent: #e2703a; --accent-fg: #ffffff; --accent-soft: #e2703a1f; --success: #4caf6d; --danger: #c73e3e; --warning: #e0a83c; }
-  html[data-theme="grape"]   { --accent: #8a4fe2; --accent-fg: #ffffff; --accent-soft: #8a4fe21f; --success: #3fae67; --danger: #cc4b7a; --warning: #d99a2b; }
-  html[data-theme="rose"]    { --accent: #e2437a; --accent-fg: #ffffff; --accent-soft: #e2437a1f; --success: #3fae67; --danger: #c0392b; --warning: #d99a2b; }
-  html[data-theme="slate"]   { --accent: #546e7a; --accent-fg: #ffffff; --accent-soft: #546e7a1f; --success: #4a9d6d; --danger: #c1443f; --warning: #c58a35; }
-
-  * { box-sizing: border-box; }
-  body {
-    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-    font-size: 15px; line-height: 1.5; color: var(--fg); background: var(--bg);
-    /* The manage table's own columns easily exceed a narrower cap on a
-       wide monitor, so a narrower cap would make a wider browser window
-       give zero benefit to how many columns fit before needing to
-       scroll. Still capped, not unbounded, so ultra-wide monitors don't
-       stretch single-column text content (video list, chat, etc.)
-       uncomfortably wide. */
-    max-width: 2400px; margin: 0 auto; padding: 0 1.25rem 3rem;
-  }
-  h1, h2, h3, h4 { line-height: 1.25; font-weight: 650; }
-  h1 { margin: 0; font-size: 1.25rem; letter-spacing: 0.01em; color: var(--fg); }
-  h2 { font-size: 1.1rem; margin: 0 0 0.75rem; }
-  h3 { font-size: 0.95rem; margin: 0 0 0.5rem; }
-  h4 { font-size: 0.9rem; margin: 0 0 0.4rem; }
-  a { color: var(--accent); }
-
-  /* color-scheme:light dark alone lets native form controls pick their OWN
-     background/text color from the OS theme, independently of whatever
-     the page's own background happens to be -- on a light page with a
-     dark-mode OS this renders white text on a white input (looks empty
-     but has a spellcheck squiggle under invisible text).
-     Setting background/color explicitly here removes that ambiguity. */
-  input, select, textarea {
-    width: 100%; box-sizing: border-box; padding: 0.45rem 0.6rem; margin: 0.25rem 0;
-    border-radius: var(--radius-sm); border: 1px solid var(--border);
-    background: var(--field-bg); color: var(--fg); font-family: inherit; font-size: 0.92em;
-    transition: border-color 0.12s ease, box-shadow 0.12s ease;
-  }
-  input:focus, select:focus, textarea:focus {
-    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
-  }
-  textarea { min-height: 8rem; }
-
-  .app-header {
-    display: flex; justify-content: space-between; align-items: center; gap: 1rem;
-    padding: 1.1rem 0.15rem; position: sticky; top: 0; z-index: 30;
-    background: color-mix(in srgb, var(--bg) 88%, transparent);
-    backdrop-filter: blur(8px); border-bottom: 1px solid var(--border-soft); margin-bottom: 1.25rem;
-  }
-  .app-header h1::before {
-    content: ""; display: inline-block; width: 0.6em; height: 0.6em; border-radius: 3px;
-    background: var(--accent); margin-right: 0.5em;
-  }
-  .app-header label { width: auto; margin: 0; display: flex; align-items: center; gap: 0.4rem; font-size: 0.85em; color: var(--muted-fg); }
-  .app-header select { width: auto; margin: 0; border-color: var(--border); }
-
-  .layout { display: flex; gap: 1.5rem; align-items: flex-start; }
-  .layout #app { flex: 1 1 auto; min-width: 0; }
-
-  /* The sidebar itself is the thing pinned to the viewport (not the player
-     card alone) -- it's a fixed-height flex column that clips its own
-     overflow, so the ONLY thing that ever scrolls inside it is the video
-     list. Nesting two independently-sticky/scrolling elements (a sticky
-     player + a tall auto-height list card below it) let the page's own
-     scroll and the list's internal scroll fight each other and the list
-     card could end up positioned behind the player.
-     border-left gives the panel a clear visual edge -- the toggle tab
-     (a separate, always-fixed element positioned by JS, see
-     positionSidebarToggle) is placed flush against this exact border, so
-     resizing the panel and clicking the tab both reference the same edge.
-     Resizing is a custom drag handle on that same left border (see
-     .sidebar-resize-handle / startSidebarResize), not native CSS `resize`
-     -- native resize only offers a bottom-right-corner handle that grows
-     the RIGHT edge, wrong for a panel whose right edge is the viewport
-     boundary and whose LEFT edge (against the manage table) is the one
-     that should move under drag.
-     flex-basis is explicitly 'auto' (not a fixed px value) so the width
-     JS sets via drag actually takes effect -- flex-basis: 340px would
-     keep re-asserting the original width over top of it. */
-  .sidebar {
-    flex: 0 0 auto; width: 340px; min-width: 260px; max-width: 640px;
-    position: sticky; top: 5rem; max-height: calc(100vh - 6rem);
-    display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden;
-    border-left: 1px solid var(--border); padding-left: 1rem;
-  }
-  .sidebar-resize-handle {
-    position: absolute; top: 0; bottom: 0; left: -1px; width: 6px;
-    cursor: ew-resize; z-index: 1;
-  }
-  .sidebar-resize-handle:hover { background: var(--accent-soft); }
-  @media (max-width: 900px) {
-    .layout { flex-direction: column; }
-    /* .layout's align-items:flex-start only matters on the CROSS axis,
-       which becomes WIDTH once
-       flex-direction switches to column here -- without an explicit
-       width, #app sizes to its own intrinsic content width instead of
-       filling the column (min-width:0 alone, correct for the desktop
-       ROW-flex case, does nothing for this axis). A wide child (the
-       manage table) then pushes #app -- and the whole page -- far
-       wider than the actual viewport, instead of being clipped/
-       scrolled inside it. */
-    .layout #app { width: 100%; }
-    .sidebar { width: 100% !important; flex: 1 1 auto; position: static; max-height: none; overflow: visible; border-left: none; padding-left: 0; }
-    .sidebar-resize-handle { display: none; }
-    /* Touch target sizing (WCAG 2.5.5 / ~44px guideline) -- desktop's
-       tighter padding stays as-is (mouse pointers don't need this, and
-       widening it there would just waste density on the manage table's
-       many small per-cell buttons), scoped here to widths where input is
-       actually touch-driven. */
-    button { min-height: 44px; padding: 0.6rem 1rem; }
-    input, select, textarea { min-height: 44px; }
-    input[type="checkbox"], input[type="radio"] { min-height: 0; width: 1.2rem; height: 1.2rem; }
-  }
-  /* Collapsed, the sidebar leaves the flex layout ENTIRELY (position:fixed
-     takes it out of flow) and docks as a small tab at the right edge of
-     the viewport -- #app then has the full layout width to itself for the
-     manage table, not just "whatever the sidebar didn't take". */
-  .sidebar.collapsed {
-    position: fixed; top: 6rem; right: 0; flex: 0 0 0; width: 0 !important; min-width: 0 !important;
-    max-height: none; z-index: 20; border-left: none; padding-left: 0;
-  }
-  .sidebar.collapsed .card, .sidebar.collapsed .sidebar-resize-handle { display: none; }
-  /* A fixed, always-vertical tab STACK -- Videos and Chat are two
-     separate tabs on the same dock, not one panel with a nested toggle.
-     The stack's own position (not each button individually) is set by JS
-     (see positionSidebarToggle) from the sidebar's REAL rendered box
-     rather than an assumed width -- required once the panel became
-     resizable, a hardcoded offset would drift out of sync the moment
-     it's dragged. */
-  #sidebar-tabs { position: fixed; z-index: 25; display: flex; flex-direction: column; }
-  .sidebar-toggle {
-    writing-mode: vertical-rl; padding: 0.8rem 0.4rem; border-radius: 10px 0 0 10px;
-    background: var(--card-bg); box-shadow: var(--shadow-md); margin: 0 0 -10px 0; position: relative; z-index: 1;
-  }
-  /* Real file-tab overlap: whichever is selected sits on top of its
-     neighbor instead of the two just touching edge-to-edge -- both stay
-     aligned on the same edge, only stacking order (z-index) changes. */
-  .sidebar-toggle.active {
-    background: var(--accent); color: var(--accent-fg); border-color: var(--accent);
-    z-index: 2;
-  }
-  .sidebar-player { flex: 0 0 auto; }
-  /* An unbounded <video> at its native aspect ratio could run 400-500px
-     tall, leaving almost nothing for the list below it in the sidebar's
-     fixed height -- confirmed: the list card was still there in the DOM,
-     just squeezed to a sliver, which LOOKED like it had vanished. Capping
-     the player's own height guarantees the list always gets real room. */
-  .sidebar-player video, .sidebar-player img {
-    max-height: 220px; width: 100%; object-fit: contain; background: #000;
-    border-radius: var(--radius-sm); display: block;
-  }
-  /* Fullscreen bug fix: the 220px cap above is author CSS that some
-     browsers keep applying to the <video> even once it's the fullscreen
-     element, squashing it into a tiny letterboxed strip with its controls
-     bar shoved off-frame ("loses the controls" in fullscreen). Fullscreening
-     the WRAPPER (not the <video> itself) and letting the video size to it
-     sidesteps that, and doubles as the mount point for the custom
-     prev/next/move overlay below (native <video> fullscreen has no concept
-     of "next video in this project"). */
-  .player-fs-wrap { position: relative; }
-  .player-fs-wrap:fullscreen {
-    background: #000; display: flex; align-items: center; justify-content: center;
-  }
-  .player-fs-wrap:fullscreen video {
-    max-height: 100vh; max-width: 100vw; width: auto; height: auto; object-fit: contain;
-  }
-  .player-fs-controls {
-    display: none; position: absolute; top: 0; left: 0; right: 0;
-    padding: 0.6rem; gap: 0.4rem; z-index: 5;
-    background: linear-gradient(rgba(0,0,0,0.65), transparent);
-  }
-  .player-fs-wrap:fullscreen .player-fs-controls { display: flex; }
-  .player-fs-controls button {
-    background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
-  }
-  .player-fs-controls button:hover { background: rgba(0,0,0,0.85); }
-  .player-fs-controls button:disabled { opacity: 0.4; cursor: default; }
-  .player-fs-controls .fs-spacer { flex: 1 1 auto; }
-  /* Same top-bar pattern as .player-fs-controls, pinned to the BOTTOM
-     instead -- without position:absolute this box was a plain sibling
-     of the centered <video> inside player-fs-wrap's flex row, so it
-     landed to the video's right instead of under it. display:none
-     outside :fullscreen for the same reason as .player-fs-controls: it
-     only makes sense as an overlay ON the fullscreen video, not as a
-     plain white row wedged into the small player card. */
-  /* color:#fff is the fallback for any plain text in here that isn't a
-     .chat-msg bubble (which gets its own override below); align-items:
-     flex-start (not center) since the chat log can be much taller than
-     a single button row. */
-  /* A solid bordered panel, not the transparent-to-black GRADIENT this
-     used before -- the gradient made the chat log read as loose text
-     floating on the video with no visible boundary, while the reply
-     textarea (which has its own border) looked like a separate, unrelated
-     box below it -- confirmed via screenshot: a human circled the
-     textarea specifically as "chat window", not recognizing the message
-     bubble above it as part of the same interface. One shared background
-     + border here makes the log and the reply box read as ONE enclosed
-     window, the log naturally at the top of it and the input at the
-     bottom, rather than two disconnected floating pieces. */
-  /* max-height:VH, not a % -- confirmed the earlier 60% attempt was a
-     complete no-op: percentage height on a position:absolute element
-     only resolves against its containing block's height if that
-     ancestor has an EXPLICIT height, and .player-fs-wrap doesn't
-     declare one (the Fullscreen API visually fills the screen, but
-     that's not the same as a CSS height value) -- per spec, a %
-     height on an absolutely-positioned descendant of an auto-height
-     ancestor computes to auto, i.e. is silently ignored entirely,
-     which is exactly what the screenshot showed (panel still grew to
-     cover the video). vh resolves against the real viewport instead,
-     with no such ancestor dependency. Also shrunk outright (32vh, was
-     60%) per explicit request: if this is going to sit above part of
-     the video at all, smaller is better. resize:none on this panel's
-     textareas closes the OTHER way a human could grow it past this cap
-     (a native resize-handle drag); the log's own overflow:auto is what
-     actually handles a conversation longer than this fixed box allows. */
-  .player-fs-feedback {
-    display: none; position: absolute; left: 0.6rem; right: 0.6rem; bottom: 0.6rem;
-    max-height: 32vh; padding: 0.6rem; gap: 0.5rem; z-index: 5; color: #fff;
-    flex-direction: column; align-items: stretch;
-    background: rgba(20,20,20,0.92); border: 1px solid rgba(255,255,255,0.18);
-    border-radius: var(--radius);
-  }
-  .player-fs-feedback > .row { width: 100%; box-sizing: border-box; }
-  .player-fs-feedback .muted { color: rgba(255,255,255,0.7); }
-  /* .chat-msg bubbles (chat-user/chat-assistant) use theme-derived
-     LIGHT background colors (--accent-soft/--border-soft), meant for a
-     normal light card -- inheriting this container's color:#fff for
-     plain text left the bubbles themselves nearly illegible (white
-     text on a light bubble). Forcing dark bubble text here specifically
-     is safe regardless of the app's current light/dark theme, since
-     both bubble backgrounds stay light-toned either way. */
-  .player-fs-feedback .chat-log { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
-  .player-fs-feedback .chat-msg { color: #111; }
-  /* --accent-soft is only ~12% alpha (a light TINT, meant to sit on a
-     normal light card background) -- confirmed via screenshot: against
-     this panel's dark background that read as barely-there dark text on
-     an almost fully transparent bubble, functionally illegible. A solid
-     light color here, not the theme's translucent one, matches
-     .chat-assistant's already-solid --border-soft treatment. */
-  .player-fs-feedback .chat-user { background: rgba(255,255,255,0.85); }
-  /* More specific than .player-fs-feedback .muted above (two classes
-     vs one), so this correctly wins for the "via <model>" line inside a
-     bubble -- that line is a DIRECT match for both rules (equal
-     specificity would fall to source order, fragile), and the white-ish
-     color meant for bare text on the dark video backdrop was nearly
-     invisible against the SAME light bubble background .chat-msg above
-     was just fixed for. */
-  .player-fs-feedback .chat-msg .muted { color: rgba(0,0,0,0.55); }
-  .player-fs-feedback .chat-msg .row { margin-top: 0.4rem; }
-  .player-fs-wrap:fullscreen .player-fs-feedback { display: flex; }
-  .player-fs-feedback textarea {
-    background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
-    border-radius: var(--radius-sm); padding: 0.4rem 0.5rem; resize: none;
-  }
-  .player-fs-feedback textarea::placeholder { color: rgba(255,255,255,0.65); }
-  .player-fs-feedback button {
-    background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.45);
-  }
-  .player-fs-feedback button:hover { background: rgba(0,0,0,0.85); }
-  /* Feedback-rework status, as a small corner overlay ON the video --
-     NOT gated by :fullscreen (unlike the two rules above) since this
-     needs to show in the small player card too, not just true
-     fullscreen. Scoped per-video by pollFeedbackQueueOnce (only ever
-     describes whatever's CURRENTLY on screen), so unlike the old plain
-     block-level banner it replaced -- which was a flex sibling of the
-     centered <video> in fullscreen and landed to its right, and kept
-     showing stale text about a different video after navigating away --
-     this hides itself via display:none/flex per-poll instead of always
-     occupying flow space. */
-  /* top:3.4rem (not 0.6rem) clears .player-fs-controls' own button row --
-     both pin to the top, and a fixed corner position collided with it in
-     fullscreen. left instead of right so it never depends on the
-     controls row's actual width (Prev/Next/Review mode/Move/Exit don't
-     wrap the same way at every viewport size). In the small (non-
-     fullscreen) player, .player-fs-controls isn't shown at all, so this
-     just reads as a modest gap from the video's top edge -- not a
-     collision with anything there either. */
-  .player-status-overlay {
-    display: none; position: absolute; top: 3.4rem; left: 0.6rem; z-index: 6;
-    background: rgba(0,0,0,0.65); color: #fff; padding: 0.25rem 0.7rem;
-    border-radius: 999px; font-size: 0.78em; max-width: 80%;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .sidebar-list-card { flex: 1 1 auto; min-height: 220px; display: flex; flex-direction: column; overflow: hidden; }
-  .video-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: 0.5rem; }
-  @media (max-width: 900px) { .sidebar-list-card { flex: 1 1 auto; overflow: visible; min-height: 0; } .video-list { max-height: 55vh; } }
-  .video-item { border-bottom: 1px solid var(--border-soft); padding: 0.5rem 0.5rem; cursor: pointer; border-radius: var(--radius-sm); transition: background 0.1s ease; }
-  .video-item:last-child { border-bottom: none; }
-  .video-item:hover { background: var(--border-soft); }
-  .video-item.selected { background: var(--accent-soft); }
-  .video-title { font-size: 0.88em; }
-  #media-tabs button.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
-  #media-filter { margin-top: 0.5rem; }
-
-  .card {
-    border: 1px solid var(--border); background: var(--card-bg); border-radius: var(--radius);
-    padding: 1.1rem; margin: 1rem 0; box-shadow: var(--shadow);
-    /* Undoes flex/grid's default min-width:auto wherever a .card sits
-     inside one (e.g. #app) -- otherwise a wide intrinsic-content child
-     (the manage table) can push its OWN ancestor card wider than the
-     viewport instead of being clipped/scrolled inside it. No effect on
-     a .card that isn't itself a flex/grid item. */
-    min-width: 0;
-  }
-
-  .modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 50;
-    display: flex; align-items: flex-start; justify-content: center; padding: 4rem 1rem;
-    overflow-y: auto;
-  }
-  .modal-card {
-    background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
-    box-shadow: var(--shadow-md); padding: 1.25rem; width: 100%; max-width: 34rem;
-  }
-  .modal-card.wide { max-width: 40rem; }
-  .settings-section { padding: 0.9rem 0; border-top: 1px solid var(--border); }
-  .settings-section:first-of-type { border-top: none; padding-top: 0.2rem; }
-  /* Title + help icon on the left, one at-a-glance status pill on the
-     right (when a section has one) -- flex+space-between puts the pill
-     at the end of the row for free, no separate always-visible status
-     line needed for the simple pass/fail cases. Full detail lives in
-     the pill's own hover title=. */
-  .settings-section h4 {
-    margin: 0 0 0.6rem; font-size: 0.78em; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--muted-fg);
-    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
-  }
-  .settings-section h4 .badge { margin-right: 0; }
-  /* Same title+status-pill row shape as .settings-section h4 above, for
-     section headers outside the Settings modal (Creative fields, golden
-     rules) that want the identical convention: OK/NOK pill flush right,
-     adjacent to the title, detail on hover -- not a bespoke layout per
-     form. */
-  h4.pill-h4 { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-  /* Same title-left/pill-right convention as h4, for a sub-field within
-     a section that has its own independent status (e.g. "Model files"
-     within the ComfyUI section, which already has its own URL-
-     reachability pill in the section h4) -- keeps every pill in the
-     form at the same conventional position, not just the section-level
-     ones. */
-  .field-label-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
-  }
-  .field-label-row .badge { margin-right: 0; }
-  /* A field itself "glows" its own status color (border + soft ring)
-     instead of only reporting it in a separate line below -- the
-     input/select IS the thing the status is about, so the color lives
-     right on it. Works in both themes via the existing --success/
-     --danger tokens. */
-  .field-ok { border-color: var(--success) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 35%, transparent); }
-  .field-error { border-color: var(--danger) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent); }
-  /* Matches badge-warn's amber, for a field whose sibling pill is
-     non-critical NOK (amber, not red) -- glowing red on any failure would
-     disagree with an amber "not critical right now" pill next to it. */
-  .field-warn { border-color: var(--warning) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 35%, transparent); }
-  /* Secondary detail/action line for a field whose primary pass/fail
-     pill lives in the section title instead (see h4's own comment)
-     -- a plain wrapping line, since content here can be a genuine
-     sentence or grow multi-line (missing-file lists, buttons), not a
-     single fixed-width row. */
-  .field-status { margin: -0.35rem 0 0.6rem; font-size: 0.85em; }
-
-  /* Plain buttons are a solid but non-accent surface (--border-soft) --
-     deliberately NOT --accent: --accent-soft is already the row-hover/
-     selection highlight color throughout the app (.video-item.selected,
-     table row hover), so an accent-tinted button sitting inside a
-     highlighted row/cell would blend into that highlight instead of
-     reading as a button. --border-soft keeps color reserved for actual
-     meaning (accent = primary action/selection, red = destructive,
-     purple = generate) while still giving every button a real, visible
-     surface rather than a flat/neutral outline. */
-  button {
-    cursor: pointer; padding: 0.45rem 0.9rem; border-radius: var(--radius-sm);
-    border: 1px solid var(--border); background: var(--border-soft); color: var(--fg);
-    font-size: 0.9em; font-weight: 500; transition: background 0.12s ease, border-color 0.12s ease, transform 0.06s ease;
-  }
-  button:hover { background: var(--border); }
-  button:active { transform: translateY(1px); }
-  button:disabled { opacity: 0.5; cursor: default; }
-  button.btn-primary {
-    background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
-    font-weight: 600; box-shadow: var(--shadow);
-  }
-  button.btn-primary:hover { filter: brightness(1.08); }
-  button.btn-danger {
-    background: var(--danger); border-color: var(--danger); color: #fff;
-    font-weight: 600; box-shadow: var(--shadow);
-  }
-  button.btn-danger:hover { filter: brightness(1.08); }
-  /* Confirms a completed, non-reversible-in-place action (e.g. an
-     accepted golden-rules proposal) -- the button itself becomes the
-     state signal instead of a separate banner elsewhere on the page. */
-  button.btn-success {
-    background: var(--success); border-color: var(--success); color: #fff;
-    font-weight: 600; box-shadow: var(--shadow); cursor: default;
-  }
-  button.btn-success:hover { filter: none; }
-  /* Current-render progress (see pollManageJobs) -- percent-filled once a
-     real step/max is known, otherwise .mf-indeterminate-bar's sliding
-     animation while still in the model-loading phase. */
-  .mf-progress-bar {
-    background: var(--border-soft); border-radius: 4px; height: 0.5rem;
-    margin: 0.3rem 0; overflow: hidden;
-  }
-  .mf-progress-bar-fill { background: var(--accent); height: 100%; transition: width 0.6s ease; }
-  /* Custom confirm() replacement (see confirmModal) -- a native confirm()
-     dialog is silently auto-rejected by the automated browser tool this
-     app is regularly driven through, making every confirm-gated button
-     look completely dead with no visible prompt at all. */
-  .mf-confirm-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 100;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .mf-confirm-card { max-width: 28rem; box-shadow: var(--shadow-md); }
-  .mf-confirm-message { white-space: pre-wrap; margin: 0 0 1rem 0; }
-  .breadcrumb {
-    display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem;
-    margin-bottom: 1.5rem; font-size: 1.05em;
-  }
-  .breadcrumb a {
-    color: var(--muted-fg); cursor: pointer; text-decoration: none;
-    padding: 0.2rem 0.4rem; border-radius: var(--radius-sm); transition: background 0.12s ease, color 0.12s ease;
-  }
-  .breadcrumb a:hover { background: var(--border-soft); color: var(--fg); }
-  .breadcrumb a.active { color: var(--accent); font-weight: 700; }
-  .breadcrumb .crumb-current { font-weight: 700; color: var(--fg); padding: 0.2rem 0.1rem; }
-  .breadcrumb .crumb-sep { color: var(--border); }
-
-  pre {
-    background: var(--border-soft); padding: 0.75rem; border-radius: var(--radius-sm);
-    white-space: pre-wrap; word-break: break-word; max-height: 24rem; overflow-y: auto;
-    font-size: 0.85em; line-height: 1.5;
-  }
-  .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-  /* 0.85em, not 0.9em -- that's the size the overwhelming majority of
-     .muted usages across the app were already redundantly re-declaring
-     inline (style="font-size:0.85em" right next to class="muted"), with
-     a handful of spots that happened to omit it silently falling back
-     to a DIFFERENT, slightly larger 0.9em -- an inconsistency purely
-     from which instances remembered to override and which didn't.
-     Baking in the size everyone actually wanted removes the need for
-     that inline duplication anywhere. */
-  .muted { opacity: 0.85; color: var(--muted-fg); font-size: 0.85em; }
-  .badge {
-    display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
-    background: var(--border-soft); color: var(--muted-fg); font-weight: 600;
-    margin-right: 0.3rem; letter-spacing: 0.01em; flex-shrink: 0; white-space: nowrap;
-    /* Fixed rem, NOT em -- a badge next to an h4 (0.78em context) vs next
-       to a plain <label> (~0.92em/1em context) would otherwise render at
-       two visibly different sizes for the exact same pill, purely from
-       inheriting its container's font-size. Every status pill in this
-       form should look identical regardless of where it's placed.
-       line-height must be pinned too, separately from font-size -- same
-       11.2px text still came out visibly TALLER inside a <label> (whose
-       ambient line-height is looser) than inside an h4 (tighter), purely
-       from inheriting each container's own line-height. */
-    font-size: 0.7rem; line-height: 1;
-  }
-  /* Hints there's a hover tooltip (title=) worth reading -- used on
-     status pills that carry their detail message that way instead of
-     always-visible inline text (see .field-status). */
-  .badge[title] { cursor: help; }
-  .badge-ok { background: var(--success); color: #fff; }
-  .badge-danger { background: var(--danger); color: #fff; }
-  .badge-warn { background: var(--warning); color: #fff; }
-
-  /* Failure callout -- the human-readable "what happened /
-     what to do" summary shown above the raw log on a failed render, see
-     renderFailureCallout. Warning-tinted, not danger-red -- most of what
-     lands here is a normal "needs an answer" refusal, not catastrophic. */
-  .mf-failure-callout {
-    background: color-mix(in srgb, var(--warning) 12%, var(--card-bg));
-    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
-    border-radius: var(--radius-sm); padding: 0.6rem 0.75rem; margin: 0.5rem 0;
-    font-size: 0.92em; line-height: 1.5;
-  }
-  .mf-failure-callout code {
-    background: var(--border-soft); padding: 0.1rem 0.3rem; border-radius: 3px;
-    font-size: 0.9em; word-break: break-word;
-  }
-  /* Briefly highlights a row jumpToManageRow scrolled to, so "jump to
-     #N" actually draws the eye instead of leaving a human to guess which
-     of many rows just got scrolled into view. */
-  .mf-row-flash { animation: mf-row-flash-anim 2s ease-out; }
-  @keyframes mf-row-flash-anim {
-    0% { background: color-mix(in srgb, var(--accent) 35%, transparent); }
-    100% { background: transparent; }
-  }
-
-  /* table-layout:fixed + colgroup widths keep every row a uniform height
-     -- multiline fields show a one-line ellipsis preview by default
-     (.mf-cell-preview) and only grow when a cell is clicked into edit
-     mode, so the table reads like a spreadsheet, not a stack of unevenly
-     sized text boxes. */
-  /* Bounded height (not just overflow-x) so the horizontal scrollbar sits
-     at a fixed, always-reachable spot on screen -- with only overflow-x,
-     this div grows as tall as ALL the rows combined, so its horizontal
-     scrollbar would end up wherever that total height happens to end,
-     often far below the visible viewport on a table with many rows,
-     forcing a scroll-down-then-scroll-right-then-scroll-back-up cycle
-     just to see another column. Capping height and adding overflow-y
-     here instead turns this into its own self-contained scrolling
-     viewport (the thead's existing position:sticky keeps the header
-     pinned to ITS top, same visual effect, just relative to this box
-     instead of the page).*/
-  /* max-width:100% (not just overflow:auto) is load-bearing -- without an
-     explicit cap, this div's own box grows to match its ~2000px-wide
-     table (table-layout:fixed's column widths force that intrinsic
-     size) instead of staying capped to its container, so overflow:auto
-     never has anything to actually scroll -- the whole PAGE stretches
-     horizontally on mobile instead of just this one element getting its
-     own internal scrollbar. min-width:0 undoes the default
-     min-width:auto that lets a block child's intrinsic content width
-     push a flex/grid ancestor wider than intended, the same class of bug
-     at the container level. */
-  .manage-table-scroll { overflow: auto; max-height: 70vh; max-width: 100%; min-width: 0; }
-  /* border-collapse:separate (+ spacing:0), not collapse -- position:sticky
-     on a <td>/<th> is silently ignored by Chromium-based browsers when
-     the table uses border-collapse:collapse (a long-standing,
-     well-documented limitation), which would break the sticky
-     checkbox/row-number columns below -- their computed position would
-     read "sticky" but they'd scroll off-screen like any normal cell.
-     Each cell already draws its own 1px border, so cells still look
-     bordered as before; the only visible difference is adjacent cells no
-     longer share a single collapsed border line between them. Also
-     drops the table's own overflow:hidden (there to clip content to the
-     table's rounded corners) -- an ancestor with overflow != visible
-     becomes its own scroll container for position:sticky purposes even
-     when nothing inside it actually scrolls, which would silently
-     redirect the sticky columns' containing block away from the REAL
-     scrolling ancestor (.manage-table-scroll) and make them track the
-     horizontal scroll like any other cell instead of staying pinned.
-     Corner-rounding is cosmetic and border-radius on a <table> is never
-     reliably clipped by real browsers anyway -- not a meaningful loss. */
-  /* width:100% -- table-layout:fixed's <col> widths become PROPORTIONS
-     (not literal values) once the table's own width is a definite length
-     like this, so columns flex to fit the container dynamically instead
-     of forcing a permanent giant table + horizontal scroll for everyone
-     regardless of window size. (A cell min-width was tried as a per-
-     column floor here, but the table algorithm and the buttons/inputs'
-     own width:100% resolved against different pre/post-adjustment
-     widths, leaving a visible gap next to the controls -- reverted. Each
-     column's <col> width below is just its plain proportional share.) */
-  .manage-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 0.85em; table-layout: fixed; background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); }
-  .manage-table th, .manage-table td { border: 1px solid var(--border-soft); padding: 0.4rem 0.5rem; vertical-align: top; text-align: left; overflow: hidden; }
-  .manage-table thead th {
-    position: sticky; top: 0; z-index: 2; background: var(--border-soft);
-    vertical-align: top; font-weight: 650; border-bottom: 1px solid var(--border);
-  }
-  .manage-table tbody tr:hover { background: var(--accent-soft); }
-  /* Freezes the checkbox + row-number columns while scrolling
-     horizontally -- on a narrow screen this table is ~2000px wide (12
-     columns, mostly 13rem text fields), and without a fixed reference
-     column, scrolling right to reach a later field loses all track of
-     which row you're even editing. left offsets match mf-col-select's own 2.2rem width exactly
-     so the second sticky column starts right where the first ends, no
-     gap or overlap. z-index:3 (above both the plain top-sticky header at
-     2 and these same two columns' own body cells at 1) is only needed on
-     the header row, where sticky-top and sticky-left intersect -- that
-     corner cell must stay above everything scrolling underneath it in
-     BOTH directions at once. */
-  .manage-table td:nth-child(1), .manage-table td:nth-child(2) {
-    position: sticky; z-index: 1; background: var(--card-bg);
-    box-shadow: 2px 0 4px -2px rgba(0,0,0,0.15);
-  }
-  .manage-table thead th:nth-child(1), .manage-table thead th:nth-child(2) {
-    z-index: 3;
-  }
-  .manage-table td:nth-child(1), .manage-table th:nth-child(1) { left: 0; }
-  .manage-table td:nth-child(2), .manage-table th:nth-child(2) { left: 2.2rem; }
-  /* Row hover normally comes from the row's own background (tr:hover),
-     but a cell's OWN background (needed above, to stay opaque while
-     other cells scroll underneath it) always paints over that -- these
-     two columns would otherwise never visibly highlight on hover.
-     var(--accent-soft) itself is translucent (e.g. #4a90e21f, ~12%
-     alpha) -- fine as an overlay tint on a normal cell, but on a STICKY
-     cell it let whatever's scrolled underneath show straight through,
-     defeating the whole point of td:nth-child(1)/(2)'s opaque
-     background above. color-mix here bakes the same tint onto the
-     card's own opaque background instead of layering a see-through one
-     on top. */
-  .manage-table tbody tr:hover td:nth-child(1),
-  .manage-table tbody tr:hover td:nth-child(2) { background: color-mix(in srgb, var(--accent) 12%, var(--card-bg)); }
-  /* Filters live inside the header cell itself, under the label -- Excel-
-     style, instead of a separate filter row (which left the header row's
-     own empty space unused and needed its own sticky-offset math). */
-  .mf-th-label { white-space: nowrap; cursor: help; margin-bottom: 0.3rem; }
-  .manage-table thead input, .manage-table thead select {
-    font-size: 0.8em; font-weight: normal; padding: 0.25rem 0.4rem; margin: 0; cursor: default;
-  }
-  /* Placeholder for header cells with no sensible filter (Image(s), etc)
-     -- keeps every header cell the same shape instead of some having a
-     filter box and others just trailing off into empty space. */
-  .mf-th-filler { height: 1.6rem; border-bottom: 1px solid var(--border-soft); }
-  .mf-help {
-    opacity: 0.6; font-size: 0.75em; border: 1px solid currentColor; border-radius: 50%;
-    width: 1.1em; height: 1.1em; display: inline-flex; align-items: center; justify-content: center; cursor: help;
-  }
-  .mf-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; opacity: 1; }
-  .manage-table input, .manage-table select { width: 100%; margin: 0; box-sizing: border-box; }
-  .manage-table col.mf-col-select { width: 2.2rem; }
-  /* 4.5rem clipped the "rendered"/"uploaded" status badges below the row
-     number -- .badge's own pill padding plus white-space:nowrap made
-     them wider than that, and the cell's overflow:hidden cut off their
-     trailing edge. 6rem is enough for the widest of those labels. */
-  .manage-table col.mf-col-num { width: 6rem; }
-  .manage-table col.mf-col-narrow { width: 8rem; }
-  .manage-table col.mf-col-wide { width: 13rem; }
-  .manage-table col.mf-col-type { width: 12rem; }
-  .mf-spinner {
-    display: inline-block; width: 0.9em; height: 0.9em; border: 2px solid var(--border);
-    border-top-color: var(--accent); border-radius: 50%; animation: mf-spin 0.7s linear infinite;
-    margin-right: 0.4rem; vertical-align: -0.1em;
-  }
-  @keyframes mf-spin { to { transform: rotate(360deg); } }
-  /* Indeterminate (not percent-driven) render progress -- a sliding bar
-     instead of a filled-width one, since a real render is several separate
-     ComfyUI stages each with their own local step count; showing that as a
-     single 0-100% width was misleading (looked "done" at each stage's
-     100%, then silently jumped back to 0% for the next one). */
-  .mf-indeterminate-bar {
-    background: var(--border-soft); border-radius: 4px; height: 0.5rem;
-    margin: 0.3rem 0; overflow: hidden; position: relative;
-  }
-  .mf-indeterminate-bar div {
-    position: absolute; top: 0; bottom: 0; width: 40%; background: var(--accent);
-    border-radius: 4px; animation: mf-indeterminate 1.4s ease-in-out infinite;
-  }
-  @keyframes mf-indeterminate {
-    0% { left: -40%; }
-    100% { left: 100%; }
-  }
-  .manage-table col.mf-col-images { width: 11rem; }
-
-  .mf-cell-row { display: flex; align-items: center; gap: 0.15rem; }
-  .mf-cell-preview {
-    flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: text;
-    padding: 0.2rem 0.3rem; min-height: 1.3em; border-radius: var(--radius-sm); transition: background 0.1s ease;
-  }
-  .mf-cell-preview:hover { background: var(--accent-soft); }
-  .mf-cell-clear {
-    flex: 0 0 auto; width: auto; padding: 0 0.35rem; margin: 0; border: none; background: none;
-    color: var(--muted-fg); font-size: 1em; line-height: 1; cursor: pointer;
-  }
-  .mf-cell-clear:hover { color: var(--fg); }
-  .mf-cell textarea { width: 100%; box-sizing: border-box; resize: both; min-height: 4.5rem; margin: 0; }
-  .mf-tags-pills {
-    display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; min-height: 1.9rem;
-    padding: 0.3rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
-    background: var(--field-bg); cursor: text; max-width: 100%; box-sizing: border-box;
-  }
-  /* negative_prompt terms can be whole phrases, not just short tags --
-     white-space:nowrap on a long one has no wrap point, so it would
-     overflow straight out of the cell/table instead of wrapping
-     ("leaks"). flex-wrap on the
-     container only wraps whole PILLS onto new lines; it never helps a
-     single pill that's itself wider than the row. max-width caps an
-     individual pill to the container's own width (flex items don't
-     shrink below content size by default -- same class of bug as the
-     mobile manage-table fix), and overflow-wrap lets its text actually
-     break instead of pushing the box wider than that cap. */
-  .mf-tag-pill {
-    display: inline-flex; align-items: center; gap: 0.3rem; background: var(--accent-soft);
-    color: var(--fg); border-radius: 999px; padding: 0.1rem 0.55rem; font-size: 0.78em;
-    white-space: normal; overflow-wrap: anywhere; max-width: 100%;
-  }
-  .mf-tag-remove {
-    background: none; border: none; padding: 0; margin: 0; width: auto; height: auto;
-    cursor: pointer; font-size: 1em; line-height: 1; color: var(--muted-fg);
-  }
-  .mf-tag-remove:hover { color: var(--fg); }
-  .mf-tags-input { border: none; outline: none; flex: 1 1 4rem; min-width: 4rem; padding: 0.1rem; margin: 0; background: transparent; font-size: 0.85em; }
-
-  .chat-log {
-    max-height: 260px; overflow-y: auto; display: flex; flex-direction: column;
-    gap: 0.5rem; padding: 0.4rem 0.1rem; margin-top: 0.4rem;
-  }
-  .chat-msg { padding: 0.4rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.85em; white-space: pre-wrap; word-break: break-word; }
-  .chat-user { background: var(--accent-soft); align-self: flex-end; max-width: 88%; }
-  .chat-assistant { background: var(--border-soft); align-self: flex-start; max-width: 96%; }
-  .chat-proposals { margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px solid var(--border); }
-  .chat-proposals ul { margin: 0.3rem 0; padding-left: 1.1rem; }
-  .chat-proposals li { margin-bottom: 0.15rem; }
-  #chat-input { min-height: unset; }
-  .mf-slot { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.6rem; }
-  .mf-slot:last-child { margin-bottom: 0; }
-  .mf-slot textarea { width: 100%; box-sizing: border-box; }
-
-  /* subtle themed scrollbars (webkit only -- harmless no-op elsewhere) */
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; border: 2px solid var(--bg); }
-  ::-webkit-scrollbar-thumb:hover { background: var(--muted-fg); }
-</style></head>
+<link rel="stylesheet" href="/static/theme.css"><link rel="stylesheet" href="/static/app.css"></head>
 <body>
 <div class="app-header">
-  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Semantic versioning (MAJOR.MINOR.PATCH) -- bump PATCH for fixes, MINOR for new features, MAJOR for breaking changes. Bump this by hand in web_ui.py whenever the UI changes; it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">v1.0.1</span></h1>
-  <div class="row" style="width:auto">
+  <h1>Dream Pipeline <span class="muted" style="font-size:0.55em;font-weight:normal;vertical-align:middle" title="Semantic versioning (MAJOR.MINOR.PATCH) -- bump PATCH for fixes, MINOR for new features, MAJOR for breaking changes. Bump this by hand in web_ui.py whenever the UI changes; it exists so a running instance can be confirmed against what was actually just published, since Docker doesn't refresh a container just because a new image was pushed.">v1.0.2</span></h1>
+  <div class="w-auto row">
     <button onclick="openHelp()">&#128214; Help</button>
     <button onclick="openSettings()">&#9881; Settings</button>
     <label>Theme
@@ -3616,7 +3002,7 @@ function updateGeminiOptionsVisibility() {
 }
 
 // Real machine addresses (hostname + every local IP, e.g. a LAN address
-// like 192.168.10.8), fetched once and cached -- see /api/local-addresses
+// like 192.168.1.20), fetched once and cached -- see /api/local-addresses
 // (ds.local_machine_addresses). Populated by loadLocalAddresses() below;
 // starts empty so the very first render (before that resolves) falls
 // back to the plain localhost/127.0.0.1/::1 literals in _isLocalHost,
@@ -3717,7 +3103,7 @@ async function loadGeminiKeyStatus() {
       // Disabled by choice (paused, not broken) -- same amber as the
       // pill it's paired with, not neutral.
       el.innerHTML = `a key is saved (encrypted) but disabled` +
-        ` <button type="button" style="font-size:0.85em;margin-left:0.4rem" onclick="toggleGeminiEnabled(true)">Enable</button>`;
+        ` <button type="button" class="text-sm ml-4" onclick="toggleGeminiEnabled(true)">Enable</button>`;
       state.geminiBadgeDetail = 'Key saved but disabled -- click Enable below to resume Gemini access.';
       if (h4Badge) h4Badge.innerHTML = settingsPill(false, state.geminiBadgeDetail, !state.ollamaReachable);
       setInputFieldStatus('gemini-key-input', false, !state.ollamaReachable);
@@ -3730,7 +3116,7 @@ async function loadGeminiKeyStatus() {
       // it with a real API call -- this is a genuine "checking" state,
       // not yet a verdict.
       el.innerHTML = `a key is saved (encrypted) -- verifying...` +
-        ` <button type="button" style="font-size:0.85em;margin-left:0.4rem" onclick="toggleGeminiEnabled(false)">Disable</button>`;
+        ` <button type="button" class="text-sm ml-4" onclick="toggleGeminiEnabled(false)">Disable</button>`;
       if (h4Badge) h4Badge.innerHTML = checkingPillHtml();
       setInputFieldStatus('gemini-key-input', null);
     }
@@ -3965,7 +3351,7 @@ function applyGeminiVerifiedStatus(verified) {
   if (statusEl && statusEl.innerHTML.includes('verifying...')) {
     statusEl.innerHTML = (verified ? 'a key is saved (encrypted) -- connected' :
       'a key is saved (encrypted) -- last check failed, see the pill above for why') +
-      ` <button type="button" style="font-size:0.85em;margin-left:0.4rem" onclick="toggleGeminiEnabled(false)">Disable</button>`;
+      ` <button type="button" class="text-sm ml-4" onclick="toggleGeminiEnabled(false)">Disable</button>`;
   }
   updateOllamaGeminiCriticality();
 }
@@ -4229,7 +3615,7 @@ async function pollYoutubeClientSecretTest(jobId, afterSave) {
       setYoutubeStatus(
         `<a href="${esc(job.auth_url)}" target="_blank" rel="noopener">click here to authorize</a>, ` +
         `then paste the URL your browser gets redirected to below (that page will fail to load -- that's expected, just copy its address bar URL):<br>` +
-        `<input type="text" class="yt-oauth-paste-input" placeholder="paste the redirected URL here" style="width:60%">` +
+        `<input type="text" class="w-60 yt-oauth-paste-input" placeholder="paste the redirected URL here">` +
         `<button type="button" onclick="submitYoutubeOauthCode(this, '${jobId}')">Submit</button>` +
         `<span class="yt-oauth-paste-result"></span>`);
     } else if (!job.auth_url) {
@@ -4307,7 +3693,7 @@ function setInputFieldStatus(elId, ok, critical) {
 // entirely.
 function downloadWrapHtml(r) {
   if (!r || !r.install_url) return '';
-  return `<div class="row" style="margin:0.3rem 0">
+  return `<div class="my-3 row">
     <a href="${esc(r.install_url)}" target="_blank" rel="noopener"><button type="button">Download</button></a>
     <span class="muted">${esc(r.name)} isn't reachable at the URL above.</span>
   </div>`;
@@ -4463,7 +3849,7 @@ async function loadModelsStatus(force) {
     // result, not a fresh one. Shown plainly with its own age and a
     // Retry action rather than silently presented as current -- a human
     // decides whether to trust it, not the code.
-    const staleNote = data.stale ? `<div class="muted" style="margin:0.3rem 0">
+    const staleNote = data.stale ? `<div class="my-3 muted">
       Could not verify with ComfyUI just now (unreachable) -- showing the last confirmed result
       ${data.checked_at ? `from ${new Date(data.checked_at * 1000).toLocaleString()}` : '(no prior result exists)'}.
       <button type="button" onclick="loadModelsStatus(true)">Retry now</button></div>` : '';
@@ -4491,7 +3877,7 @@ async function loadModelsStatus(force) {
       (totalGb ? ` (~${totalGb.toFixed(1)} GB known)` : '') +
       `</span></div>${staleNote}
       <ul style="margin:0.4rem 0 0; padding-left:1.2rem">${list}</ul>
-      <div class="muted" style="margin-top:0.3rem">You're responsible for confirming a downloaded file is
+      <div class="mt-3 muted">You're responsible for confirming a downloaded file is
         actually correct (right quantization/precision, not a tampered mirror) before placing it in the
         folder shown, on whichever machine actually runs ComfyUI.</div>`;
   } catch (e) {
@@ -4503,11 +3889,11 @@ function settingsFormHtml(config) {
   const modelOption = (id, current, style, cfgKey) =>
     `<select id="${id}"${style ? ` style="${style}"` : ''}${cfgKey ? ` onchange="autoSaveField(this,'${cfgKey}')"` : ''}>${current ? `<option value="${esc(current)}" selected>${esc(current)}</option>` : '<option value="">(none set)</option>'}</select>`;
   return `
-    <div class="muted" style="margin-bottom:0.6rem">
+    <div class="mb-6 muted">
       Hover any OK/NOK pill for the full status message -- the color alone tells you pass/fail,
       the reason (and what to do about it) is in the tooltip.
     </div>
-    <div class="muted" style="margin-bottom:0.6rem">
+    <div class="mb-6 muted">
       FYI -- pointing any URL below (Ollama, ComfyUI) at an externally hosted service sends your
       prompts, images, and generated content to that server. Only do so if you trust the host,
       and understand and acknowledge the risk.
@@ -4522,11 +3908,11 @@ function settingsFormHtml(config) {
       <h4><span>Ollama <span class="mf-help" title="Local, free backend for Creative writing, Vision QC, and Concept research. Each can switch to Gemini instead once authenticated below.">?</span></span><span id="ollama-h4-badge"></span></h4>
       <label for="cfg-ollama-url">Ollama URL</label>
       <div class="row" style="gap:0.4rem; margin:0.25rem 0">
-        <input id="cfg-ollama-url" style="flex:1" value="${esc(config.ollama_url)}" onchange="autoSaveField(this,'ollama_url')">
+        <input id="cfg-ollama-url" class="flex-1" value="${esc(config.ollama_url)}" onchange="autoSaveField(this,'ollama_url')">
         <button type="button" onclick="checkOllamaStatus()" title="Re-check this URL without changing it" style="flex:0 0 auto; padding:0.45rem 0.6rem">&#8635;</button>
       </div>
       <div id="ollama-download-wrap"></div>
-      <div class="row" style="margin:0.3rem 0">
+      <div class="my-3 row">
         <button type="button" id="ollama-refresh-models-btn" style="display:none" onclick="refreshOllamaModels()">Refresh models</button>
         <span id="settings-models-status" class="muted"></span>
       </div>
@@ -4536,7 +3922,7 @@ function settingsFormHtml(config) {
       <h4><span>ComfyUI <span class="mf-help" title="Renders the video/keyframe images, after Ollama produces a spec.">?</span></span><span id="comfyui-h4-badge"></span></h4>
       <label for="cfg-comfyui-url">ComfyUI URL</label>
       <div class="row" style="gap:0.4rem; margin:0.25rem 0">
-        <input id="cfg-comfyui-url" style="flex:1" value="${esc(config.comfyui_url)}" onchange="autoSaveField(this,'comfyui_url')">
+        <input id="cfg-comfyui-url" class="flex-1" value="${esc(config.comfyui_url)}" onchange="autoSaveField(this,'comfyui_url')">
         <button type="button" onclick="checkComfyuiStatus()" title="Re-check this URL without changing it" style="flex:0 0 auto; padding:0.45rem 0.6rem">&#8635;</button>
       </div>
       <div id="comfyui-download-wrap"></div>
@@ -4549,7 +3935,7 @@ function settingsFormHtml(config) {
            inside it -- opacity and em-based font-size both cascade to
            descendants, making the button visibly smaller and lighter
            than Ollama's otherwise-identical one. -->
-      <div id="cfg-models-status" class="row" style="margin:0.3rem 0"></div>
+      <div id="cfg-models-status" class="my-3 row"></div>
     </div>
 
     <div class="settings-section">
@@ -4565,17 +3951,17 @@ function settingsFormHtml(config) {
         <button type="button" id="gemini-refresh-models-btn" style="display:none" onclick="refreshAllGeminiModels()">Refresh models</button>
         <span id="gemini-models-status" class="muted"></span>
       </div>
-      <div class="row" style="gap:0.9rem; margin-top:0.6rem; align-items:center">
-        <label class="row" style="gap:0.4rem; width:auto">
-          <input type="checkbox" id="cfg-gemini-pay-guard-enabled" ${config.gemini_pay_guard_enabled ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'gemini_pay_guard_enabled','checkbox')">
+      <div class="gap-9 mt-6 items-center row">
+        <label class="gap-4 w-auto row">
+          <input type="checkbox" id="cfg-gemini-pay-guard-enabled" ${config.gemini_pay_guard_enabled ? 'checked' : ''} class="w-auto" onchange="autoSaveField(this,'gemini_pay_guard_enabled','checkbox')">
           Pay guard <span class="mf-help" title="Optional spend limit -- blocks further Gemini calls once this month's count reaches the limit below (falls back to local generation).">?</span>
         </label>
-        <label style="width:auto">Monthly call limit
-          <input type="number" id="cfg-gemini-pay-guard-limit" value="${esc(config.gemini_pay_guard_monthly_limit)}" min="1" style="width:6rem" onchange="autoSaveField(this,'gemini_pay_guard_monthly_limit','int')">
+        <label class="w-auto">Monthly call limit
+          <input type="number" id="cfg-gemini-pay-guard-limit" value="${esc(config.gemini_pay_guard_monthly_limit)}" min="1" class="w-6r" onchange="autoSaveField(this,'gemini_pay_guard_monthly_limit','int')">
           <span class="mf-help" title="Image generations allowed per month before the guard blocks further calls.">?</span>
         </label>
       </div>
-      <div id="gemini-usage-count" class="muted" style="margin-top:0.2rem"></div>
+      <div id="gemini-usage-count" class="mt-2 muted"></div>
     </div>
 
     <div class="settings-section">
@@ -4592,33 +3978,33 @@ function settingsFormHtml(config) {
 
     <div class="settings-section">
       <h4><span>Creative model <span class="mf-help" title="Writes each video's title, premise, and prompts, and also powers Concept research (Manage tab's 'Research & add ideas'). Gemini option available once authenticated above.">?</span></span></h4>
-      <div class="row" style="align-items:flex-end">
-        <label style="flex:1 1 12rem">Backend
-          <select id="cfg-creative-backend" onchange="updateCreativeBackendUI(); autoSaveField(this,'creative_backend')" style="width:100%">
+      <div class="items-end row">
+        <label class="flex-12r">Backend
+          <select id="cfg-creative-backend" onchange="updateCreativeBackendUI(); autoSaveField(this,'creative_backend')" class="w-full">
             <option value="ollama" ${config.creative_backend !== 'gemini' ? 'selected' : ''}>Ollama (local)</option>
             <option value="gemini" ${config.creative_backend === 'gemini' ? 'selected' : ''}>Gemini</option>
           </select>
         </label>
-        <div id="creative-backend-ollama" style="flex:1 1 10rem">
+        <div id="creative-backend-ollama" class="flex-10r">
           <label>Model ${modelOption('cfg-creative-model', config.creative_model, 'width:100%', 'creative_model')}</label>
         </div>
         <div id="creative-backend-gemini" style="display:none; flex:1 1 10rem">
           <label>Gemini text model ${modelOption('cfg-gemini-text-model', config.gemini_text_model, 'width:100%', 'gemini_text_model')}</label>
         </div>
       </div>
-      <div class="row" style="gap:0.9rem; margin-top:0.4rem; align-items:center">
-        <label class="row" style="gap:0.4rem; width:auto">
-          <input type="checkbox" id="cfg-lock-creative-model" ${config.lock_creative_model ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'lock_creative_model','checkbox')">
+      <div class="gap-9 mt-4 items-center row">
+        <label class="gap-4 w-auto row">
+          <input type="checkbox" id="cfg-lock-creative-model" ${config.lock_creative_model ? 'checked' : ''} class="w-auto" onchange="autoSaveField(this,'lock_creative_model','checkbox')">
           Lock chat to this model <span class="mf-help" title="Locks chat to this model, hiding the per-message picker.">?</span>
         </label>
       </div>
-      <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:0.4rem">
-        <label class="row" style="gap:0.4rem; width:auto">
-          <input type="checkbox" id="cfg-spec-trend-mode" ${config.spec_trend_mode_enabled ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'spec_trend_mode_enabled','checkbox'); updateSpecTrendUI();">
+      <div class="flex flex-col gap-5 mt-4">
+        <label class="gap-4 w-auto row">
+          <input type="checkbox" id="cfg-spec-trend-mode" ${config.spec_trend_mode_enabled ? 'checked' : ''} class="w-auto" onchange="autoSaveField(this,'spec_trend_mode_enabled','checkbox'); updateSpecTrendUI();">
           Use performance trends when writing content <span class="mf-help" title="When on, every AI-composed manage-table row (blank fields via Auto-generate missing content, and the CLI's own generation) quietly checks this project's own YouTube Analytics for top-performing titles/tags and uses that as style/word-choice signal -- it never changes or overrides the row's own concept (title/premise), only informs tone in whatever's already being written. Safe to leave on permanently: if this project has no analytics data yet, generation proceeds completely normally with no error and no trend context.">?</span>
         </label>
         <label class="row" id="cfg-spec-trend-excerpts-row" style="gap:0.4rem; width:auto; ${config.spec_trend_mode_enabled ? '' : 'display:none'}">
-          <input type="checkbox" id="cfg-spec-trend-excerpts" ${config.spec_trend_include_script_excerpts ? 'checked' : ''} style="width:auto" onchange="autoSaveField(this,'spec_trend_include_script_excerpts','checkbox')">
+          <input type="checkbox" id="cfg-spec-trend-excerpts" ${config.spec_trend_include_script_excerpts ? 'checked' : ''} class="w-auto" onchange="autoSaveField(this,'spec_trend_include_script_excerpts','checkbox')">
           Include local script excerpts <span class="mf-help" title="Off (default): top performers are described by title/tags only. On: also pulls each top performer's real premise and an excerpt of its actual rendered script, when that video's render folder is still on disk -- richer signal, but reads more local files per generation.">?</span>
         </label>
       </div>
@@ -4626,14 +4012,14 @@ function settingsFormHtml(config) {
 
     <div class="settings-section">
       <h4><span>Vision QC <span class="mf-help" title="Reviews generated images before the full render. Gemini option available once authenticated above.">?</span></span></h4>
-      <div class="row" style="align-items:flex-end">
-        <label style="flex:1 1 12rem">Backend
-          <select id="cfg-vision-backend" onchange="updateVisionBackendUI(); autoSaveField(this,'vision_backend')" style="width:100%">
+      <div class="items-end row">
+        <label class="flex-12r">Backend
+          <select id="cfg-vision-backend" onchange="updateVisionBackendUI(); autoSaveField(this,'vision_backend')" class="w-full">
             <option value="ollama" ${config.vision_backend !== 'gemini' ? 'selected' : ''}>Ollama (local)</option>
             <option value="gemini" ${config.vision_backend === 'gemini' ? 'selected' : ''}>Gemini</option>
           </select>
         </label>
-        <div id="vision-backend-ollama" style="flex:1 1 10rem">
+        <div id="vision-backend-ollama" class="flex-10r">
           <label>Model ${modelOption('cfg-vision-model', config.vision_model, 'width:100%', 'vision_model')}</label>
         </div>
         <div id="vision-backend-gemini" style="display:none; flex:1 1 10rem">
@@ -4645,9 +4031,9 @@ function settingsFormHtml(config) {
 
     <div class="settings-section">
       <h4><span>Keyframe image generation <span class="mf-help" title="Where a number's keyframe images come from. All local (default): local only, unless that number's own 'Online photo' toggle (Manage table) uses Gemini. All Gemini: every frame via Gemini. The two 'First X, rest Y' options split first frame vs. middle/last between local and Gemini. Gemini options need authentication above.">?</span></span></h4>
-      <div class="row" style="align-items:flex-end">
-        <label style="flex:1 1 12rem">Backend
-          <select id="cfg-kf-backend" style="width:100%" onchange="autoSaveField(this,'kf_backend'); updateGeminiOptionsVisibility();">
+      <div class="items-end row">
+        <label class="flex-12r">Backend
+          <select id="cfg-kf-backend" class="w-full" onchange="autoSaveField(this,'kf_backend'); updateGeminiOptionsVisibility();">
             <option value="all_local" ${!['all_gemini','first_local_rest_gemini','first_gemini_rest_local'].includes(config.kf_backend) ? 'selected' : ''}>All local (cheapest)</option>
             <option value="all_gemini" ${config.kf_backend === 'all_gemini' ? 'selected' : ''}>All Gemini (pay-per-image)</option>
             <option value="first_local_rest_gemini" ${config.kf_backend === 'first_local_rest_gemini' ? 'selected' : ''}>First local, Gemini middle/last</option>
@@ -4663,7 +4049,7 @@ function settingsFormHtml(config) {
 
     <div class="settings-section">
       <h4><span>VRAM guard <span class="mf-help" title="Frees GPU VRAM before each render, via Ollama/ComfyUI's own APIs -- works whether they're local or remote.">?</span></span></h4>
-      <label>Graceful stop timeout (s) <input id="cfg-stop-timeout" type="number" value="${esc(config.graceful_stop_timeout_s)}" style="width:6rem" onchange="autoSaveField(this,'graceful_stop_timeout_s','int')"></label>
+      <label>Graceful stop timeout (s) <input id="cfg-stop-timeout" type="number" value="${esc(config.graceful_stop_timeout_s)}" class="w-6r" onchange="autoSaveField(this,'graceful_stop_timeout_s','int')"></label>
     </div>
 
     <div class="settings-section">
@@ -4677,7 +4063,7 @@ function settingsFormHtml(config) {
       <div id="settings-deps-status"></div>
     </div>
 
-    <div class="row" style="margin-top:0.4rem">
+    <div class="mt-4 row">
       <button class="btn-primary" onclick="closeSettings()">Close</button>
       <button onclick="resetSettingsToDefaults()">Load defaults</button>
     </div>`;
@@ -4721,10 +4107,10 @@ function renderWorkflowFilesSection() {
 // _pipeline folder" simply isn't possible there.
 function workflowFileUploadHtml() {
   return `
-    <div class="row" style="margin-bottom:0.5rem">
+    <div class="mb-5 row">
       <input type="file" id="workflow-file-upload-input" accept=".json,application/json" onchange="uploadWorkflowFile(this)">
     </div>
-    <div id="workflow-file-upload-result" class="muted" style="margin-bottom:0.5rem"></div>`;
+    <div id="workflow-file-upload-result" class="mb-5 muted"></div>`;
 }
 
 async function uploadWorkflowFile(input) {
@@ -4757,7 +4143,7 @@ function uploadedWorkflowFilesListHtml() {
     .filter(f => !builtinSet.has(f) && !systemSet.has(f));
   if (!all.length) return '';
   return `
-    <div class="muted" style="margin-top:0.5rem">Uploaded files (ctrl/shift-click to select more than one):</div>
+    <div class="mt-5 muted">Uploaded files (ctrl/shift-click to select more than one):</div>
     <!-- A native multi-select can't collapse into a closed single-line
          dropdown the way a normal <select> does (no browser supports
          that) -- capped to a small fixed height instead, so it stays
@@ -4807,10 +4193,10 @@ function workflowFilesTypeRowHtml(type, label) {
   // to need its own always-visible line.
   let extra = '';
   return `
-    <div style="margin:0.5rem 0">
+    <div class="my-5">
       <label>${esc(label)}</label>
       <div class="row">
-        <select id="workflow-file-select-${type}" style="flex:1; width:auto" onchange="onWorkflowFileSelect('${type}', this.value)">${options.join('')}</select>
+        <select id="workflow-file-select-${type}" class="flex-1 w-auto" onchange="onWorkflowFileSelect('${type}', this.value)">${options.join('')}</select>
         <button type="button" onclick="manualTestWorkflowFile('${type}')" title="Re-run detection and a real test render for whichever file is currently selected above, even if it's already confirmed/active.">Test</button>
       </div>
       <div id="workflow-file-flow-${type}">${pending ? workflowFilesFlowHtml(type) : ''}</div>
@@ -4879,12 +4265,12 @@ function workflowFilesFlowHtml(type) {
     return `<div class="muted">Detecting wiring for ${esc(p.filename)}...</div>`;
   }
   if (p.stage === 'failed') {
-    return `<div class="field-status" style="font-size:0.85em"><span class="badge badge-danger">COULDN'T DETECT</span> ${esc(p.explanation)}</div>`;
+    return `<div class="text-sm field-status"><span class="badge badge-danger">COULDN'T DETECT</span> ${esc(p.explanation)}</div>`;
   }
   if (p.stage === 'confirm-test') {
     const needsImages = type === 'i2v' || type === 'fml';
     return `
-      <div style="font-size:0.85em; margin-top:0.3rem">
+      <div class="text-sm mt-3">
         Detected wiring for ${esc(p.filename)} (${esc(p.explanation)}):
         ${workflowWiringSummaryHtml(p.wiring)}
         ${needsImages ? workflowTestImagesInputHtml(type) : ''}
@@ -4898,12 +4284,12 @@ function workflowFilesFlowHtml(type) {
     return `<div class="muted">Running a real test render through ComfyUI -- this can take a while...</div>`;
   }
   if (p.stage === 'test-failed') {
-    return `<div class="field-status" style="font-size:0.85em"><span class="badge badge-danger">RENDER FAILED</span> ${esc(p.explanation)}
+    return `<div class="text-sm field-status"><span class="badge badge-danger">RENDER FAILED</span> ${esc(p.explanation)}
       <div class="row"><button type="button" onclick="discardWorkflowFilePending('${type}')">OK</button></div></div>`;
   }
   if (p.stage === 'review') {
     return `
-      <div style="font-size:0.85em; margin-top:0.3rem">
+      <div class="text-sm mt-3">
         <video src="/api/workflow-files/test-video/${esc(p.testId)}" controls style="max-width:100%; max-height:220px; display:block; margin:0.3rem 0"></video>
         Happy with this result?
         <div class="row">
@@ -4917,11 +4303,11 @@ function workflowFilesFlowHtml(type) {
 
 function workflowTestImagesInputHtml(type) {
   if (type === 'i2v') {
-    return `<label style="display:block; margin:0.3rem 0">Test image
+    return `<label class="block my-3">Test image
       <input type="file" accept="image/*" onchange="loadWorkflowTestImage('i2v', null, this)"></label>`;
   }
   return ['first', 'middle', 'last'].map(role => `
-    <label style="display:block; margin:0.3rem 0">Test image (${role})
+    <label class="block my-3">Test image (${role})
       <input type="file" accept="image/*" onchange="loadWorkflowTestImage('fml', '${role}', this)"></label>`).join('');
 }
 
@@ -5036,7 +4422,7 @@ async function testAllConnections() {
       const badge = r.skipped
         ? '<span class="badge badge-warn">SKIPPED</span>'
         : (r.ok ? '<span class="badge badge-ok">OK</span>' : '<span class="badge badge-danger">FAILED</span>');
-      return `<div style="margin:0.2rem 0">${badge} <strong>${esc(r.name)}</strong> -- ${esc(r.detail)}</div>`;
+      return `<div class="my-2">${badge} <strong>${esc(r.name)}</strong> -- ${esc(r.detail)}</div>`;
     }).join('');
   } catch (e) {
     el.innerHTML = `<pre>ERROR: ${e.message}</pre>`;
@@ -5177,8 +4563,8 @@ function promptModal(message, placeholder) {
     overlay.innerHTML = `
       <div class="card mf-confirm-card">
         <p class="mf-confirm-message">${esc(message)}</p>
-        <textarea id="prompt-modal-input" rows="3" style="width:100%" spellcheck="true" placeholder="${esc(placeholder || '')}"></textarea>
-        <div class="row row-end" style="margin-top:0.5rem">
+        <textarea id="prompt-modal-input" rows="3" class="w-full" spellcheck="true" placeholder="${esc(placeholder || '')}"></textarea>
+        <div class="mt-5 row row-end">
           <button type="button" id="prompt-modal-cancel">Cancel</button>
           <button type="button" id="prompt-modal-ok" class="btn-primary">Submit</button>
         </div>
@@ -5267,7 +4653,7 @@ async function renderProjectList() {
   const manageRow = name => `
     <div class="row" style="justify-content:space-between;align-items:center;padding:0.3rem 0;border-bottom:1px solid var(--border-soft)">
       <span>${esc(name)}</span>
-      <span class="row" style="width:auto;gap:0.4rem">
+      <span class="w-auto gap-4 row">
         <button type="button" data-project-action="rename" data-project-name="${esc(name)}">Rename</button>
         <button type="button" data-project-action="delete" data-project-name="${esc(name)}">Delete</button>
       </span>
@@ -5283,7 +4669,7 @@ async function renderProjectList() {
     </label>
     <button onclick="showNewProject()">+ New project</button>
     ${projects.length ? `
-    <h3 style="margin-top:1.5rem">Manage projects</h3>
+    <h3 class="mt-15">Manage projects</h3>
     <div id="project-manage-list">${projects.map(manageRow).join('')}</div>` : ''}
   </div>`;
   sidebar.innerHTML = '';
@@ -5609,7 +4995,7 @@ function buildFsOverlayHtml() {
   // unstyled corner blob during the very first "generating" render
   // (confirmed via screenshot) instead of the intended full-width panel.
   const fsReviewActionsHtml = (state.fsFeedbackReview && !state.fsFeedbackReview.generating) ? `
-    <div class="row" style="gap:0.3rem">
+    <div class="gap-3 row">
       <button data-action="fs-review-retry" type="button">Try again</button>
       <button data-action="fs-review-accept" type="button" class="btn-primary" ${state.fsFeedbackReview.content ? '' : 'disabled'}
               title="${state.fsFeedbackReview.content ? 'Write this revision and queue its render' : 'Nothing to accept yet -- this was advice, not a proposed change. Reply below (e.g. \'do that\') to actually request the revision, then Accept.'}">Accept</button>
@@ -5617,15 +5003,15 @@ function buildFsOverlayHtml() {
   const feedbackReviewBody = state.fsFeedbackReview ? `
       <div class="chat-log" id="fs-review-chat-log">${feedbackChatLogHtml(state.fsFeedbackReview, fsReviewActionsHtml)}</div>
       ${!state.fsFeedbackReview.generating ? `
-        <div class="row" style="gap:0.3rem;align-items:flex-start">
-          <textarea id="fs-review-refine-input" rows="2" style="flex:1;font-size:0.85em" spellcheck="true"
+        <div class="gap-3 items-start row">
+          <textarea id="fs-review-refine-input" rows="2" class="flex-1 text-sm" spellcheck="true"
                     onkeydown="onFeedbackTextareaKeydown(event, submitInlineRefine)"
                     placeholder="${state.fsFeedbackReview.kind === 'advice' ? 'Reply -- e.g. \'do that\' to have it make the change...' : 'Not quite -- add more direction and try again...'}"></textarea>
           <button data-action="fs-review-refine" type="button">${state.fsFeedbackReview.kind === 'advice' ? 'Reply' : 'Refine'}</button>
         </div>` : ''}`
     : `
-      <div class="row" style="gap:0.3rem;align-items:flex-start">
-        <textarea id="fs-feedback-input" rows="2" style="flex:1;font-size:0.85em" spellcheck="true"
+      <div class="gap-3 items-start row">
+        <textarea id="fs-feedback-input" rows="2" class="flex-1 text-sm" spellcheck="true"
                   onkeydown="onFeedbackTextareaKeydown(event, submitInlineFeedback)"
                   placeholder="What didn't work about this video? The AI will propose a revision for you to review before anything renders."></textarea>
         <button data-action="fs-feedback-submit" title="Ask the AI to propose a revision -- nothing renders until you review and Accept it.">Submit</button>
@@ -5666,7 +5052,7 @@ function updateFsOverlay() {
 function renderPlayerCard() {
   const sel = state.selected;
   const manage = sel ? `
-    <div class="row" style="margin-top:0.5rem">
+    <div class="mt-5 row">
       <span class="muted">${sel.location === 'active' ? 'Active' : 'Reviewed'}</span>
       <button data-action="move">${sel.location === 'active' ? '&rarr; Move to Reviewed' : '&rarr; Move to Active'}</button>
       <button data-action="feedback">Provide feedback</button>
@@ -5702,7 +5088,7 @@ function renderPlayerCard() {
 
   document.getElementById('sidebar-player-card').innerHTML = `
     <h3>Player
-      ${state.playerHtml ? '<button data-action="fullscreen" style="float:right" title="Fullscreen with prev/next/move controls">&#x26F6; Fullscreen</button>' : ''}
+      ${state.playerHtml ? '<button data-action="fullscreen" class="float-right" title="Fullscreen with prev/next/move controls">&#x26F6; Fullscreen</button>' : ''}
     </h3>
     <div class="player-fs-wrap" id="player-fs-wrap">
       <div id="player">${state.playerHtml || '<div class="muted">select a video below to play</div>'}</div>
@@ -5779,12 +5165,12 @@ async function renderChatCard() {
   } catch (e) { /* default to unlocked if config can't be read */ }
   el.innerHTML = `
     <h3>Chat</h3>
-    <div class="row" style="margin-bottom:0.4rem">
-      <select id="chat-model-name" style="width:auto"></select>
+    <div class="mb-4 row">
+      <select id="chat-model-name" class="w-auto"></select>
     </div>
     <div id="chat-log" class="chat-log"></div>
-    <div class="row" style="margin-top:0.4rem; align-items:flex-start">
-      <textarea id="chat-input" rows="2" placeholder="Ask about the tool, or ask it to draft fields for a number already loaded in the table..." style="flex:1" onkeydown="onChatInputKeydown(event)"></textarea>
+    <div class="mt-4 items-start row">
+      <textarea id="chat-input" rows="2" placeholder="Ask about the tool, or ask it to draft fields for a number already loaded in the table..." class="flex-1" onkeydown="onChatInputKeydown(event)"></textarea>
       <button id="chat-send-btn" class="btn-primary" onclick="sendChatMessage()">Send</button>
     </div>`;
   renderChatLog();
@@ -5845,11 +5231,11 @@ function renderChatLog() {
     const pendingHtml = pa && !pa.resolved ? `
       <div class="chat-proposals" style="border-color:var(--warning, #c8860a)">
         <div class="muted">${esc(pa.description)}</div>
-        <div class="row" style="margin-top:0.3rem;gap:0.4rem">
+        <div class="mt-3 gap-4 row">
           <button onclick="cancelChatAction(${i})">Cancel</button>
           <button class="btn-primary" onclick="confirmChatAction(${i})">Confirm</button>
         </div>
-      </div>` : (pa && pa.resolved ? `<div class="muted" style="margin-top:0.3rem">${esc(pa.resolved)}</div>` : '');
+      </div>` : (pa && pa.resolved ? `<div class="mt-3 muted">${esc(pa.resolved)}</div>` : '');
     return `<div class="chat-msg chat-assistant">${esc(m.text)}${proposalsHtml}${pendingHtml}</div>`;
   }).join('');
   log.scrollTop = log.scrollHeight;
@@ -6054,7 +5440,7 @@ function feedbackChatLogHtml(review, actionsHtml) {
   const bubbles = history.map((msg, i) => {
     const isLastAssistant = !review.generating && msg.role === 'assistant' && i === history.length - 1;
     return `
-    <div class="chat-msg ${msg.role === 'user' ? 'chat-user' : 'chat-assistant'}"${msg.isError ? ' style="color:var(--danger, #c0392b)"' : ''}>${esc(msg.text)}${msg.model ? `<div class="muted" style="font-size:0.8em;margin-top:0.2rem">via ${esc(msg.model)}</div>` : ''}${msg.diffHtml || ''}${isLastAssistant && actionsHtml ? actionsHtml : ''}</div>`;
+    <div class="text-danger chat-msg ${msg.role === 'user' ? 'chat-user' : 'chat-assistant'}"${msg.isError ? '' : ''}>${esc(msg.text)}${msg.model ? `<div class="muted" style="font-size:0.8em;margin-top:0.2rem">via ${esc(msg.model)}</div>` : ''}${msg.diffHtml || ''}${isLastAssistant && actionsHtml ? actionsHtml : ''}</div>`;
   }).join('');
   const generatingBubble = review.generating
     ? `<div class="chat-msg chat-assistant"><span class="mf-spinner"></span>Asking the AI to revise this...</div>` : '';
@@ -6129,7 +5515,7 @@ function feedbackReviewModal(number, initialNote) {
       // own row since it's a modal-only concept, not an action on any
       // particular response.
       const actionsHtml = !review.generating ? `
-        <div class="row" style="margin-top:0.4rem;gap:0.3rem">
+        <div class="mt-4 gap-3 row">
           <button type="button" id="fr-modal-retry">Try again</button>
           <button type="button" id="fr-modal-accept" class="btn-primary" ${review.content ? '' : 'disabled'}
                   title="${review.content ? 'Write this revision and queue its render' : 'Nothing to accept yet -- this was advice, not a proposed change. Reply below (e.g. \'do that\') to actually request the revision, then Accept.'}">Accept</button>
@@ -6139,11 +5525,11 @@ function feedbackReviewModal(number, initialNote) {
           <p class="mf-confirm-message">Feedback for #${number}</p>
           <div class="chat-log" id="fr-modal-chat-log">${feedbackChatLogHtml(review, actionsHtml)}</div>
           ${!review.generating ? `
-            <div class="row row-end" style="margin-top:0.5rem">
+            <div class="mt-5 row row-end">
               <button type="button" id="fr-modal-cancel">Cancel</button>
             </div>
-            <div class="row" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
-              <textarea id="fr-modal-refine" rows="2" style="flex:1" spellcheck="true" placeholder="${review.kind === 'advice' ? 'Reply -- e.g. \'do that\' to have it make the change...' : 'Not quite -- add more direction and try again...'}"></textarea>
+            <div class="mt-5 items-start gap-3 row">
+              <textarea id="fr-modal-refine" rows="2" class="flex-1" spellcheck="true" placeholder="${review.kind === 'advice' ? 'Reply -- e.g. \'do that\' to have it make the change...' : 'Not quite -- add more direction and try again...'}"></textarea>
               <button type="button" id="fr-modal-refine-btn">${review.kind === 'advice' ? 'Reply' : 'Refine'}</button>
             </div>` : ''}
         </div>`;
@@ -6605,7 +5991,7 @@ async function pollConnectProjectChannel(jobId) {
       el.innerHTML =
         `<span class="badge">connecting...</span> <a href="${esc(job.auth_url)}" target="_blank" rel="noopener">click here to authorize</a>, ` +
         `then paste the URL your browser gets redirected to below (that page will fail to load -- that's expected, just copy its address bar URL):<br>` +
-        `<input type="text" class="yt-oauth-paste-input" placeholder="paste the redirected URL here" style="width:60%">` +
+        `<input type="text" class="w-60 yt-oauth-paste-input" placeholder="paste the redirected URL here">` +
         `<button type="button" onclick="submitYoutubeOauthCode(this, '${jobId}')">Submit</button>` +
         `<span class="yt-oauth-paste-result"></span>`;
     } else if (!job.auth_url) {
@@ -6624,11 +6010,11 @@ function uploadTemplateSection(template, error) {
   const tags = (t.default_tags || []).join(', ');
   return `
     <div class="card">
-      <div class="row" style="justify-content:space-between">
-        <h4 style="margin:0">Upload template</h4>
-        <span class="badge" style="${error ? 'background:#e24a4a;color:#fff' : 'background:#3a9f5c;color:#fff'}">${error ? 'needs setup' : 'ok'}</span>
+      <div class="justify-between row">
+        <h4 class="m-0">Upload template</h4>
+        <span class="badge ${error ? 'badge-danger' : 'badge-ok'}">${error ? 'needs setup' : 'ok'}</span>
       </div>
-      ${error ? `<div class="muted" style="color:#e24a4a">${esc(error)}</div>` : ''}
+      ${error ? `<div class="text-danger muted">${esc(error)}</div>` : ''}
       <label>YouTube channel handle <input id="ut-channel_handle" value="${esc(t.channel_handle)}"></label>
       <label>Episode label (e.g. Tale, Dream -- used in output folder/file names) <input id="ut-episode_label" value="${esc(t.episode_label)}"></label>
       <label>YouTube category ID <input id="ut-category_id" value="${esc(t.category_id || '24')}"></label>
@@ -6638,13 +6024,13 @@ function uploadTemplateSection(template, error) {
         <option value="public" ${t.privacy_status === 'public' ? 'selected' : ''}>Public</option>
       </select></label>
       <label>Default language <input id="ut-default_language" value="${esc(t.default_language || 'en')}"></label>
-      <label class="row" style="gap:0.4rem"><input type="checkbox" id="ut-made_for_kids" style="width:auto" ${t.made_for_kids ? 'checked' : ''}> Made for kids</label>
-      <label class="row" style="gap:0.4rem"><input type="checkbox" id="ut-contains_synthetic_media" style="width:auto" ${t.contains_synthetic_media ? 'checked' : ''}> Contains synthetic (AI) media</label>
+      <label class="gap-4 row"><input type="checkbox" id="ut-made_for_kids" class="w-auto" ${t.made_for_kids ? 'checked' : ''}> Made for kids</label>
+      <label class="gap-4 row"><input type="checkbox" id="ut-contains_synthetic_media" class="w-auto" ${t.contains_synthetic_media ? 'checked' : ''}> Contains synthetic (AI) media</label>
       <label>Description footer (appended to every upload's description) <textarea id="ut-description_footer">${esc(t.description_footer)}</textarea></label>
       <label>Default tags (comma-separated) <input id="ut-default_tags" value="${esc(tags)}"></label>
       <h4>Schedule</h4>
-      <label class="row" style="gap:0.4rem"><input type="checkbox" id="ut-schedule_enabled" style="width:auto" ${sch.enabled !== false ? 'checked' : ''}> Enabled</label>
-      <p class="muted" style="margin:0 0 0.5rem">Set once, not per video: the anchor is the ONE fixed
+      <label class="gap-4 row"><input type="checkbox" id="ut-schedule_enabled" class="w-auto" ${sch.enabled !== false ? 'checked' : ''}> Enabled</label>
+      <p class="m-0 mb-5 muted">Set once, not per video: the anchor is the ONE fixed
         reference point ("video #[anchor number] publishes on [anchor date]") every other video's date
         is auto-calculated from, walking forward through your chosen days of week below. Uploading
         video after video does not move it -- e.g. anchor #1 = 2026-09-01 with a Mon/Thu schedule
@@ -6663,7 +6049,7 @@ function uploadTemplateSection(template, error) {
 
 function uploadActionForm() {
   return `<div class="card"><label>Number(s) <input id="upload-numbers" placeholder="e.g. 83 or all"></label>
-    <p class="muted" style="margin:0 0 0.5rem">A number already uploaded is never silently skipped OR
+    <p class="m-0 mb-5 muted">A number already uploaded is never silently skipped OR
       re-sent -- Upload stops and asks you to choose Resend (delete the live video, push the current file +
       metadata fresh) or Metadata only (push just title/description/tags/status, no delete, no re-upload,
       much cheaper) right there.</p>
@@ -6724,23 +6110,23 @@ function manageForm() {
   const savedNumbers = localStorage.getItem(manageNumbersKey()) || '';
   return `
     <div class="row">
-      <label style="flex:1">Number(s) <span class="mf-help" title="'all' loads every row with a spec EXCEPT ones already moved to Reviewed -- those are done, and reloading them just brings back an old spec with nothing left to act on. A specific number or range (e.g. 83 or 1-5) always loads exactly what you typed, reviewed or not.">?</span> <input id="manage-numbers" placeholder="e.g. 83 or 1-5 or all" value="${esc(savedNumbers)}" onkeydown="if (event.key === 'Enter') loadManageTable()"></label>
-      <button onclick="loadManageTable()" style="margin-top:0.9rem">Load</button>
+      <label class="flex-1">Number(s) <span class="mf-help" title="'all' loads every row with a spec EXCEPT ones already moved to Reviewed -- those are done, and reloading them just brings back an old spec with nothing left to act on. A specific number or range (e.g. 83 or 1-5) always loads exactly what you typed, reviewed or not.">?</span> <input id="manage-numbers" placeholder="e.g. 83 or 1-5 or all" value="${esc(savedNumbers)}" onkeydown="if (event.key === 'Enter') loadManageTable()"></label>
+      <button onclick="loadManageTable()" class="mt-9">Load</button>
     </div>
     <div id="manage-table-wrap"></div>
     <div class="card">
       <h4>Need new ideas?</h4>
-      <p class="muted" style="margin-top:0">
+      <p class="mt-0 muted">
         Dispatches a real request to a web-search-capable agent -- it researches what
         performs well in this genre, then follows this project's own CREATIVE.md for tone
         and format, and appends the results to the master concept list. Can take a while.
       </p>
       <div class="row">
-        <label style="flex:1">How many <input id="concepts-count" type="number" min="1" value="5" style="width:6rem"></label>
+        <label class="flex-1">How many <input id="concepts-count" type="number" min="1" value="5" class="w-6r"></label>
         <button class="btn-primary" onclick="requestMoreConcepts()">Research &amp; add ideas</button>
       </div>
-      <label class="row" style="width:auto;gap:0.4rem;margin-top:0.4rem" title="Feeds this channel's own top-performing video titles/tags (real YouTube Analytics data) into idea generation, and lets the AI merge two well-performing concepts into one new idea when it genuinely fits. Requires at least one project's Analytics tab to have been refreshed at least once.">
-        <input type="checkbox" id="concepts-use-trends" style="width:auto" onchange="onConceptsTrendToggle(this)">
+      <label class="w-auto gap-4 mt-4 row" title="Feeds this channel's own top-performing video titles/tags (real YouTube Analytics data) into idea generation, and lets the AI merge two well-performing concepts into one new idea when it genuinely fits. Requires at least one project's Analytics tab to have been refreshed at least once.">
+        <input type="checkbox" id="concepts-use-trends" class="w-auto" onchange="onConceptsTrendToggle(this)">
         Use performance trends (optional)
       </label>
       <div id="concepts-trend-panel"></div>
@@ -6774,12 +6160,12 @@ async function onConceptsTrendToggle(cb) {
     // a one-line summary; expanding reveals a scrollable checkbox list
     // capped at a fixed height so it never grows unbounded either.
     const checkboxes = data.other_projects_with_data.map(p => `
-      <label class="row" style="width:auto;gap:0.3rem">
-        <input type="checkbox" class="concepts-trend-project" value="${esc(p)}" style="width:auto" onchange="updateConceptsTrendSummary()">${esc(p)}
+      <label class="w-auto gap-3 row">
+        <input type="checkbox" class="w-auto concepts-trend-project" value="${esc(p)}" onchange="updateConceptsTrendSummary()">${esc(p)}
       </label>`).join('');
     panel.innerHTML = `${currentNote}${checkboxes ? `
-      <details style="margin-top:0.3rem">
-        <summary id="concepts-trend-summary" style="cursor:pointer">Also include best performers from... (none selected)</summary>
+      <details class="mt-3">
+        <summary id="concepts-trend-summary" class="pointer">Also include best performers from... (none selected)</summary>
         <div style="display:flex;flex-direction:column;gap:0.3rem;margin-top:0.4rem;max-height:10rem;overflow-y:auto">${checkboxes}</div>
       </details>` : ''}`;
   } catch (e) {
@@ -6942,14 +6328,14 @@ function clearManageCell(btn, ev) {
 function manageTagsCellHtml(field, valueCsv, placeholder) {
   const items = (valueCsv || '').split(',').map(t => t.trim()).filter(Boolean);
   return `<td class="mf-cell" data-field="${field}">
-    <div class="row" style="align-items:flex-start; flex-wrap:nowrap; gap:0.2rem">
-      <div class="mf-tags-pills" data-field="${field}" onclick="focusTagsInput(this, event)" style="flex:1 1 auto; min-width:0">
+    <div class="items-start nowrap gap-2 row">
+      <div class="flex-auto min-w-0 mf-tags-pills" data-field="${field}" onclick="focusTagsInput(this, event)">
         ${items.map(tagPillHtml).join('')}
         <input class="mf-tags-input" placeholder="${esc(placeholder || 'add...')}"
                onkeydown="onTagsInputKeydown(event, this)" onpaste="onTagsInputPaste(event, this)"
                onblur="commitTagsInput(this)">
       </div>
-      ${items.length ? `<button type="button" class="mf-cell-clear" style="flex:0 0 auto" title="Clear all" onclick="clearAllTagPills(this)">&times;</button>` : ''}
+      ${items.length ? `<button type="button" class="flex-none mf-cell-clear" title="Clear all" onclick="clearAllTagPills(this)">&times;</button>` : ''}
     </div>
   </td>`;
 }
@@ -7114,8 +6500,8 @@ function renderManageTable() {
           <th title="Which render pipeline: t2v (text only), i2v (needs 1 reference image), fml (needs 3 keyframe images: first/middle/last).">
             <div class="mf-th-label">Graph type <span class="mf-help" title="Which render pipeline: t2v (text only), i2v (needs 1 reference image), fml (needs 3 keyframe images: first/middle/last).">?</span></div>
             ${typeFilter}
-            <div class="row" style="gap:0.2rem;margin-top:0.2rem">
-              <select id="mf-bulk-type" style="flex:1;font-size:0.85em">
+            <div class="gap-2 mt-2 row">
+              <select id="mf-bulk-type" class="flex-1 text-sm">
                 <option value="t2v">t2v</option>
                 <option value="i2v">i2v</option>
                 <option value="fml">fml</option>
@@ -7130,13 +6516,13 @@ function renderManageTable() {
       </thead>
       <tbody>${state.manageRows.map(manageRowHtml).join('')}</tbody>
     </table></div>
-    <div class="row" style="margin:0.5rem 0">
+    <div class="my-5 row">
       <button id="manage-run-video-btn" class="btn-primary" onclick="handleManagePrimaryClick()">Render video</button>
       <span class="mf-help" title="One button, two modes depending on the SELECTED+visible rows: if any of them still has a blank field, this reads 'Auto-generate missing content' -- fields you've already filled in are used exactly as-is, only blanks get AI-composed, then the table refreshes so you can review before rendering. Once every selected row is fully filled in, it reads 'Render video' -- renders for the first time if a row has no video yet, or RE-RENDERS and overwrites the existing one if it does. Always confirms what it's about to do first.">?</span>
       <button id="manage-clear-btn" class="btn-danger" onclick="runManageClearContent()">Clear content</button>
       <span class="mf-help" title="Wipes spec content (and any staged reference images) for every selected+visible row back to a blank 'new' state, ready for a completely fresh generation. Never touches an already-rendered video -- use Delete video for that.">?</span>
-      <label class="row" style="width:auto;gap:0.3rem;margin-left:auto" title="Also show the exact prompt sent to the AI and its raw response, for every attempt.">
-        <input type="checkbox" id="manage-verbose" style="width:auto">Verbose
+      <label class="w-auto gap-3 ml-auto row" title="Also show the exact prompt sent to the AI and its raw response, for every attempt.">
+        <input type="checkbox" id="manage-verbose" class="w-auto">Verbose
       </label>
     </div>
     <div id="manage-results"></div>`;
@@ -7298,7 +6684,7 @@ function manageSlotsHtml(row, type) {
   // single-slot row (i2v, or fml2v with just one image so far) this
   // would just duplicate that slot's own delete (x) button right above it.
   const deleteAllBtn = rowItems.length > 1
-    ? `<button type="button" style="font-size:0.7em;width:100%;margin-bottom:0.3rem"
+    ? `<button type="button" class="text-xs w-full mb-3"
          onclick="deleteSlotImagesBulk(getRowImageItems(state.manageRows.find(r=>r.number===${row.number}), '${type}'))"
          title="Deletes every image slot currently populated for this row in one confirmation -- each will need to be regenerated (automatically, at the next render) before it can be used again.">
          Delete all images
@@ -7338,7 +6724,7 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
   // baked-in defaults via get_manage_row) so there's something real to
   // edit even before a spec has ever set this field.
   const weightInput = workflow === 'fml2v'
-    ? `<div style="font-size:0.7em;margin-top:0.2rem">weight
+    ? `<div class="text-xs mt-2">weight
          <input type="number" min="0" max="1" step="0.05" value="${guideStrength}" style="width:5.5em;font-size:1em"
                 onchange="saveGuideStrength(${number}, '${slot}', this.value)">
        </div>`
@@ -7351,13 +6737,13 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
   // offered for fml2v, and only once there's actually an image here to
   // reassign.
   const reassign = (hasImage && workflow === 'fml2v')
-    ? `<select style="font-size:0.7em;margin-top:0.2rem;width:100%" onchange="if(this.value){renameSlotImage(${number},'${workflow}','${slot}',this.value);this.value='';}">
+    ? `<select class="text-xs mt-2 w-full" onchange="if(this.value){renameSlotImage(${number},'${workflow}','${slot}',this.value);this.value='';}">
          <option value="">Use as...</option>
          ${FML2V_SLOTS.filter(s => s !== slot).map(s => `<option value="${s}">${s}</option>`).join('')}
        </select>`
     : '';
   const thumb = hasImage
-    ? `<div class="muted" style="font-size:0.7em">${showStaged ? 'Current' : ''}
+    ? `<div class="text-xs muted">${showStaged ? 'Current' : ''}
          <button type="button" style="font-size:0.9em;padding:0 0.3em" title="Delete this rendered image permanently -- it'll need to be regenerated (locally, or via Gemini if 'online' sourcing is set) before the next render can use this slot again."
                  onclick="deleteSlotImage(${number}, '${slot}')">&times;</button>
        </div>
@@ -7375,14 +6761,14 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
   // column space.
   const promptField_html = `<textarea class="mf-slot-prompt" data-field="${promptField}" rows="2" placeholder="${slot} prompt">${esc(promptValue)}</textarea>`;
   const promptSection = hasImage
-    ? `<details style="margin-top:0.2rem"><summary style="font-size:0.7em;cursor:pointer">Edit prompt</summary>${promptField_html}</details>`
+    ? `<details class="mt-2"><summary class="text-xs pointer">Edit prompt</summary>${promptField_html}</details>`
     : promptField_html;
   // Only rendered once nothing's actually resolved yet -- a fresh
   // upload/fetch would otherwise show as "current" the instant it lands
   // (see fetchSlotReferencePhoto/uploadSlotImageFile's own comments),
   // silently overstating that anything has actually been rendered.
   const stagedThumb = showStaged
-    ? `<div class="muted" style="font-size:0.7em;margin-top:0.3rem">New &mdash; not rendered yet
+    ? `<div class="text-xs mt-3 muted">New &mdash; not rendered yet
          <button type="button" style="font-size:0.9em;padding:0 0.3em" title="Discard this staged replacement"
                  onclick="clearStagedSlotImage(${number}, '${slot}')">&times;</button>
        </div>
@@ -7406,7 +6792,7 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
   // both here would just be two buttons doing overlapping work.
   const firstFrameIsGemini = ['all_gemini', 'first_gemini_rest_local'].includes(state.kfBackend);
   const onlineBtn = (ONLINE_PHOTO_ELIGIBLE_SLOTS.has(slot) && state.geminiEnabled && !firstFrameIsGemini)
-    ? `<button type="button" class="mf-online-photo-btn" style="font-size:0.7em;width:100%;margin-top:0.2rem"
+    ? `<button type="button" class="text-xs w-full mt-2 mf-online-photo-btn"
          onclick="fetchSlotReferencePhoto(${number}, '${slot}')"
          title="Generate a reference image via Gemini (a real, billed API call) as a seed instead of a blank placeholder -- for animals the local model tends to draw wrong. Only replaces the STAGED image; the active render is untouched until you render/rework.">
          Online photo (Gemini)&hellip;
@@ -7419,7 +6805,7 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
   // hidden entirely (not just disabled) until one exists -- same
   // precedent as onlineBtn being hidden rather than offered-then-errors.
   const generateBtn = (slot === 'image' || slot === 'first' || firstFrameExists)
-    ? `<button type="button" class="mf-generate-keyframe-btn" style="font-size:0.7em;width:100%;margin-top:0.2rem"
+    ? `<button type="button" class="text-xs w-full mt-2 mf-generate-keyframe-btn"
          onclick="generateSlotKeyframeImage(${number}, '${slot}', '${workflowToType(workflow)}')"
          title="Generate a new candidate image for this slot from its own prompt, via whichever backend Settings' kf_backend currently selects (local ComfyUI or Gemini image-edit). Stages the result for Current/New comparison -- the active render is untouched until you keep it.">
          Generate new
@@ -7432,9 +6818,9 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
   // glance. Only wrap in the row when there's actually a staged image to
   // compare against -- a lone "Current" thumbnail doesn't need a row.
   const thumbsRow = (thumb && stagedThumb)
-    ? `<div class="row" style="gap:0.5rem; align-items:flex-start; flex-wrap:nowrap">
-         <div style="flex:0 0 auto">${thumb}</div>
-         <div style="flex:0 0 auto">${stagedThumb}</div>
+    ? `<div class="gap-5 items-start nowrap row">
+         <div class="flex-none">${thumb}</div>
+         <div class="flex-none">${stagedThumb}</div>
        </div>`
     : `${thumb}${stagedThumb}`;
   return `
@@ -7443,7 +6829,7 @@ function manageSlotHtml(number, workflow, slot, hasImage, promptValue, promptFie
       ${thumbsRow}
       ${promptSection}
       ${weightInput}
-      <input type="file" accept="image/*" style="font-size:0.75em" onchange="uploadSlotImage(${number}, '${slot}', this)">
+      <input type="file" accept="image/*" class="text-xxs" onchange="uploadSlotImage(${number}, '${slot}', this)">
       ${onlineBtn}
       ${generateBtn}
     </div>`;
@@ -7477,10 +6863,9 @@ async function clearStagedSlotImage(number, slot) {
 // Gemini if "online" sourcing is set for this row).
 function enlargeSlotImage(src) {
   const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out';
+  overlay.className = 'img-zoom-overlay';
   const img = document.createElement('img');
   img.src = src;
-  img.style.cssText = 'max-width:90vw;max-height:90vh;object-fit:contain;border-radius:6px;box-shadow:0 4px 24px rgba(0,0,0,0.5)';
   overlay.appendChild(img);
   overlay.onclick = () => overlay.remove();
   document.addEventListener('keydown', function onEsc(e) {
@@ -8312,7 +7697,7 @@ function renderFailureCallout(combinedLog, combinedError) {
     return `<div class="mf-failure-callout">
       <strong>Unexpected internal error</strong> -- this isn't a normal "fix your input" refusal,
       it looks like a real bug: <code>${esc(lastLine)}</code>
-      ${number ? `<div class="row" style="margin-top:0.4rem"><button type="button" onclick="jumpToManageRow(${number})">Jump to #${number}</button></div>` : ''}
+      ${number ? `<div class="mt-4 row"><button type="button" onclick="jumpToManageRow(${number})">Jump to #${number}</button></div>` : ''}
     </div>`;
   }
 
@@ -8326,7 +7711,7 @@ function renderFailureCallout(combinedLog, combinedError) {
   }
   return `<div class="mf-failure-callout">
     ${guidance.map(g => `<div>${esc(g)}</div>`).join('<hr style="margin:0.4rem 0;border-color:var(--border-soft)">')}
-    ${actions.length ? `<div class="row" style="margin-top:0.5rem">${actions.join('')}</div>` : ''}
+    ${actions.length ? `<div class="mt-5 row">${actions.join('')}</div>` : ''}
   </div>`;
 }
 
@@ -8593,9 +7978,9 @@ function handleUploadLimit(pc, priorLog) {
   document.getElementById('results').innerHTML = `<div class="card">
     <pre>${esc(priorLog)}</pre>
     <p>#${pc.number} hit YouTube's upload limit. Not a failure of this tool -- ${esc(pc.upload_limit.error)}</p>
-    <div class="row" style="gap:0.5rem;align-items:center">
+    <div class="gap-5 items-center row">
       <button onclick="runUploadNumbers('${remaining}', false)">Try again now</button>
-      <label style="display:inline-flex;align-items:center;gap:0.3rem">Auto-retry in
+      <label class="inline-flex items-center gap-3">Auto-retry in
         <input type="number" id="upload-retry-hours" value="24" min="1" style="width:4em"> hours</label>
       <button onclick="scheduleUploadRetry('${remaining}')">Schedule auto-retry</button>
     </div></div>`;
@@ -8691,7 +8076,7 @@ async function handleUploadAlreadyPublished(pc, priorLog) {
   document.getElementById('results').innerHTML = `<div class="card">
     <pre>${esc(priorLog)}</pre>
     <p>#${pc.number} already exists at <a href="${esc(ap.url)}" target="_blank">${esc(ap.url)}</a>.</p>
-    <div class="row" style="gap:0.5rem">
+    <div class="gap-5 row">
       <button onclick="resendUpload('${remaining}')">Resend (file + metadata)</button>
       <button onclick="metadataOnlyUpload(${pc.number}, '${remaining}')">Metadata only</button>
     </div></div>`;
@@ -8891,10 +8276,10 @@ function creativeFieldsBody(f, isOnboarding) {
       <input id="cf-style2" list="cf-style-options" value="${esc(f.style2 || '')}"></label>
     ${styleDatalist}
     <div class="row" onchange="updateCreativeFieldsStatus()" oninput="updateCreativeFieldsStatus()">
-      <div style="flex:1">${selectField('cf-duration', 'Duration <span class="mf-help" title="How long each rendered video is, in seconds -- sets the target length every story is written to fill and how long ComfyUI actually renders. Changing this later does not retroactively resize stories already written.">?</span>', f.duration_options || [], f.duration_s, formatDurationLabel)}</div>
-      <div style="flex:1">${selectField('cf-resolution', 'Resolution (WxH) <span class="mf-help" title="Output video pixel dimensions -- directly drives render time and GPU VRAM usage per video (see the note below for specifics). This pipeline was built and tuned around 512x896.">?</span>', f.resolution_options || [], f.resolution, null)}</div>
+      <div class="flex-1">${selectField('cf-duration', 'Duration <span class="mf-help" title="How long each rendered video is, in seconds -- sets the target length every story is written to fill and how long ComfyUI actually renders. Changing this later does not retroactively resize stories already written.">?</span>', f.duration_options || [], f.duration_s, formatDurationLabel)}</div>
+      <div class="flex-1">${selectField('cf-resolution', 'Resolution (WxH) <span class="mf-help" title="Output video pixel dimensions -- directly drives render time and GPU VRAM usage per video (see the note below for specifics). This pipeline was built and tuned around 512x896.">?</span>', f.resolution_options || [], f.resolution, null)}</div>
     </div>
-    <p class="muted" style="margin-top:0.3rem">Higher duration and resolution both mean
+    <p class="mt-3 muted">Higher duration and resolution both mean
       significantly more render time and VRAM for every single video, and (if using Gemini/
       Claude for story generation) a longer, more expensive prompt to fill that much timeline
       with real content -- this pipeline was built and tuned around 24s @ 512x896; larger
@@ -8905,7 +8290,7 @@ function creativeFieldsBody(f, isOnboarding) {
       <input id="cf-concept-directive" placeholder="leave blank to generate new ideas each time, or describe a standing directive" value="${esc(f.concept_directive || '')}">
     </label>
     <label>Prompt template <span class="mf-help" title="The actual prompt sent to the AI for each story. Tweak freely -- just keep the placeholders (genre/title/duration/style/direction/rules/exclusions/negative_baseline) intact, they're filled in automatically each call.">?</span>
-      <textarea id="cf-template" rows="16" style="font-family:monospace;font-size:0.85em">${esc(f.template || '')}</textarea>
+      <textarea id="cf-template" rows="16" class="mono text-sm">${esc(f.template || '')}</textarea>
     </label>
     <div class="row">
       <button class="btn-primary" onclick="saveCreativeFields(event)">Save</button>
@@ -8997,15 +8382,15 @@ function renderAnalyticsTab() {
   const rangeMin = dailyTrend.length ? dailyTrend[0].date : undefined;
   const rangeMax = new Date().toISOString().slice(0, 10);
   container.innerHTML = `
-    <div class="row" style="align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.8rem">
+    <div class="items-center justify-between wrap gap-5 mb-8 row">
       <span class="muted">${hasData ? `Last refreshed: ${esc(a.fetched_at)} (${analyticsPublishStatusSummary(a.videos)})` : 'Never refreshed yet.'}</span>
-      <span class="row" style="width:auto; gap:0.4rem; align-items:flex-end">
-        <label style="width:auto">From
-          <input type="date" id="analytics-range-from" style="margin-bottom:0" ${rangeMin ? `min="${rangeMin}"` : ''} max="${rangeMax}"
+      <span class="w-auto gap-4 items-end row">
+        <label class="w-auto">From
+          <input type="date" id="analytics-range-from" class="mb-0" ${rangeMin ? `min="${rangeMin}"` : ''} max="${rangeMax}"
             onchange="updateAnalyticsRefreshButtonLabel()">
         </label>
-        <label style="width:auto">To
-          <input type="date" id="analytics-range-to" style="margin-bottom:0" ${rangeMin ? `min="${rangeMin}"` : ''} max="${rangeMax}"
+        <label class="w-auto">To
+          <input type="date" id="analytics-range-to" class="mb-0" ${rangeMin ? `min="${rangeMin}"` : ''} max="${rangeMax}"
             onchange="updateAnalyticsRefreshButtonLabel()">
         </label>
         <button id="analytics-refresh-btn" onclick="refreshAnalytics()">&#8635; Refresh</button>
@@ -9094,20 +8479,20 @@ function analyticsLeaderboardHtml(videos) {
     const fmt = v => metric === 'engagement_rate' ? (v * 100).toFixed(1) + '%' : v.toLocaleString();
     return `<div class="card" style="flex:1 1 220px">
       <h4>${label}</h4>
-      ${sorted.map(v => `<div style="margin:0.3rem 0">` +
+      ${sorted.map(v => `<div class="my-3">` +
           `<a href="https://youtu.be/${esc(v.video_id)}" target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a>` +
           `<br><span class="muted">${fmt(v[metric] || 0)}</span></div>`).join('') || '<div class="muted">none yet</div>'}
     </div>`;
   };
   return `<div id="analytics-leaderboard">
-    <div class="row" style="align-items:center; gap:0.5rem; margin-bottom:0.5rem">
-      <label style="width:auto">Show top
-        <select style="width:auto" onchange="setAnalyticsTopN(this.value)">
+    <div class="items-center gap-5 mb-5 row">
+      <label class="w-auto">Show top
+        <select class="w-auto" onchange="setAnalyticsTopN(this.value)">
           ${[3, 5, 10, 20].map(v => `<option value="${v}" ${v === n ? 'selected' : ''}>${v}</option>`).join('')}
         </select>
       </label>
     </div>
-    ${!videos.length ? '<div class="muted">No videos with recorded stats yet.</div>' : `<div class="row" style="gap:0.6rem; flex-wrap:wrap; margin-bottom:0.8rem">
+    ${!videos.length ? '<div class="muted">No videos with recorded stats yet.</div>' : `<div class="gap-6 wrap mb-8 row">
       ${top('views', 'Most Viewed')}
       ${top('likes', 'Most Liked')}
       ${top('comments', 'Most Commented')}
@@ -9245,23 +8630,23 @@ function analyticsTrendHtml(dailyTrend) {
   if (state.analyticsChartType === undefined) state.analyticsChartType = 'line';
   seedAnalyticsPeriodDefaults(dailyTrend);
   const minDate = dailyTrend[0].date, maxDate = dailyTrend[dailyTrend.length - 1].date;
-  return `<div class="card" style="margin-bottom:0.8rem">
+  return `<div class="mb-8 card">
     <h4>Trend</h4>
-    <div class="row" style="align-items:center; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.5rem">
-      <label style="width:auto">Metric
-        <select style="width:auto" onchange="state.analyticsTrendMetric=this.value; renderAnalyticsTrendChart();">
+    <div class="items-center gap-6 wrap mb-5 row">
+      <label class="w-auto">Metric
+        <select class="w-auto" onchange="state.analyticsTrendMetric=this.value; renderAnalyticsTrendChart();">
           ${['views', 'likes', 'comments', 'subscribers_gained'].map(m =>
             `<option value="${m}" ${m === state.analyticsTrendMetric ? 'selected' : ''}>${m.replace('_', ' ')}</option>`).join('')}
         </select>
       </label>
-      ${state.analyticsPeriodType !== 'day' ? `<label style="width:auto">Chart
-        <select style="width:auto" onchange="state.analyticsChartType=this.value; renderAnalyticsTrendChart();">
+      ${state.analyticsPeriodType !== 'day' ? `<label class="w-auto">Chart
+        <select class="w-auto" onchange="state.analyticsChartType=this.value; renderAnalyticsTrendChart();">
           <option value="line" ${state.analyticsChartType === 'line' ? 'selected' : ''}>Line</option>
           <option value="bar" ${state.analyticsChartType === 'bar' ? 'selected' : ''}>Bar</option>
         </select>
       </label>` : ''}
-      <label style="width:auto">Period type
-        <select style="width:auto" onchange="state.analyticsPeriodType=this.value; rerenderAnalyticsTrendCard();">
+      <label class="w-auto">Period type
+        <select class="w-auto" onchange="state.analyticsPeriodType=this.value; rerenderAnalyticsTrendCard();">
           <option value="day" ${state.analyticsPeriodType === 'day' ? 'selected' : ''}>Day</option>
           <option value="week" ${state.analyticsPeriodType === 'week' ? 'selected' : ''}>Week</option>
           <option value="month" ${state.analyticsPeriodType === 'month' ? 'selected' : ''}>Month</option>
@@ -9270,10 +8655,10 @@ function analyticsTrendHtml(dailyTrend) {
       </label>
       <span class="muted">(${esc(minDate)} to ${esc(maxDate)} cached)</span>
     </div>
-    <div class="row" style="align-items:center; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.5rem">
+    <div class="items-center gap-6 wrap mb-5 row">
       ${analyticsPeriodPickerHtml('A', dailyTrend, minDate, maxDate)}
-      <label class="row" style="gap:0.3rem; width:auto">
-        <input type="checkbox" style="width:auto" ${state.analyticsCompareEnabled ? 'checked' : ''}
+      <label class="gap-3 w-auto row">
+        <input type="checkbox" class="w-auto" ${state.analyticsCompareEnabled ? 'checked' : ''}
           onchange="state.analyticsCompareEnabled=this.checked; rerenderAnalyticsTrendCard();">
         Compare with another ${esc(state.analyticsPeriodType)}
       </label>
@@ -9294,7 +8679,7 @@ function analyticsPeriodPickerHtml(letter, dailyTrend, minDate, maxDate) {
   // 2026-08-16). Still needs SOME short label so the field isn't bare.
   const label = letter === 'A' ? 'Period' : 'vs.';
   if (type === 'day') {
-    return `<label style="width:auto">${label}
+    return `<label class="w-auto">${label}
       <input type="date" min="${minDate}" max="${maxDate}" value="${state[`analyticsDay${letter}`]}"
         onchange="state.analyticsDay${letter}=this.value; renderAnalyticsTrendChart();">
     </label>`;
@@ -9302,11 +8687,11 @@ function analyticsPeriodPickerHtml(letter, dailyTrend, minDate, maxDate) {
   if (type === 'week') {
     const years = [...new Set(dailyTrend.map(d => d.date.slice(0, 4)))].sort();
     const weekNums = Array.from({ length: 53 }, (_, i) => i + 1);
-    return `<label style="width:auto">${label}
-      <select style="width:auto" onchange="state.analyticsWeek${letter}Year=this.value; renderAnalyticsTrendChart();">
+    return `<label class="w-auto">${label}
+      <select class="w-auto" onchange="state.analyticsWeek${letter}Year=this.value; renderAnalyticsTrendChart();">
         ${years.map(y => `<option value="${y}" ${y === state[`analyticsWeek${letter}Year`] ? 'selected' : ''}>${y}</option>`).join('')}
       </select>
-      <select style="width:auto" onchange="state.analyticsWeek${letter}Num=parseInt(this.value,10); renderAnalyticsTrendChart();">
+      <select class="w-auto" onchange="state.analyticsWeek${letter}Num=parseInt(this.value,10); renderAnalyticsTrendChart();">
         ${weekNums.map(w => `<option value="${w}" ${w === state[`analyticsWeek${letter}Num`] ? 'selected' : ''}>Week ${w}</option>`).join('')}
       </select>
     </label>`;
@@ -9314,18 +8699,18 @@ function analyticsPeriodPickerHtml(letter, dailyTrend, minDate, maxDate) {
   if (type === 'month') {
     const years = [...new Set(dailyTrend.map(d => d.date.slice(0, 4)))].sort();
     const months = ['01','02','03','04','05','06','07','08','09','10','11','12'];
-    return `<label style="width:auto">${label}
-      <select style="width:auto" onchange="state.analyticsMonth${letter}Year=this.value; renderAnalyticsTrendChart();">
+    return `<label class="w-auto">${label}
+      <select class="w-auto" onchange="state.analyticsMonth${letter}Year=this.value; renderAnalyticsTrendChart();">
         ${years.map(y => `<option value="${y}" ${y === state[`analyticsMonth${letter}Year`] ? 'selected' : ''}>${y}</option>`).join('')}
       </select>
-      <select style="width:auto" onchange="state.analyticsMonth${letter}Month=this.value; renderAnalyticsTrendChart();">
+      <select class="w-auto" onchange="state.analyticsMonth${letter}Month=this.value; renderAnalyticsTrendChart();">
         ${months.map((m, i) => `<option value="${m}" ${m === state[`analyticsMonth${letter}Month`] ? 'selected' : ''}>${ANALYTICS_MONTH_NAMES[i]}</option>`).join('')}
       </select>
     </label>`;
   }
   const years = [...new Set(dailyTrend.map(d => d.date.slice(0, 4)))].sort();
-  return `<label style="width:auto">${label}
-    <select style="width:auto" onchange="state.analyticsYear${letter}=this.value; renderAnalyticsTrendChart();">
+  return `<label class="w-auto">${label}
+    <select class="w-auto" onchange="state.analyticsYear${letter}=this.value; renderAnalyticsTrendChart();">
       ${years.map(y => `<option value="${y}" ${y === state[`analyticsYear${letter}`] ? 'selected' : ''}>${y}</option>`).join('')}
     </select>
   </label>`;
@@ -9351,7 +8736,7 @@ function analyticsDayChartHtml(dailyTrend, metric) {
   const dayA = byDate[state.analyticsDayA];
   const fmt = v => metric === 'engagement_rate' ? ((v || 0) * 100).toFixed(1) + '%' : (v || 0).toLocaleString();
   if (!dayA) {
-    return `<div style="padding:0.6rem 0">
+    return `<div class="py-6">
       <span class="badge badge-warn">NO DATA</span>
       nothing cached for ${esc(state.analyticsDayA)} yet --
       set From/To to that date above and click <strong>Load</strong>.
@@ -9362,7 +8747,7 @@ function analyticsDayChartHtml(dailyTrend, metric) {
   const bar = (label, day, color) => {
     const v = day ? (day[metric] || 0) : 0;
     const widthPct = day ? Math.max(2, (v / maxV) * 100) : 0;
-    return `<div style="margin:0.4rem 0">
+    return `<div class="my-4">
       <div class="muted">${esc(label)}</div>
       <div style="background:var(--border); border-radius:4px; height:22px; position:relative">
         <div style="background:${color}; width:${widthPct}%; height:100%; border-radius:4px"></div>
@@ -9371,7 +8756,7 @@ function analyticsDayChartHtml(dailyTrend, metric) {
     </div>`;
   };
   const compareNote = state.analyticsCompareEnabled && !dayB
-    ? `<div style="margin-top:0.3rem">
+    ? `<div class="mt-3">
         <span class="badge badge-warn">NO DATA</span>
         nothing cached for ${esc(state.analyticsDayB)} --
         <button type="button" onclick="getTrendDataForPeriod('B')">Get data for this period</button>
@@ -9392,7 +8777,7 @@ function analyticsTrendChartSvg(dailyTrend) {
   const winA = analyticsPeriodWindow('A', dailyTrend);
   const rawA = dailyTrend.filter(d => d.date >= winA.start && d.date <= winA.end);
   if (rawA.length < 2) {
-    return `<div style="padding:0.6rem 0">
+    return `<div class="py-6">
       <span class="badge badge-warn">NO DATA</span>
       nothing cached for ${esc(winA.start)} to ${esc(winA.end)} yet --
       set From/To to that range above and click <strong>Load</strong>.
@@ -9430,18 +8815,18 @@ function analyticsTrendChartSvg(dailyTrend) {
   // small parenthetical buried in the caption text below.
   const legend = state.analyticsCompareEnabled
     ? (valuesB
-        ? `<div class="row" style="gap:1rem; width:auto; margin-bottom:0.3rem; font-size:0.85em">
+        ? `<div class="gap-10 w-auto mb-3 text-sm row">
             <span><span style="display:inline-block; width:14px; height:0; border-top:2px solid var(--accent); vertical-align:middle; margin-right:0.3rem"></span>${esc(winA.start)} to ${esc(winA.end)}</span>
-            <span style="color:var(--muted-fg,#999)"><span style="display:inline-block; width:14px; height:0; border-top:2px dashed var(--muted-fg,#999); vertical-align:middle; margin-right:0.3rem"></span>${esc(winB.start)} to ${esc(winB.end)}</span>
+            <span class="text-muted"><span style="display:inline-block; width:14px; height:0; border-top:2px dashed var(--muted-fg,#999); vertical-align:middle; margin-right:0.3rem"></span>${esc(winB.start)} to ${esc(winB.end)}</span>
           </div>`
-        : `<div style="margin-bottom:0.3rem">
+        : `<div class="mb-3">
             <span class="badge badge-warn">NO DATA</span>
             nothing cached for the comparison period (${esc(winB.start)} to ${esc(winB.end)}) yet --
             <button type="button" onclick="getTrendDataForPeriod('B')">Get data for this period</button>
           </div>`)
     : '';
   const compareNote = valuesB
-    ? ` <span style="color:var(--muted-fg,#999)">-- comparison total ${valuesB.reduce((a, b) => a + b, 0).toLocaleString()}</span>`
+    ? ` <span class="text-muted">-- comparison total ${valuesB.reduce((a, b) => a + b, 0).toLocaleString()}</span>`
     : '';
   const gridlines = axisLabels.map(v => {
     const y = yFor(v);
@@ -9499,9 +8884,9 @@ function analyticsCorrelationTableHtml(rows, keyName, keyLabel) {
 
 function analyticsCorrelationHtml(correlation) {
   correlation = correlation || {};
-  return `<div class="card" style="margin-bottom:0.8rem">
+  return `<div class="mb-8 card">
     <h4>Performance by style</h4>
-    <div class="muted" style="margin-bottom:0.4rem">By rendering workflow</div>
+    <div class="mb-4 muted">By rendering workflow</div>
     ${analyticsCorrelationTableHtml(correlation.by_workflow, 'workflow', 'Workflow')}
     <div class="muted" style="margin:0.6rem 0 0.4rem">By tag</div>
     ${analyticsCorrelationTableHtml(correlation.by_tag, 'tag', 'Tag')}
@@ -9510,8 +8895,8 @@ function analyticsCorrelationHtml(correlation) {
 
 function analyticsAiReviewHtml(review, hasData) {
   return `<div class="card">
-    <div class="row" style="align-items:center; justify-content:space-between">
-      <h4 style="margin:0">AI Review &amp; Suggestions</h4>
+    <div class="items-center justify-between row">
+      <h4 class="m-0">AI Review &amp; Suggestions</h4>
       <button id="analytics-ai-review-btn" onclick="runAiReview()" ${hasData ? '' : 'disabled title="Refresh analytics first"'}>Get AI Review</button>
     </div>
     <div id="analytics-ai-review-body">${review ? analyticsAiReviewBodyHtml(review) : '<div class="muted">Not generated yet -- click Get AI Review.</div>'}</div>
@@ -9519,7 +8904,7 @@ function analyticsAiReviewHtml(review, hasData) {
 }
 
 function analyticsAiReviewBodyHtml(review) {
-  return `<div class="muted" style="margin:0.4rem 0">Generated: ${esc(review.generated_at)}</div>
+  return `<div class="my-4 muted">Generated: ${esc(review.generated_at)}</div>
     <p>${esc(review.summary || '')}</p>
     <div><strong>What's working</strong><ul>${(review.whats_working || []).map(s => `<li>${esc(s)}</li>`).join('')}</ul></div>
     <div><strong>Suggestions</strong><ul>${(review.suggestions || []).map(s => `<li>${esc(s)}</li>`).join('')}</ul></div>`;
@@ -9639,8 +9024,8 @@ function goldenRulesEditorHtml(gr) {
   const sections = gr.sections || {};
   const hasAnyContent = defs.some(d => (sections[d.key] || '').trim());
   const fieldsHtml = defs.map(d => `
-    <div style="margin-bottom:0.9rem">
-      <label for="gr-${d.key}" style="font-weight:600">${esc(d.label)}</label>
+    <div class="mb-9">
+      <label for="gr-${d.key}" class="fw-600">${esc(d.label)}</label>
       <div class="muted" style="font-size:0.82em;margin-bottom:0.2rem">${esc(d.hint)}</div>
       <textarea id="gr-${d.key}" data-gr-key="${esc(d.key)}" rows="3"
         style="width:100%;box-sizing:border-box;font-size:0.9em"
@@ -9656,7 +9041,7 @@ function goldenRulesEditorHtml(gr) {
       WHAT the story is about.</p>
     ${hasAnyContent ? `<p><button type="button" onclick="generateGoldenRules()">Re-generate with AI</button></p>` : ''}
     <div id="gr-fields">${fieldsHtml}</div>
-    <div class="row" style="margin-top:0.3rem;align-items:center;gap:0.6rem">
+    <div class="mt-3 items-center gap-6 row">
       <button type="button" onclick="reviewGoldenRules()">Review with AI</button>
       <button type="button" class="btn-primary" onclick="saveGoldenRules(event)">Save</button>
     </div>
@@ -9738,7 +9123,7 @@ function goldenRulesCurrentSummaryHtml() {
   return defs.map(d => {
     const val = (sections[d.key] || '').trim();
     const shown = val ? (val.length > 220 ? val.slice(0, 220) + '…' : val) : null;
-    return `<div style="margin-top:0.3rem"><strong>${esc(d.label)}:</strong> ${shown ? esc(shown) : '<span class="muted">(empty)</span>'}</div>`;
+    return `<div class="mt-3"><strong>${esc(d.label)}:</strong> ${shown ? esc(shown) : '<span class="muted">(empty)</span>'}</div>`;
   }).join('');
 }
 
@@ -9776,14 +9161,14 @@ function goldenRulesDiffHtml(before, proposed, msgIndex, acceptedKeys) {
     const applied = acceptedKeys[key];
     return `
       <div class="card" style="margin-top:0.4rem;padding:0.5rem;font-size:0.85em">
-        <div style="font-weight:600">${esc(labelFor(key))}</div>
-        <div class="muted" style="margin-top:0.3rem">Current:</div>
+        <div class="fw-600">${esc(labelFor(key))}</div>
+        <div class="mt-3 muted">Current:</div>
         <div style="white-space:pre-wrap;opacity:0.65;text-decoration:line-through">${esc(oldVal || '(empty)')}</div>
-        <div class="muted" style="margin-top:0.3rem">Proposed:</div>
-        <div style="white-space:pre-wrap">${esc(newVal || '(empty)')}</div>
-        <div class="row" style="margin-top:0.5rem;justify-content:flex-end">
-          <button type="button" class="gr-diff-accept-btn ${applied ? 'btn-success' : 'btn-primary'}"
-                  style="flex:0 0 auto;width:auto"
+        <div class="mt-3 muted">Proposed:</div>
+        <div class="pre-wrap">${esc(newVal || '(empty)')}</div>
+        <div class="mt-5 justify-end row">
+          <button type="button" class="flex-none w-auto gr-diff-accept-btn ${applied ? 'btn-success' : 'btn-primary'}"
+                 
                   data-msg-index="${msgIndex}" data-key="${esc(key)}" ${applied ? 'disabled' : ''}>${applied ? 'Applied ✓' : 'Accept'}</button>
         </div>
       </div>`;
@@ -9826,7 +9211,7 @@ function goldenRulesReviewModal() {
       const pendingCount = pendingKeys.length;
       const canRetry = !review.generating && review.lastMessage;
       const actionsHtml = canRetry ? `
-        <div class="row" style="margin-top:0.4rem;gap:0.3rem">
+        <div class="mt-4 gap-3 row">
           <button type="button" id="gr-modal-retry">Try again</button>
           ${pendingCount > 0 ? `<button type="button" id="gr-modal-accept-all" class="btn-primary">Accept all (${pendingCount})</button>` : ''}
         </div>` : '';
@@ -9835,11 +9220,11 @@ function goldenRulesReviewModal() {
           <p class="mf-confirm-message">Discuss golden rules with AI</p>
           <div class="chat-log" id="gr-modal-chat-log">${feedbackChatLogHtml(review, actionsHtml)}</div>
           ${!review.generating ? `
-            <div class="row row-end" style="margin-top:0.5rem">
+            <div class="mt-5 row row-end">
               <button type="button" id="gr-modal-close" class="btn-primary">Close</button>
             </div>
-            <div class="row" style="margin-top:0.5rem;align-items:flex-start;gap:0.3rem">
-              <textarea id="gr-modal-reply" rows="2" style="flex:1" spellcheck="true"
+            <div class="mt-5 items-start gap-3 row">
+              <textarea id="gr-modal-reply" rows="2" class="flex-1" spellcheck="true"
                 placeholder="e.g. 'just tighten the tone section', 'why is anatomy so long?', 'do that'..."></textarea>
               <button type="button" id="gr-modal-reply-btn" class="btn-primary">Send</button>
             </div>` : ''}
@@ -9951,26 +9336,26 @@ async function openConceptListModal() {
       <tr>
         <td>#${e.number}${e.has_spec ? ' <span class="badge badge-ok" title="A spec already exists for this number -- editing this list entry has no effect on it.">used</span>' : ''}</td>
         <td>
-          <input type="text" class="cl-raw" data-number="${e.number}" value="${esc(e.raw)}" style="width:100%;box-sizing:border-box">
+          <input type="text" class="w-full cl-raw" data-number="${e.number}" value="${esc(e.raw)}">
         </td>
         <td><button type="button" class="cl-save" data-number="${e.number}">Save</button></td>
       </tr>`).join('');
     overlay.innerHTML = `
-      <div class="card mf-confirm-card" style="max-width:44rem">
+      <div class="max-w-44r card mf-confirm-card">
         <p class="mf-confirm-message">Manage concept list</p>
-        <p class="muted" style="font-size:0.85em">Raw ideas from this project's concepts.md, one row
+        <p class="text-sm muted">Raw ideas from this project's concepts.md, one row
           per number. To drop an idea you don't want, type a different one over it -- there's no
           delete here (these numbers become the actual upload order once specced, so removing one
           would leave a permanent gap instead of just being reused).</p>
-        <label class="row" style="align-items:center;gap:0.4rem"><input type="checkbox" id="cl-show-used" ${showUsed ? 'checked' : ''}> Show already-specced entries too</label>
+        <label class="items-center gap-4 row"><input type="checkbox" id="cl-show-used" ${showUsed ? 'checked' : ''}> Show already-specced entries too</label>
         ${loading ? '<p class="muted"><span class="mf-spinner"></span>Loading...</p>' : (visible.length ? `
         <div style="max-height:50vh;overflow-y:auto;margin-top:0.4rem">
-          <table style="width:100%">
+          <table class="w-full">
             <thead><tr><th>#</th><th>Idea</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>` : `<p class="muted">${entries.length ? 'Nothing to show (all entries are already specced -- check the box above to see them).' : 'No concept-list entries for this project yet.'}</p>`)}
-        <div class="row row-end" style="margin-top:0.8rem">
+        <div class="mt-8 row row-end">
           <button type="button" id="cl-close" class="btn-primary">Close</button>
         </div>
       </div>`;

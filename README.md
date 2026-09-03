@@ -24,6 +24,15 @@ around that:
 No auth — the trust model is "one user, reached only from `127.0.0.1`
 or a private Docker network," never exposed to the open internet.
 
+**Project status.** This is a personal tool, built for my own YouTube
+channels and published as a portfolio piece. It works for my setup and
+is offered as-is: no support, no guarantee of security or fitness for
+any purpose, and no promise of updates. Issues and pull requests on
+GitHub are welcome but may not get a response. See [LICENSE](LICENSE)
+(MIT).
+
+[![lint](https://github.com/rdkmedia0/dream-pipeline/actions/workflows/lint.yml/badge.svg)](https://github.com/rdkmedia0/dream-pipeline/actions/workflows/lint.yml)
+
 ## Features
 
 **Manage table** — edit every video's title, premise, prompts, tags, and
@@ -107,10 +116,6 @@ docker compose up -d
 
 No build step — `docker-compose.yml` pulls a pre-built image from GHCR.
 Then open **http://127.0.0.1:8420**.
-
-The image is currently private, so the host running `docker compose pull`
-needs to be logged in first (a one-time `docker login ghcr.io` using a
-GitHub personal access token with `read:packages` scope).
 
 `docker-compose.yml` mounts two volumes outside the repo:
 
@@ -302,6 +307,17 @@ ground truth.
   enabled — optional**, only needed for the Upload and Analytics tabs.
   Everything else works fully without it.
 
+**A note on the built-in web search.** "Need new ideas?" and the chat
+assistant can look things up online through `web_search_mcp.py`. It
+queries Wikipedia's official API, and for general search it fetches
+DuckDuckGo's HTML results page directly (with Bing via a headless
+browser as a fallback) rather than going through a paid search API.
+That is a convenience for a personal tool, not something those sites
+formally offer, so use it lightly and check their terms if you run it
+at any scale. Swapping in a real search API means replacing the two
+functions in that file; nothing else in the pipeline depends on how
+the results are obtained.
+
 None of the above are hardcoded — `ollama_url`/`comfyui_url` are plain
 config values, local or remote, set from Settings.
 
@@ -326,6 +342,12 @@ this tool's own out-of-the-box choice.
 
 ## Security notes
 
+- `web_ui.py` has no login, so it also refuses requests whose `Host`
+  header isn't a loopback address, and `POST`s whose `Origin` isn't one
+  either -- this is what stops another web page open in the same
+  browser from driving the API (CSRF) or a DNS-rebinding page from
+  reading it. If you deliberately publish the GUI on a LAN name, list
+  that name in `DREAM_PIPELINE_ALLOWED_HOSTS` (see `.env.example`).
 - Never commit `_pipeline/config.json`, anything under
   `_pipeline/gemini/` or `_pipeline/youtube/`, or any `*.enc` file — see
   `.gitignore`. `*.enc` files hold real credentials (Gemini API key,

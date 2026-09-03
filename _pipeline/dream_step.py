@@ -522,7 +522,7 @@ def local_machine_addresses():
     """Every hostname/IP that actually refers to THIS machine -- not just
     the literal strings "localhost"/"127.0.0.1"/"::1". A common setup
     points ollama_url/comfyui_url at the machine's own LAN IP (e.g.
-    http://192.168.10.8:11434) rather than localhost -- same machine,
+    http://192.168.1.20:11434) rather than localhost -- same machine,
     just addressed differently, but a literal-string-only check would
     treat that as "remote", hiding the local-only Settings fields (Ollama
     executable, ComfyUI install path) AND the dependency-check popup's
@@ -716,12 +716,6 @@ def check_dependencies(services=None):
     return results
 
 
-# ComfyUI's real default is 8188 (a plain `python main.py` with no --port
-# flag); Ollama's is 11434. Neither is necessarily what config.json's
-# ollama_url/comfyui_url point at -- e.g. this project's own comfyui_url
-# is a custom 8000 -- so these are only ever used as a fallback probe in
-# check_dependencies(), never assumed to be correct on their own.
-SERVICE_DEFAULT_PORTS = {"ollama": 11434, "comfyui": 8188}
 # comfy.org/download is the official ComfyUI Desktop installer (Windows/
 # macOS one-click app, same as ollama.com/download for Ollama) -- not the
 # GitHub repo, which is the manual git-clone + Python venv path instead.
@@ -774,60 +768,13 @@ def detect_comfyui_path():
 # to the connection whose clientId matches whichever prompt is currently
 # executing (comfy_execution/progress.py, execution.py's
 # `self.server.client_id = extra_data["client_id"]`), so
-# query_comfyui_progress() needs a client_id it can always reconnect
-# with, not one it would have to learn from a specific subprocess call.
+# web_ui's _comfyui_progress_listener needs a client_id it can always
+# reconnect with, not one it would have to learn from a specific
+# subprocess call.
 # Safe as a shared constant: vram_guard's whole point is this pipeline
 # only ever runs one render at a time, so there's never a second
 # concurrent submitter to collide with.
 COMFYUI_CLIENT_ID = "dream_pipeline"
-
-
-def query_comfyui_progress(timeout=2.0):
-    """Real render progress straight from ComfyUI's own websocket API --
-    per ComfyUI's own source (comfy_execution/progress.py, server.py):
-    there is no REST endpoint
-    that exposes step-level percentage (/api/jobs/<id> only has
-    pending/in_progress/completed/failed, no numeric progress), only a
-    "progress_state" event pushed over /ws to whichever connection's
-    clientId matches the currently-executing prompt's -- see
-    COMFYUI_CLIENT_ID above for how the pipeline guarantees that match.
-    Opens a short-lived connection (aiohttp -- already an installed
-    transitive dependency, no new install needed), waits up to `timeout`
-    seconds for one progress_state message, and returns the
-    furthest-along running node's {percent, step, total_steps}, or None
-    if nothing arrived in time (ComfyUI idle, unreachable, no render
-    actually running, or an old ComfyUI version without this event)."""
-    import asyncio
-
-    async def _fetch():
-        import aiohttp
-        url = load_config()["comfyui_url"]
-        ws_url = url.replace("http://", "ws://").replace("https://", "wss://")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(f"{ws_url}/ws?clientId={COMFYUI_CLIENT_ID}") as ws:
-                    async for msg in ws:
-                        if msg.type != aiohttp.WSMsgType.TEXT:
-                            continue
-                        data = json.loads(msg.data)
-                        if data.get("type") != "progress_state":
-                            continue
-                        nodes = data.get("data", {}).get("nodes", {}).values()
-                        running = [n for n in nodes if n.get("state") == "running"]
-                        if not running:
-                            continue
-                        node = max(running, key=lambda n: n.get("value") or 0)
-                        step, total = node.get("value") or 0, node.get("max") or 0
-                        return {"percent": int(step / total * 100) if total else 0,
-                                "step": step, "total_steps": total}
-        except Exception:
-            return None
-        return None
-
-    try:
-        return asyncio.run(asyncio.wait_for(_fetch(), timeout=timeout))
-    except Exception:
-        return None
 
 
 # Set once in main() from --project, before any function below is called.
@@ -1787,6 +1734,10 @@ def build_spec_request_payload(number, note=None, workflow=None):
     strong_backend = using_strong_creative_backend()
     trend_context = _quiet_spec_trend_context()
     trend_clause = _spec_trend_clause(trend_context)
+    # Same meaning as build_row_spec_payload's is_revision: the model is
+    # editing content it was actually shown, so title dedup against
+    # recent specs doesn't apply (the title is being kept, not invented).
+    is_revision = existing_spec_for_prompt is not None
 
     payload = {
         "workflow": workflow,
@@ -1812,23 +1763,23 @@ def build_spec_request_payload(number, note=None, workflow=None):
         f"above -- only the keys listed there, nothing else. The graph type "
         f"(workflow={workflow!r}) and any file paths are already decided and set "
         f"by the code, not something you're asked for or should mention. "
-        + (f"existing_spec is empty here on purpose -- write everything fresh from "
-           f"the direction above, don't try to guess or reuse old wording you "
-           f"haven't been shown.\n\n" if note else
-           f"If existing_spec is set, this is a REGEN -- keep whatever's still "
-           f"good, fix what was wrong.\n\n") +
-        f"If master_list_entry is set and there's no human direction above, use "
-        f"its exact animal/role -- don't invent a different concept. If neither "
-        f"is set, originate one following creative_guidance, checking "
-        f"recent_titles_for_dedup for near-duplicates. "
-        + (f"reviewed_examples are Tales a human actually approved -- the real bar, "
-           f"not just what's been drafted recently. Use them for two things: don't "
-           f"repeat an animal+role pairing or joke-type that already shipped there, "
-           f"and match their comedic tightness (short, quotable punchline lines; a "
-           f"specific voice played with real commitment, not flat/hedging "
-           f"exposition)." if reviewed_examples else
-           f"reviewed_examples is empty -- nothing approved yet for this channel, so "
-           f"rely on creative_guidance alone.")
+        + ("existing_spec is empty here on purpose -- write everything fresh from "
+           "the direction above, don't try to guess or reuse old wording you "
+           "haven't been shown.\n\n" if note else
+           "If existing_spec is set, this is a REGEN -- keep whatever's still "
+           "good, fix what was wrong.\n\n") +
+        "If master_list_entry is set and there's no human direction above, use "
+        "its exact animal/role -- don't invent a different concept. If neither "
+        "is set, originate one following creative_guidance, checking "
+        "recent_titles_for_dedup for near-duplicates. "
+        + ("reviewed_examples are Tales a human actually approved -- the real bar, "
+           "not just what's been drafted recently. Use them for two things: don't "
+           "repeat an animal+role pairing or joke-type that already shipped there, "
+           "and match their comedic tightness (short, quotable punchline lines; a "
+           "specific voice played with real commitment, not flat/hedging "
+           "exposition)." if reviewed_examples else
+           "reviewed_examples is empty -- nothing approved yet for this channel, so "
+           "rely on creative_guidance alone.")
         + trend_clause
     )
     return payload
@@ -1865,12 +1816,12 @@ def _spec_trend_clause(trend_context):
     if not trend_context:
         return ""
     return (
-        f" trend_context lists this channel's own real top-performing video "
-        f"titles/tags (and, when available, their premise/script excerpt) from "
-        f"YouTube Analytics -- use it ONLY as style/tag/word-choice signal for "
-        f"whatever you're already writing. It must NEVER change, redirect, or "
-        f"merge into this row's own concept -- locked_fields/master_list_entry "
-        f"above are the fixed subject of this specific video and always win."
+        " trend_context lists this channel's own real top-performing video "
+        "titles/tags (and, when available, their premise/script excerpt) from "
+        "YouTube Analytics -- use it ONLY as style/tag/word-choice signal for "
+        "whatever you're already writing. It must NEVER change, redirect, or "
+        "merge into this row's own concept -- locked_fields/master_list_entry "
+        "above are the fixed subject of this specific video and always win."
     )
 
 
@@ -1957,21 +1908,21 @@ def build_row_spec_payload(number, locked_fields, note, workflow, show_existing_
     trend_clause = _spec_trend_clause(trend_context)
 
     revision_clause = (
-        f" existing_content shows what this row currently has for the fields you're "
-        f"being asked to write. The human's note above is FEEDBACK on that content -- "
-        f"what didn't work. REVISE existing_content accordingly: keep whatever the "
-        f"note doesn't call out as a problem, change what it does. This is a targeted "
-        f"fix, not a fresh unrelated idea -- stay recognizably the same story/subject "
-        f"unless the note itself explicitly asks for something completely different. "
-        f"IMPORTANT: a targeted fix still has to fully comply with every rule above "
-        f"(format/golden rules, this project's own creative guidance) in EVERY beat "
-        f"of your final answer, not just the one beat the note is actually about -- "
-        f"confirmed failure mode: rewriting one beat's physical action while losing "
-        f"an unrelated required detail elsewhere (e.g. the mouth-moving/lip-sync "
-        f"rule on a beat you didn't even mean to touch, or the negative-prompt "
-        f"baseline) because attention was on the note's specific complaint. Before "
-        f"answering, re-check every beat you're returning -- including ones the note "
-        f"never mentioned -- against those same rules, not just the one you revised."
+        " existing_content shows what this row currently has for the fields you're "
+        "being asked to write. The human's note above is FEEDBACK on that content -- "
+        "what didn't work. REVISE existing_content accordingly: keep whatever the "
+        "note doesn't call out as a problem, change what it does. This is a targeted "
+        "fix, not a fresh unrelated idea -- stay recognizably the same story/subject "
+        "unless the note itself explicitly asks for something completely different. "
+        "IMPORTANT: a targeted fix still has to fully comply with every rule above "
+        "(format/golden rules, this project's own creative guidance) in EVERY beat "
+        "of your final answer, not just the one beat the note is actually about -- "
+        "confirmed failure mode: rewriting one beat's physical action while losing "
+        "an unrelated required detail elsewhere (e.g. the mouth-moving/lip-sync "
+        "rule on a beat you didn't even mean to touch, or the negative-prompt "
+        "baseline) because attention was on the note's specific complaint. Before "
+        "answering, re-check every beat you're returning -- including ones the note "
+        "never mentioned -- against those same rules, not just the one you revised."
         if existing_content else ""
     )
 
@@ -2001,20 +1952,20 @@ def build_row_spec_payload(number, locked_fields, note, workflow, show_existing_
     payload["instructions"] = (
         (f"THE HUMAN GAVE THIS EXACT CREATIVE DIRECTION -- YOUR ANSWER MUST BE "
          f"BUILT FROM IT: {note!r}\n\n" if note else "") +
-        f"locked_fields are already FINAL, written by the human directly -- "
-        f"do not repeat them in your answer, only write the keys listed in "
-        f"schema_hint, and make sure your answer is consistent with locked_fields "
-        f"(e.g. if locked_fields has a title, your positive_prompt must match that "
-        f"story, not a different one). "
-        + (f"If master_list_entry is set and there's no human direction above, use "
-           f"its exact animal/role -- don't invent a different concept. " if concept_entry else "") +
-        f"Check recent_titles_for_dedup for near-duplicates. "
-        + (f"reviewed_examples are the human-approved bar (Tales actually accepted, "
-           f"not just drafted) -- avoid repeating their animal+role pairings/joke-"
-           f"types, and match their comedic tightness (short, quotable punchlines; a "
-           f"committed specific voice). " if reviewed_examples else
-           f"reviewed_examples is empty -- nothing approved yet for this channel. ") +
-        f"Follow creative_guidance."
+        "locked_fields are already FINAL, written by the human directly -- "
+        "do not repeat them in your answer, only write the keys listed in "
+        "schema_hint, and make sure your answer is consistent with locked_fields "
+        "(e.g. if locked_fields has a title, your positive_prompt must match that "
+        "story, not a different one). "
+        + ("If master_list_entry is set and there's no human direction above, use "
+           "its exact animal/role -- don't invent a different concept. " if concept_entry else "") +
+        "Check recent_titles_for_dedup for near-duplicates. "
+        + ("reviewed_examples are the human-approved bar (Tales actually accepted, "
+           "not just drafted) -- avoid repeating their animal+role pairings/joke-"
+           "types, and match their comedic tightness (short, quotable punchlines; a "
+           "committed specific voice). " if reviewed_examples else
+           "reviewed_examples is empty -- nothing approved yet for this channel. ") +
+        "Follow creative_guidance."
         + trend_clause
         + revision_clause
     )
@@ -2517,7 +2468,7 @@ def replace_concept_entry(number, raw_text):
     if no entry with that number exists."""
     path = find_concept_list_path()
     if not path.exists():
-        raise SystemExit(f"[dream_step] no concept list exists for this project yet.")
+        raise SystemExit("[dream_step] no concept list exists for this project yet.")
     lines = path.read_text(encoding="utf-8").splitlines()
     for i, line in enumerate(lines):
         m = re.match(r"^Tale #(\d+):", line)
@@ -3160,14 +3111,14 @@ def build_concepts_request_payload(project_name, count, web_search_available,
                 "trend mode for this request.")
 
     trend_clause = (
-        f" trend_context lists this channel's own real top-performing video titles/tags "
-        f"from YouTube Analytics (and, if selected, other projects' too -- each entry "
-        f"tagged with its source project). Use it to favor patterns that have actually "
-        f"performed well here (subject matter, tag themes, workflow style) instead of "
-        f"guessing blind. When two listed top performers -- from the same project or "
-        f"different ones -- could genuinely combine into one strong new concept, merging "
-        f"them into a single idea is encouraged; only do this when it actually produces "
-        f"something good, never force an awkward mashup just to use two entries."
+        " trend_context lists this channel's own real top-performing video titles/tags "
+        "from YouTube Analytics (and, if selected, other projects' too -- each entry "
+        "tagged with its source project). Use it to favor patterns that have actually "
+        "performed well here (subject matter, tag themes, workflow style) instead of "
+        "guessing blind. When two listed top performers -- from the same project or "
+        "different ones -- could genuinely combine into one strong new concept, merging "
+        "them into a single idea is encouraged; only do this when it actually produces "
+        "something good, never force an awkward mashup just to use two entries."
         if trend_context else ""
     )
 
@@ -3184,20 +3135,20 @@ def build_concepts_request_payload(project_name, count, web_search_available,
             f"matching schema_hint, numbered {start_at} through {start_at + count - 1}. "
             f"Each needs a distinct animal AND human-role pairing (check "
             f"existing_list_tail for near-duplicates to avoid). "
-            + (f"Also check reviewed_examples -- these are Tales a human has actually "
-               f"approved, the real creative bar, not just whatever's been drafted -- for "
-               f"two things: (1) don't repeat an animal+role pairing or joke-type that "
-               f"already shipped there, and (2) match the comedic tightness/tone those "
-               f"examples demonstrate (short, quotable punchlines; a specific mapped voice "
-               f"played with real commitment) rather than just the broader style described "
-               f"in creative_guidance. " if reviewed_examples else
-               f"reviewed_examples is empty -- nothing's been reviewed/approved yet for "
-               f"this channel, so rely on creative_guidance alone. ") +
-            f"Use "
-            f"creative_guidance (this channel's own CREATIVE.md) as the source of truth for "
-            f"tone, format, and what kind of concept fits this channel -- research is for "
-            f"what performs well in the genre, not for overriding the channel's own "
-            f"established style."
+            + ("Also check reviewed_examples -- these are Tales a human has actually "
+               "approved, the real creative bar, not just whatever's been drafted -- for "
+               "two things: (1) don't repeat an animal+role pairing or joke-type that "
+               "already shipped there, and (2) match the comedic tightness/tone those "
+               "examples demonstrate (short, quotable punchlines; a specific mapped voice "
+               "played with real commitment) rather than just the broader style described "
+               "in creative_guidance. " if reviewed_examples else
+               "reviewed_examples is empty -- nothing's been reviewed/approved yet for "
+               "this channel, so rely on creative_guidance alone. ") +
+            "Use "
+            "creative_guidance (this channel's own CREATIVE.md) as the source of truth for "
+            "tone, format, and what kind of concept fits this channel -- research is for "
+            "what performs well in the genre, not for overriding the channel's own "
+            "established style."
             + trend_clause
         ),
     }
@@ -5680,7 +5631,7 @@ def do_new_project(name, args):
     Required flags are checked up front and the whole thing refuses to
     create a half-configured project if any are missing, rather than
     writing a template full of placeholder guesses."""
-    project_dir = (projects_root() / name).resolve()
+    project_dir = _validate_project_folder_name(name)
     if project_dir.exists():
         print(f"[dream_step] >>> {project_dir} already exists -- refusing to overwrite. "
               f"If this is really a fresh project, pick a different name or remove the "
@@ -5889,8 +5840,14 @@ def resolve_project_globals(name):
     DATA_DIR/etc globals from it -- shared by main()'s direct-flag
     dispatch and run_interactive(), so both paths validate identically."""
     global PROJECT_DIR, DATA_DIR, DREAMS_ROOT, INDEX_PATH, HISTORY_PATH
-    PROJECT_DIR = (projects_root() / name).resolve()
-    if not PROJECT_DIR.is_dir() or name == "_pipeline":
+    # Same containment check rename_project/delete_project already use --
+    # this is the resolver EVERY web_ui project route goes through, so
+    # `name` is HTTP request data. Without it, a name like "../../x"
+    # resolved to any existing directory on the machine, and the
+    # DATA_DIR.mkdir() below (plus every later media/folder operation)
+    # would then act inside it.
+    PROJECT_DIR = _validate_project_folder_name(name)
+    if not PROJECT_DIR.is_dir():
         raise SystemExit(
             f"[dream_step] project folder does not exist: {PROJECT_DIR}\n"
             f"EXPECTED: --project must exactly match a real sibling folder name.\n"
@@ -5946,8 +5903,8 @@ def do_status(project_name):
           f"more numbers. This is done through the web UI's manage table (Run "
           f"updates), not a CLI flag -- run:")
     print(f"       python dream_step.py --project {project_name} --web")
-    print(f"     (--write-spec --spec-json-stdin is also available for direct/"
-          f"scripted single-number writes, no AI involved.)")
+    print("     (--write-spec --spec-json-stdin is also available for direct/"
+          "scripted single-number writes, no AI involved.)")
     opt += 1
     if s["not_rendered"]:
         print(f"  {opt}. Generate video -- render number(s) that have a spec but no "
@@ -6488,7 +6445,7 @@ def _generate_and_write_keyframes(number, prompt, max_validation_retries=3,
     """The real "Auto-generate missing content" path for keyframes -- generates via
     _generate_keyframes_content, then writes to disk. Returns True on a
     real write, False if every attempt failed validation."""
-    merged, update_fields = _generate_keyframes_content(
+    merged, _ = _generate_keyframes_content(
         number, prompt, max_validation_retries, extra_locked_fields, verbose)
     if merged is None:
         return False
@@ -6617,8 +6574,6 @@ def _render_creative_prompt(payload, include_format_rules=True):
 
 
 def main():
-    global PROJECT_DIR, DATA_DIR, DREAMS_ROOT, INDEX_PATH, HISTORY_PATH
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", default=None,
                          help="Sibling project folder under video-projects/ to operate on, e.g. 'dreams'. "

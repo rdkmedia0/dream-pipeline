@@ -1,0 +1,30 @@
+/* Dream Pipeline -- shared design tokens. Loaded by BOTH the GUI
+   (web_ui.py's page, before app.css) and the help page (help.html, before
+   help.css), so the two can never drift apart on palette/theme names
+   again -- previously each carried its own copy. The Theme dropdown
+   sets html[data-theme] to one of the named accents below; "ocean" is
+   the :root default and light/dark follows the OS (prefers-color-scheme).
+   Served by web_ui.py's /static/ route, re-read from disk per request. */
+:root {
+  color-scheme: light dark;
+  --accent: #4a90e2; --accent-fg: #ffffff; --accent-soft: #4a90e21f;
+  --success: #2f9e59; --danger: #d64545; --warning: #d99a2b;
+  --bg: #f6f7f9; --fg: #16181d; --card-bg: #ffffff; --field-bg: #ffffff;
+  --border: #d9dce2; --border-soft: #e8eaed; --muted-fg: #6b7280;
+  --shadow: 0 1px 2px rgba(16,24,40,0.05), 0 1px 3px rgba(16,24,40,0.06);
+  --shadow-md: 0 4px 10px rgba(16,24,40,0.08), 0 2px 4px rgba(16,24,40,0.06);
+  --radius: 10px; --radius-sm: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a; --fg: #e8e9ec; --card-bg: #1d2025; --field-bg: #1a1d22;
+    --border: #33373f; --border-soft: #282c33; --muted-fg: #9aa0ab;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.25);
+    --shadow-md: 0 6px 16px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.3);
+  }
+}
+html[data-theme="forest"]  { --accent: #2f9e59; --accent-fg: #ffffff; --accent-soft: #2f9e591f; --success: #4caf6d; --danger: #c94b3f; --warning: #d1972e; }
+html[data-theme="sunset"]  { --accent: #e2703a; --accent-fg: #ffffff; --accent-soft: #e2703a1f; --success: #4caf6d; --danger: #c73e3e; --warning: #e0a83c; }
+html[data-theme="grape"]   { --accent: #8a4fe2; --accent-fg: #ffffff; --accent-soft: #8a4fe21f; --success: #3fae67; --danger: #cc4b7a; --warning: #d99a2b; }
+html[data-theme="rose"]    { --accent: #e2437a; --accent-fg: #ffffff; --accent-soft: #e2437a1f; --success: #3fae67; --danger: #c0392b; --warning: #d99a2b; }
+html[data-theme="slate"]   { --accent: #546e7a; --accent-fg: #ffffff; --accent-soft: #546e7a1f; --success: #4a9d6d; --danger: #c1443f; --warning: #c58a35; }
