@@ -16,6 +16,12 @@
 # that's a different, separate image -- don't conflate the two.
 FROM python:3.12-slim
 
+# Links the GHCR package to this repo (shows under the repo's "Packages",
+# renders the README on the package page, inherits repo access settings).
+LABEL org.opencontainers.image.source=https://github.com/rdkmedia0/dream-pipeline
+LABEL org.opencontainers.image.description="Dream Pipeline -- batch AI video pipeline GUI orchestrating ComfyUI + Ollama/Gemini"
+LABEL org.opencontainers.image.licenses=MIT
+
 WORKDIR /workspace/_pipeline
 
 COPY _pipeline/requirements.txt .

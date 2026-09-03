@@ -117,6 +117,9 @@ docker compose up -d
 No build step — `docker-compose.yml` pulls a pre-built image from GHCR.
 Then open **http://127.0.0.1:8420**.
 
+Image: `ghcr.io/rdkmedia0/dream-pipeline` — `:latest` tracks the newest
+release, or pin a tag such as `:v1.0.2` (tags match the GitHub releases).
+
 `docker-compose.yml` mounts two volumes outside the repo:
 
 | Volume | Container path | Contents |
