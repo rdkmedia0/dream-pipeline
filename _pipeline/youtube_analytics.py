@@ -212,14 +212,24 @@ def list_all_channel_video_ids(v3_client):
     if not items:
         return []
     uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    # De-duplicated, order-preserving: playlistItems paging can hand the
+    # same videoId back on two consecutive pages (confirmed 2026-09-04 on
+    # a 100-video uploads playlist: 3 ids repeated across the page
+    # boundary), and a duplicate here becomes a video counted twice in
+    # every total, leaderboard and average downstream.
     video_ids = []
+    seen = set()
     page_token = None
     while True:
         result = v3_client.playlistItems().list(
             part="contentDetails", playlistId=uploads_playlist_id,
             maxResults=50, pageToken=page_token,
         ).execute()
-        video_ids.extend(item["contentDetails"]["videoId"] for item in result.get("items", []))
+        for item in result.get("items", []):
+            vid = item["contentDetails"]["videoId"]
+            if vid not in seen:
+                seen.add(vid)
+                video_ids.append(vid)
         page_token = result.get("nextPageToken")
         if not page_token:
             break
@@ -431,8 +441,26 @@ def _empty_cache():
             "daily_trend": [], "ai_review": None}
 
 
+def dedupe_videos(videos):
+    """One entry per video_id, first occurrence wins -- applied on every
+    cache read so a cache written before list_all_channel_video_ids
+    de-duplicated (see there) stops double-counting without waiting for
+    the next Refresh."""
+    seen = set()
+    out = []
+    for v in videos or []:
+        vid = v.get("video_id")
+        if vid in seen:
+            continue
+        seen.add(vid)
+        out.append(v)
+    return out
+
+
 def load_cache(youtube_dir):
-    return ds.load_json(youtube_dir / "analytics_cache.json", _empty_cache())
+    cache = ds.load_json(youtube_dir / "analytics_cache.json", _empty_cache())
+    cache["videos"] = dedupe_videos(cache.get("videos"))
+    return cache
 
 
 def save_cache(youtube_dir, data):

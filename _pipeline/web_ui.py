@@ -8632,7 +8632,13 @@ function _prevWeek(year, num) {
 // last window that's fully <= maxDate means the chart actually has
 // something to show on first load.
 function seedAnalyticsPeriodDefaults(dailyTrend) {
-  const maxDate = dailyTrend[dailyTrend.length - 1].date;
+  // Anchor the default period on the last day that actually has data,
+  // and allow it to be a partial week/month. Stepping back to the last
+  // COMPLETE week (the old rule) opened a brand-new channel on a week
+  // before it existed -- a flat zero line -- while its only real days sat
+  // in the current, still-incomplete week just out of view.
+  const withData = dailyTrend.filter(d => (d.views || 0) + (d.likes || 0) + (d.comments || 0) + (d.subscribers_gained || 0) > 0);
+  const maxDate = (withData.length ? withData[withData.length - 1] : dailyTrend[dailyTrend.length - 1]).date;
   const type = state.analyticsPeriodType;
   if (type === 'day') {
     // maxDate is by definition the last FULLY cached day already -- no
@@ -8641,13 +8647,8 @@ function seedAnalyticsPeriodDefaults(dailyTrend) {
     if (state.analyticsDayB === undefined) state.analyticsDayB = addDaysToDate(state.analyticsDayA, -1);
   } else if (type === 'week') {
     if (state.analyticsWeekAYear === undefined) {
-      let year = maxDate.slice(0, 4), num = weekNumberOfDate(maxDate);
-      while (weekWindow(year, num).end > maxDate) {
-        const prev = _prevWeek(year, num);
-        year = prev.year; num = prev.num;
-      }
-      state.analyticsWeekAYear = String(year);
-      state.analyticsWeekANum = num;
+      state.analyticsWeekAYear = String(maxDate.slice(0, 4));
+      state.analyticsWeekANum = weekNumberOfDate(maxDate);
     }
     if (state.analyticsWeekBYear === undefined) {
       const prev = _prevWeek(state.analyticsWeekAYear, state.analyticsWeekANum);
@@ -8656,13 +8657,8 @@ function seedAnalyticsPeriodDefaults(dailyTrend) {
     }
   } else if (type === 'month') {
     if (state.analyticsMonthAYear === undefined) {
-      let y = parseInt(maxDate.slice(0, 4), 10), m = parseInt(maxDate.slice(5, 7), 10);
-      while (monthWindow(String(y), String(m).padStart(2, '0')).end > maxDate) {
-        m -= 1;
-        if (m < 1) { m = 12; y -= 1; }
-      }
-      state.analyticsMonthAYear = String(y);
-      state.analyticsMonthAMonth = String(m).padStart(2, '0');
+      state.analyticsMonthAYear = maxDate.slice(0, 4);
+      state.analyticsMonthAMonth = maxDate.slice(5, 7);
     }
     if (state.analyticsMonthBYear === undefined) {
       let y = parseInt(state.analyticsMonthAYear, 10), m = parseInt(state.analyticsMonthAMonth, 10) - 1;
