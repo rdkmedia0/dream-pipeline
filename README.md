@@ -21,8 +21,10 @@ around that:
   same performance data back into idea and script generation (see
   Performance trend mode below), so the next batch can build on it.
 
-No auth — the trust model is "one user, reached only from `127.0.0.1`
-or a private Docker network," never exposed to the open internet.
+**Runs on your own machine only.** There is no login, and the tool can
+publish to your YouTube channel and spend your Gemini credit, so never
+expose its port to a network. See [Staying safe](#staying-safe) below
+for what that means in practice.
 
 **Project status.** This is a personal tool, built for my own YouTube
 channels and published as a portfolio piece. It works for my setup and
@@ -343,21 +345,69 @@ this tool's own out-of-the-box choice.
 | Gemini | Reference-image generation (keyframes) | `gemini-3.1-flash-image` | N/A | Only image-generation option currently wired in — no local alternative exists for this specific role (ComfyUI needs a *rendered* reference image as input, not text-to-image itself). |
 | ComfyUI | Video/image rendering | *(your own checkpoint)* | N/A | Entirely your own installed checkpoint + `workflow_api_*.json` — this pipeline orchestrates ComfyUI's API but has no opinion on or comparative data across checkpoints. |
 
-## Security notes
+## Staying safe
 
-- `web_ui.py` has no login, so it also refuses requests whose `Host`
-  header isn't a loopback address, and `POST`s whose `Origin` isn't one
-  either -- this is what stops another web page open in the same
-  browser from driving the API (CSRF) or a DNS-rebinding page from
-  reading it. If you deliberately publish the GUI on a LAN name, list
-  that name in `DREAM_PIPELINE_ALLOWED_HOSTS` (see `.env.example`).
-- Never commit `_pipeline/config.json`, anything under
-  `_pipeline/gemini/` or `_pipeline/youtube/`, or any `*.enc` file — see
-  `.gitignore`. `*.enc` files hold real credentials (Gemini API key,
-  YouTube OAuth token) but Fernet-encrypted at rest, not plaintext;
-  `config.json` holds local topology (URLs, model choices), which isn't
-  secret but is still machine-specific. Both are regenerated per
-  deployment, never shared.
-- `secret_store.py`'s own docstring documents exactly what its
-  encryption-at-rest does and doesn't protect against — read it before
-  assuming a stronger threat model than intended.
+### What "no login" means
+
+The web GUI has no username or password. Whoever can open the page in a
+browser can do everything the tool does: edit and delete projects,
+start renders, spend your Gemini API credit, and upload or schedule
+videos on the YouTube channel you connected. The tool relies entirely
+on *nobody else being able to reach the page*, and it arranges that by
+listening on `127.0.0.1` — an address that only programs on the same
+computer can connect to. The Docker setup does the same thing on the
+host side (`127.0.0.1:8420:8420` in `docker-compose.yml`).
+
+This is the same approach ComfyUI and Ollama take. The difference is
+what is at stake: a stranger reaching ComfyUI can render images on your
+GPU; a stranger reaching Dream Pipeline can post to your channel.
+
+### Rules that keep you safe
+
+1. **Do not change the `127.0.0.1` in `docker-compose.yml`'s `ports:`
+   line, and do not start `dream_step.py --web` with `--host 0.0.0.0`.**
+   Either one makes the GUI reachable by every device on your network,
+   and if your router forwards the port, by the internet. There is no
+   second line of defence.
+2. **Need it from another machine?** Use an SSH tunnel instead of
+   opening the port:
+
+   ```bash
+   ssh -L 8420:127.0.0.1:8420 user@the-machine-running-it
+   ```
+
+   then open `http://127.0.0.1:8420` on your own machine. Only people
+   who can log in over SSH can reach the GUI.
+3. **If you really must publish it on a LAN address** (a trusted home
+   network, say), also set `DREAM_PIPELINE_ALLOWED_HOSTS` to the name
+   you'll type into the browser (see `.env.example`). Without it the GUI
+   refuses the request. Understand that anyone on that network then has
+   full control.
+4. **Keep the machine's own browser in mind.** Because there is no
+   login, any web page you have open could in principle send requests to
+   `127.0.0.1:8420` behind your back (a cross-site request). The GUI
+   blocks this by refusing requests whose `Host` or `Origin` header
+   isn't a loopback address, so this works without you doing anything —
+   it is why rule 3 needs the explicit allow-list.
+5. **Back up, and never share, the `state` directory** (or
+   `_pipeline/gemini/`, `_pipeline/youtube/` and `config.json` on a
+   bare install). It holds your Gemini key and YouTube OAuth token.
+   They are encrypted on disk with a key kept outside the project
+   folder, which protects against a casual look or an accidental
+   `git add`; it does not protect against someone with access to your
+   user account on that machine. Anyone who copies both the folder and
+   the key file can use your channel.
+6. **Never commit those files.** `.gitignore` already excludes them;
+   leave it that way if you fork the repo.
+7. **External services see your content.** Pointing `ollama_url` or
+   `comfyui_url` at a hosted service, or enabling Gemini, sends your
+   prompts, scripts and images to that provider. Settings shows this
+   warning too. Use providers you trust.
+
+### If you think it was exposed
+
+Disconnect the channel from Settings (this deletes the stored OAuth
+token), revoke the app's access at
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions),
+and rotate your Gemini API key in Google AI Studio. Then fix the port
+binding before starting it again.
