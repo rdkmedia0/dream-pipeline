@@ -6072,10 +6072,12 @@ function uploadActionForm() {
       metadata fresh) or Metadata only (push just title/description/tags/status, no delete, no re-upload,
       much cheaper) right there.</p>
     <button class="btn-primary" onclick="submitUpload()">Upload</button>
-    <button onclick="submitUpdateMetadata()" title="Pushes freshly-built title/description/tags/status
-      (from each number's current spec + this template) to its ALREADY-uploaded video via YouTube's
-      videos.update -- does not touch the video file, does not re-upload, does not create a duplicate.
-      The right tool for bulk-fixing metadata on videos that are already live.">Update metadata</button></div>`;
+    <button onclick="submitUpdateMetadata()" title="Pushes freshly-built title, description, tags, category,
+      language, made-for-kids and AI-disclosure (from each number's current spec + this template) to its
+      ALREADY-uploaded video via YouTube's videos.update. Never changes whether or when a video is visible:
+      a public video stays public, a scheduled one keeps its date. Does not touch the video file, does not
+      re-upload, does not create a duplicate. The right tool for bulk-fixing metadata on videos that are
+      already live.">Update metadata</button></div>`;
 }
 
 async function saveUploadTemplate() {

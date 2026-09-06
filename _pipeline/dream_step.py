@@ -5515,7 +5515,7 @@ def do_update_metadata(numbers):
                 print(f"[dream_step] #{number}'s metadata updated -- WARNING: live metadata still "
                       f"doesn't match what was intended: {parsed.get('mismatches')}")
             else:
-                print(f"[dream_step] #{number}'s metadata updated: {parsed.get('url')}")
+                print(f"[dream_step] #{number}'s metadata updated ({parsed.get('visibility', 'visibility unchanged')}): {parsed.get('url')}")
         else:
             _print_raw_subprocess_output(stdout, stderr)
             print(f"[dream_step] >>> #{number} metadata update did not succeed{_failure_reason(parsed)}. "

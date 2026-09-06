@@ -698,6 +698,33 @@ def build_metadata(spec, template, number):
     }
 
 
+def preserve_visibility(body, live_status):
+    """Update-metadata rule: never change WHEN or WHETHER a video is
+    visible. build_metadata recomputes privacyStatus/publishAt from the
+    template's schedule as if this were a fresh upload -- correct for an
+    upload, wrong for a video that has since gone live: a schedule whose
+    anchor is in the past yields a past publishAt plus privacyStatus
+    "private" for a video that is already public (confirmed 2026-09-06
+    on a channel whose #1-#3 were live: the update would have tried to
+    take them private). So the live privacyStatus and publishAt (if any)
+    are copied over the recomputed ones, and only the rest of the status
+    (made-for-kids, AI disclosure, embeddable, license) plus the whole
+    snippet get pushed. Returns a short human-readable note for the log."""
+    status = body["status"]
+    live_privacy = live_status.get("privacyStatus")
+    live_publish_at = (live_status.get("publishAt") or "").replace(".000Z", "Z")
+    status.pop("publishAt", None)
+    if live_privacy:
+        status["privacyStatus"] = live_privacy
+    if live_publish_at:
+        status["publishAt"] = live_publish_at
+    if live_privacy == "public":
+        return "visibility unchanged: public"
+    if live_publish_at:
+        return f"visibility unchanged: {live_privacy}, scheduled for {live_publish_at}"
+    return f"visibility unchanged: {live_privacy or 'unknown'}"
+
+
 def diff_video_resource(live, expected_body):
     """Pure diff, no network -- live is a videos resource dict (the
     "snippet"/"status" parts of it, at least), expected_body is what we
@@ -904,6 +931,12 @@ def main():
             youtube = get_authenticated_service(youtube_dir, template.get("channel_handle"))
             body = build_metadata(spec, template, args.number)
             body["id"] = video_id
+            live_items = youtube.videos().list(part="status", id=video_id).execute().get("items") or []
+            if not live_items:
+                result["error"] = (f"#{args.number}'s video {video_id} no longer exists on YouTube -- "
+                                   f"nothing to update (was it deleted?)")
+                print(json.dumps(result)); sys.exit(1)
+            result["visibility"] = preserve_visibility(body, live_items[0].get("status") or {})
             update_response = youtube.videos().update(part="snippet,status", body=body).execute()
             # "ok" reflects whether the actual videos.update() call
             # succeeded (it did, or this line would have raised) -- NOT
