@@ -5485,7 +5485,7 @@ def do_check(numbers):
         print("[dream_step] Check call complete -- see mismatches above.")
 
 
-def do_update_metadata(numbers):
+def do_update_metadata(numbers, reschedule=False):
     """Call upload_dream.py --update-metadata for each listed number --
     pushes freshly-built title/description/tags/status (from that number's
     CURRENT spec_NNN.json + the project's upload_template.json) to the
@@ -5505,7 +5505,7 @@ def do_update_metadata(numbers):
         # successful update prints a clean one-liner instead of the raw
         # JSON -- full output only when there's an actual error to see.
         returncode, parsed, stdout, stderr = _upload_dream_subprocess(
-            "--number", str(number), "--update-metadata")
+            "--number", str(number), "--update-metadata", *(["--reschedule"] if reschedule else []))
         if returncode == 0:
             any_updated = True
             if parsed is None:

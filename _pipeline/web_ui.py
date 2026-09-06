@@ -1221,7 +1221,7 @@ def h_upload_update_metadata(qs, body):
     log = io.StringIO()
     _STDOUT_ROUTER.set_target(log)
     try:
-        ds.do_update_metadata(numbers)
+        ds.do_update_metadata(numbers, reschedule=bool(body.get("reschedule")))
     finally:
         _STDOUT_ROUTER.clear_target()
     return {"log": log.getvalue()}
@@ -6067,17 +6067,31 @@ function uploadTemplateSection(template, error) {
 
 function uploadActionForm() {
   return `<div class="card"><label>Number(s) <input id="upload-numbers" placeholder="e.g. 83 or all"></label>
-    <p class="m-0 mb-5 muted">A number already uploaded is never silently skipped OR
-      re-sent -- Upload stops and asks you to choose Resend (delete the live video, push the current file +
-      metadata fresh) or Metadata only (push just title/description/tags/status, no delete, no re-upload,
-      much cheaper) right there.</p>
-    <button class="btn-primary" onclick="submitUpload()">Upload</button>
-    <button onclick="submitUpdateMetadata()" title="Pushes freshly-built title, description, tags, category,
-      language, made-for-kids and AI-disclosure (from each number's current spec + this template) to its
-      ALREADY-uploaded video via YouTube's videos.update. Never changes whether or when a video is visible:
-      a public video stays public, a scheduled one keeps its date. Does not touch the video file, does not
-      re-upload, does not create a duplicate. The right tool for bulk-fixing metadata on videos that are
-      already live.">Update metadata</button></div>`;
+    <div class="mt-4"><button class="btn-primary" onclick="submitUpload()">Upload</button></div>
+    <p class="mt-3 mb-5 muted"><strong>Upload</strong> sends the rendered video file plus its metadata; with
+      <code>all</code> it takes every rendered-but-not-uploaded number. A number already uploaded is never
+      silently skipped OR re-sent -- Upload stops and asks you to choose Resend (delete the live video, push
+      the current file + metadata fresh) or Metadata only (push just title/description/tags/status, no
+      delete, no re-upload, much cheaper) right there.</p>
+    <div class="items-center gap-6 wrap row">
+      <button onclick="submitUpdateMetadata()">Update metadata</button>
+      <label class="gap-3 w-auto row"><input type="checkbox" id="upload-reschedule" class="w-auto"> Also reschedule</label>
+    </div>
+    <div class="mt-3 mb-5 muted">
+      <strong>Update metadata</strong> rewrites, on YouTube, for videos already uploaded (with <code>all</code>: every one of them):
+      <ul class="m-0 mt-2" style="padding-left:1.2rem">
+        <li>title, description (including the footer and the Dream Pipeline credit), tags, category, language;</li>
+        <li>the made-for-kids and AI-disclosure settings.</li>
+      </ul>
+      It never touches the video file, and never changes <strong>whether</strong> a video is visible or
+      <strong>when</strong> it publishes: public stays public, scheduled keeps its date, the Default privacy
+      status above is not applied. Each video costs 50 API quota units (YouTube allows 10,000 a day).
+      <div class="mt-3"><strong>Also reschedule</strong> (off by default) additionally moves every still-scheduled
+      video in the range to the publish date the Schedule section computes <em>now</em> -- the way to shift a
+      whole queue after changing the anchor date, days or time above (Save template first). Videos that are
+      already public are never touched, and a computed time in the past is skipped. You get a confirmation
+      before anything is sent, and the log shows old &rarr; new per video.</div>
+    </div></div>`;
 }
 
 async function saveUploadTemplate() {
@@ -7945,10 +7959,17 @@ async function submitUpload() {
 // for e.g. a wrong title going out (see Upload's own "Force re-upload"
 // help text) rather than deleting on YouTube and re-uploading.
 async function submitUpdateMetadata() {
+  const reschedule = document.getElementById('upload-reschedule').checked;
+  if (reschedule) {
+    const ok = await confirmModal(
+      'Also reschedule is ticked: every still-scheduled video in this range will be moved to the ' +
+      'publish date the Schedule section computes now. Public videos are not touched. Continue?');
+    if (!ok) { showResult('<span class="muted">cancelled</span>'); return; }
+  }
   showResult('<span class="badge">working</span> updating metadata...');
   try {
     const data = await api('POST', '/api/upload/update-metadata', {
-      project: state.project, numbers: document.getElementById('upload-numbers').value,
+      project: state.project, numbers: document.getElementById('upload-numbers').value, reschedule,
     });
     state.status = await api('GET', `/api/status?project=${encodeURIComponent(state.project)}`);
     renderMenu('upload');

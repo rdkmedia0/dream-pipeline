@@ -725,6 +725,31 @@ def preserve_visibility(body, live_status):
     return f"visibility unchanged: {live_privacy or 'unknown'}"
 
 
+def apply_reschedule(body, live_status, computed_publish_at):
+    """Opt-in counterpart to preserve_visibility (--reschedule): for a
+    video that is NOT yet public, replace its live publish time with the
+    one the template's schedule computes now, so a changed anchor date,
+    days or time of day moves the whole queue. Never touches a public
+    video (YouTube can't reschedule a live video without first making it
+    private, which is not something to do in bulk by accident) and never
+    sets a time in the past (YouTube rejects it). Call AFTER
+    preserve_visibility. Returns the note for the log."""
+    status = body["status"]
+    if live_status.get("privacyStatus") == "public":
+        return "public -- not rescheduled (visibility unchanged)"
+    if not computed_publish_at:
+        return "not covered by the template's schedule -- left as is"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if computed_publish_at <= now:
+        return f"computed publish time {computed_publish_at} is in the past -- left as is"
+    old = status.get("publishAt") or "(none)"
+    status["privacyStatus"] = "private"
+    status["publishAt"] = computed_publish_at
+    if old == computed_publish_at:
+        return f"schedule unchanged: {computed_publish_at}"
+    return f"rescheduled: {old} -> {computed_publish_at}"
+
+
 def diff_video_resource(live, expected_body):
     """Pure diff, no network -- live is a videos resource dict (the
     "snippet"/"status" parts of it, at least), expected_body is what we
@@ -850,6 +875,10 @@ def main():
                      help="Don't upload -- just fetch the already-uploaded video and verify its "
                           "live metadata still matches what the spec/template intend. Requires "
                           "the number to already be marked published in index.json.")
+    ap.add_argument("--reschedule", action="store_true",
+                    help="With --update-metadata: also move a still-scheduled video's publish "
+                         "time to what the template's schedule computes now. Public videos and "
+                         "past times are never touched (see apply_reschedule).")
     ap.add_argument("--update-metadata", action="store_true",
                      help="Don't upload the file -- push freshly-built title/description/tags/"
                           "status to the ALREADY-uploaded video via videos.update. Use this to "
@@ -936,7 +965,10 @@ def main():
                 result["error"] = (f"#{args.number}'s video {video_id} no longer exists on YouTube -- "
                                    f"nothing to update (was it deleted?)")
                 print(json.dumps(result)); sys.exit(1)
-            result["visibility"] = preserve_visibility(body, live_items[0].get("status") or {})
+            live_status = live_items[0].get("status") or {}
+            result["visibility"] = preserve_visibility(body, live_status)
+            if args.reschedule:
+                result["visibility"] = apply_reschedule(body, live_status, compute_publish_at(spec["number"], template))
             update_response = youtube.videos().update(part="snippet,status", body=body).execute()
             # "ok" reflects whether the actual videos.update() call
             # succeeded (it did, or this line would have raised) -- NOT
