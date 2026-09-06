@@ -6041,7 +6041,8 @@ function uploadTemplateSection(template, error) {
       <label class="gap-4 row"><input type="checkbox" id="ut-contains_synthetic_media" class="w-auto" ${t.contains_synthetic_media ? 'checked' : ''}> Contains synthetic (AI) media</label>
       <label>Description footer (appended to every upload's description) <textarea id="ut-description_footer">${esc(t.description_footer)}</textarea></label>
       <label class="gap-4 row"><input type="checkbox" id="ut-credit_dream_pipeline" class="w-auto" ${t.credit_dream_pipeline === false ? '' : 'checked'}> Credit Dream Pipeline in every description
-        <span class="mf-help" title="Adds these two lines after the footer, plus a 'dream pipeline' tag: &quot;Made with Dream Pipeline, a free open-source AI video workflow built on ComfyUI and the LTX video model.&quot; and the project link https://github.com/rdkmedia0/dream-pipeline. On by default; untick to leave it out. Already-uploaded videos pick the change up on the next Update metadata.">?</span></label>
+        <span class="mf-help" title="Adds two lines after the footer, plus a 'dream pipeline' tag: &quot;Made with Dream Pipeline, a free open-source AI video workflow built on ComfyUI and the <model> video model.&quot; and the project link https://github.com/rdkmedia0/dream-pipeline. <model> is detected from the model files in the workflow this video renders with (LTX, Wan, HunyuanVideo, ...) or omitted if none is recognised. On by default; untick to leave it out. Already-uploaded videos pick the change up on the next Update metadata.">?</span></label>
+      <label>Model named in the credit (leave blank to detect it from the render workflow) <input id="ut-credit_model" value="${esc(t.credit_model || '')}" placeholder="auto-detected, e.g. LTX"></label>
       <label>Default tags (comma-separated) <input id="ut-default_tags" value="${esc(tags)}"></label>
       <h4>Schedule</h4>
       <label class="gap-4 row"><input type="checkbox" id="ut-schedule_enabled" class="w-auto" ${sch.enabled !== false ? 'checked' : ''}> Enabled</label>
@@ -6088,6 +6089,7 @@ async function saveUploadTemplate() {
     contains_synthetic_media: checked('ut-contains_synthetic_media'),
     description_footer: val('ut-description_footer'),
     credit_dream_pipeline: checked('ut-credit_dream_pipeline'),
+    credit_model: val('ut-credit_model'),
     default_tags: val('ut-default_tags'),
     schedule_enabled: checked('ut-schedule_enabled'),
     schedule_anchor_number: val('ut-schedule_anchor_number'),

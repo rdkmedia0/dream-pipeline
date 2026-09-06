@@ -5443,6 +5443,10 @@ def write_upload_template(fields):
         # On unless the form explicitly unticks it -- see
         # upload_dream.DREAM_PIPELINE_CREDIT for the exact text added.
         "credit_dream_pipeline": bool(fields.get("credit_dream_pipeline", True)),
+        # Blank = name the model detected from the render workflow's own
+        # model files (upload_dream.workflow_model_family); a non-empty
+        # value is used verbatim instead.
+        "credit_model": (fields.get("credit_model") or "").strip(),
         "default_tags": [t.strip() for t in (fields.get("default_tags") or "").split(",") if t.strip()],
         "schedule": {
             "enabled": bool(fields.get("schedule_enabled", True)),
@@ -5692,7 +5696,10 @@ def do_new_project(name, args):
         "credit_dream_pipeline": True,
         "credit_dream_pipeline_note": "Appends a two-line credit (wording + link to the Dream "
                                        "Pipeline project) and a tag to every upload. Set false "
-                                       "to switch it off for this project.",
+                                       "to switch it off for this project. credit_model: blank "
+                                       "names the model detected from the render workflow; set "
+                                       "it to override the name.",
+        "credit_model": "",
         "default_tags": [t.strip() for t in (args.default_tags or "").split(",") if t.strip()],
         "schedule": {
             "enabled": True,

@@ -574,15 +574,63 @@ def compute_publish_at(number, template):
 # Appended to every upload's description (after the project's own footer)
 # unless the project's upload_template.json sets credit_dream_pipeline to
 # false -- on by default for every project, new or existing, so videos
-# made with this tool point back at it. One fixed wording for everyone
-# rather than a per-project field, since the point is a consistent,
-# recognisable credit; a project that wants its own wording puts it in
-# description_footer and switches this off. The URL sits on its own line
-# so YouTube renders it as a link. Also adds one tag.
-DREAM_PIPELINE_CREDIT = (
-    "Made with Dream Pipeline, a free open-source AI video workflow built on ComfyUI and the LTX video model.\n"
-    "https://github.com/rdkmedia0/dream-pipeline")
+# made with this tool point back at it. ComfyUI is always true (nothing
+# renders without it); the video MODEL is not fixed -- it's whatever the
+# workflow file this video's render type uses actually loads -- so it is
+# detected from that graph's model files (workflow_model_family) or set
+# by hand via the template's credit_model, never assumed. The URL sits
+# on its own line so YouTube renders it as a link. Also adds one tag.
+DREAM_PIPELINE_URL = "https://github.com/rdkmedia0/dream-pipeline"
 DREAM_PIPELINE_TAG = "dream pipeline"
+
+# Substrings of model filenames -> the family name worth crediting. Text
+# encoders / VAEs / LoRAs referenced by the same graph also match (e.g.
+# "taeltx2_3"), which is fine: the family with the most hits wins.
+_MODEL_FAMILIES = [
+    ("ltx", "LTX"), ("wan", "Wan"), ("hunyuan", "HunyuanVideo"), ("cogvideo", "CogVideoX"),
+    ("mochi", "Mochi"), ("svd", "Stable Video Diffusion"), ("flux", "Flux"), ("sdxl", "SDXL"),
+]
+_MODEL_FILE_EXTS = (".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin")
+
+
+def workflow_model_family(workflow_name):
+    """Best-effort name of the model family the given render workflow
+    (spec["workflow"], e.g. "fml2v") loads -- read from the model
+    filenames referenced by the workflow_api_*.json that would actually be
+    used for it, honouring a custom file selected in Settings, exactly as
+    generate_dream.run_render resolves it. None when the workflow or file
+    is unknown or no known family appears; the credit then names only
+    ComfyUI rather than guessing."""
+    try:
+        import generate_dream
+        import dream_step
+        cfg = generate_dream.WORKFLOWS.get(workflow_name) or {}
+        path = cfg.get("path")
+        workflow_type = dream_step.WORKFLOW_TO_TYPE.get(workflow_name)
+        if workflow_type:
+            active_filename, active_entry = dream_step.active_custom_workflow_for_type(workflow_type)
+            if active_entry:
+                path = dream_step.PIPELINE_DIR / active_filename
+        if not path or not Path(path).exists():
+            return None
+        graph = json.loads(Path(path).read_text(encoding="utf-8"))
+        names = [v.lower() for node in graph.values() if isinstance(node, dict)
+                 for v in (node.get("inputs") or {}).values()
+                 if isinstance(v, str) and v.lower().endswith(_MODEL_FILE_EXTS)]
+    except Exception:
+        return None
+    best, best_hits = None, 0
+    for key, label in _MODEL_FAMILIES:
+        hits = sum(1 for n in names if key in n)
+        if hits > best_hits:
+            best, best_hits = label, hits
+    return best
+
+
+def dream_pipeline_credit(model_name=None):
+    built_on = "ComfyUI" + (f" and the {model_name} video model" if model_name else "")
+    return (f"Made with Dream Pipeline, a free open-source AI video workflow built on {built_on}.\n"
+            f"{DREAM_PIPELINE_URL}")
 
 
 def credit_enabled(template):
@@ -591,13 +639,23 @@ def credit_enabled(template):
     return template.get("credit_dream_pipeline", True) is not False
 
 
+def credit_model_name(spec, template):
+    """template["credit_model"] wins when set to a non-empty string (the
+    human's own name for what they render with); otherwise detected from
+    this video's workflow; None -> no model named."""
+    override = (template.get("credit_model") or "").strip()
+    if override:
+        return override
+    return workflow_model_family(spec.get("workflow"))
+
+
 def build_metadata(spec, template, number):
     description = spec.get("description", "")
     footer = template.get("description_footer", "")
     if footer:
         description = f"{description}\n\n{footer}"
     if credit_enabled(template):
-        description = f"{description}\n\n{DREAM_PIPELINE_CREDIT}"
+        description = f"{description}\n\n{dream_pipeline_credit(credit_model_name(spec, template))}"
     video_tags = [t.strip() for t in spec.get("tags", "").split(",") if t.strip()]
     all_tags = list(dict.fromkeys(video_tags + template.get("default_tags", [])
                                   + ([DREAM_PIPELINE_TAG] if credit_enabled(template) else [])))
