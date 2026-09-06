@@ -790,6 +790,13 @@ def diff_video_resource(live, expected_body):
             mismatches.append(f"publishAt: expected {exp_status['publishAt']!r}, live {live_publish_at!r}")
     if live_status.get("embeddable") != exp_status.get("embeddable"):
         mismatches.append(f"embeddable: expected {exp_status.get('embeddable')!r}, live {live_status.get('embeddable')!r}")
+    # The two legally-loaded flags -- worth confirming from YouTube's own
+    # response rather than trusting the request went through as sent.
+    # Both are booleans that YouTube may omit from the response when
+    # false, so a missing key reads as False.
+    for key, label in (("containsSyntheticMedia", "AI disclosure"), ("selfDeclaredMadeForKids", "made for kids")):
+        if key in exp_status and bool(live_status.get(key, False)) != bool(exp_status[key]):
+            mismatches.append(f"{label}: expected {bool(exp_status[key])!r}, live {bool(live_status.get(key, False))!r}")
 
     return (len(mismatches) == 0), mismatches, {"snippet": live_snippet, "status": live_status}
 
