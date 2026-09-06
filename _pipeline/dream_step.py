@@ -5430,11 +5430,15 @@ def write_upload_template(fields):
         "license": fields.get("license") or "youtube",
         "default_language": fields["default_language"],
         "contains_synthetic_media": bool(fields.get("contains_synthetic_media")),
-        "contains_synthetic_media_note": "YouTube's mandatory AI-content disclosure. Only "
-                                          "required when content depicts a real person, "
-                                          "event, or place in a way that could be mistaken "
-                                          "for reality -- confirm this with the user per "
-                                          "video, don't assume it copies from another project.",
+        "contains_synthetic_media_note": "YouTube's mandatory AI-content disclosure. YouTube "
+                                          "asks whether AI made a real person appear to say or do "
+                                          "something, altered footage of a real event or place, "
+                                          "OR generated a realistic-looking scene that didn't "
+                                          "occur (realistic AI voices count too). Photorealistic "
+                                          "AI video of fictional events is that third case: set "
+                                          "true. Clearly animated/stylised content may say false. "
+                                          "When in doubt, true -- the label costs nothing, a wrong "
+                                          "false can cost the channel.",
         "description_footer": fields.get("description_footer") or "",
         # On unless the form explicitly unticks it -- see
         # upload_dream.DREAM_PIPELINE_CREDIT for the exact text added.
@@ -5675,11 +5679,15 @@ def do_new_project(name, args):
         "license": "youtube",
         "default_language": args.default_language,
         "contains_synthetic_media": as_bool(args.contains_synthetic_media),
-        "contains_synthetic_media_note": "YouTube's mandatory AI-content disclosure. Only "
-                                          "required when content depicts a real person, "
-                                          "event, or place in a way that could be mistaken "
-                                          "for reality -- confirm this with the user per "
-                                          "video, don't assume it copies from another project.",
+        "contains_synthetic_media_note": "YouTube's mandatory AI-content disclosure. YouTube "
+                                          "asks whether AI made a real person appear to say or do "
+                                          "something, altered footage of a real event or place, "
+                                          "OR generated a realistic-looking scene that didn't "
+                                          "occur (realistic AI voices count too). Photorealistic "
+                                          "AI video of fictional events is that third case: set "
+                                          "true. Clearly animated/stylised content may say false. "
+                                          "When in doubt, true -- the label costs nothing, a wrong "
+                                          "false can cost the channel.",
         "description_footer": args.description_footer or "",
         "credit_dream_pipeline": True,
         "credit_dream_pipeline_note": "Appends a two-line credit (wording + link to the Dream "
