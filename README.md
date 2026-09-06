@@ -14,7 +14,9 @@ around that:
   across a whole batch instead of one video at a time.
 - **YouTube uploads** — connect a channel, set a publish template, and
   schedule a batch to go out on a defined cadence instead of manually
-  uploading each one.
+  uploading each one. Every upload's description credits this project
+  by default (two lines: what it was made with, and a link here, plus a
+  tag); a checkbox in the upload template turns it off.
 - **Performance trend analysis** — pull real YouTube data back in
   (views, engagement, per-workflow/per-tag correlation) and get an
   AI-written review of what's actually working. Views, likes and

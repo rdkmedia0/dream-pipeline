@@ -5436,6 +5436,9 @@ def write_upload_template(fields):
                                           "for reality -- confirm this with the user per "
                                           "video, don't assume it copies from another project.",
         "description_footer": fields.get("description_footer") or "",
+        # On unless the form explicitly unticks it -- see
+        # upload_dream.DREAM_PIPELINE_CREDIT for the exact text added.
+        "credit_dream_pipeline": bool(fields.get("credit_dream_pipeline", True)),
         "default_tags": [t.strip() for t in (fields.get("default_tags") or "").split(",") if t.strip()],
         "schedule": {
             "enabled": bool(fields.get("schedule_enabled", True)),
@@ -5678,6 +5681,10 @@ def do_new_project(name, args):
                                           "for reality -- confirm this with the user per "
                                           "video, don't assume it copies from another project.",
         "description_footer": args.description_footer or "",
+        "credit_dream_pipeline": True,
+        "credit_dream_pipeline_note": "Appends a two-line credit (wording + link to the Dream "
+                                       "Pipeline project) and a tag to every upload. Set false "
+                                       "to switch it off for this project.",
         "default_tags": [t.strip() for t in (args.default_tags or "").split(",") if t.strip()],
         "schedule": {
             "enabled": True,

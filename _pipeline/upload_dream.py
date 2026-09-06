@@ -571,13 +571,36 @@ def compute_publish_at(number, template):
     return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Appended to every upload's description (after the project's own footer)
+# unless the project's upload_template.json sets credit_dream_pipeline to
+# false -- on by default for every project, new or existing, so videos
+# made with this tool point back at it. One fixed wording for everyone
+# rather than a per-project field, since the point is a consistent,
+# recognisable credit; a project that wants its own wording puts it in
+# description_footer and switches this off. The URL sits on its own line
+# so YouTube renders it as a link. Also adds one tag.
+DREAM_PIPELINE_CREDIT = (
+    "Made with Dream Pipeline, a free open-source AI video workflow built on ComfyUI and the LTX video model.\n"
+    "https://github.com/rdkmedia0/dream-pipeline")
+DREAM_PIPELINE_TAG = "dream pipeline"
+
+
+def credit_enabled(template):
+    """Absent means on -- projects created before this setting existed
+    get the credit without editing their template."""
+    return template.get("credit_dream_pipeline", True) is not False
+
+
 def build_metadata(spec, template, number):
     description = spec.get("description", "")
     footer = template.get("description_footer", "")
     if footer:
         description = f"{description}\n\n{footer}"
+    if credit_enabled(template):
+        description = f"{description}\n\n{DREAM_PIPELINE_CREDIT}"
     video_tags = [t.strip() for t in spec.get("tags", "").split(",") if t.strip()]
-    all_tags = list(dict.fromkeys(video_tags + template.get("default_tags", [])))
+    all_tags = list(dict.fromkeys(video_tags + template.get("default_tags", [])
+                                  + ([DREAM_PIPELINE_TAG] if credit_enabled(template) else [])))
 
     publish_at = compute_publish_at(number, template)
     status = {
